@@ -50,10 +50,7 @@ pub fn main(init: std.process.Init) !u8 {
     const argv = try init.minimal.args.toSlice(init.arena.allocator());
     const opts = switch (parseArgs(if (argv.len == 0) argv else argv[1..])) {
         .render => |o| o,
-        .help => {
-            try printOut(init.io, usage);
-            return 0;
-        },
+        .help => return printOut(init.io, usage),
         .unknown_option => |arg| {
             try printErr(init.io, "zjot: unknown option: {s}\n", .{arg});
             return 1;
@@ -88,8 +85,7 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer a.free(output);
 
-    try printOut(init.io, output);
-    return 0;
+    return printOut(init.io, output);
 }
 
 fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
@@ -101,11 +97,19 @@ fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
     return r.interface.allocRemaining(a, .unlimited);
 }
 
-fn printOut(io: std.Io, bytes: []const u8) !void {
+/// Writes to stdout and returns the exit code: a failed write (a closed pipe, a full
+/// disk) is reported in one line rather than as an error trace.
+fn printOut(io: std.Io, bytes: []const u8) !u8 {
     var buf: [4096]u8 = undefined;
     var w = std.Io.File.stdout().writer(io, &buf);
-    try w.interface.writeAll(bytes);
-    try w.interface.flush();
+    w.interface.writeAll(bytes) catch return writeFailed(io);
+    w.interface.flush() catch return writeFailed(io);
+    return 0;
+}
+
+fn writeFailed(io: std.Io) !u8 {
+    try printErr(io, "zjot: stdout: write failed\n", .{});
+    return 1;
 }
 
 fn printErr(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
