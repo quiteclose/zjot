@@ -55,7 +55,11 @@ pub fn main(init: std.process.Init) !u8 {
             try printErr(init.io, "zjot: file not found: {s}\n", .{opts.file_path.?});
             return 1;
         },
-        else => return err,
+        error.OutOfMemory => return err,
+        else => |e| {
+            try printErr(init.io, "zjot: {s}: {t}\n", .{ opts.file_path orelse "stdin", e });
+            return 1;
+        },
     };
     defer a.free(input);
 

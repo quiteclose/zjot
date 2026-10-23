@@ -91,6 +91,14 @@ pub fn build(b: *std.Build) void {
     run_missing.expectStdErrEqual("zjot: file not found: /nope.dj\n");
     cli_test_step.dependOn(&run_missing.step);
 
+    const run_dir = b.addRunArtifact(golden_exe);
+    run_dir.setCwd(b.path("."));
+    run_dir.addArg("src");
+    run_dir.expectExitCode(1);
+    run_dir.expectStdOutEqual("");
+    run_dir.expectStdErrEqual("zjot: src: IsDir\n");
+    cli_test_step.dependOn(&run_dir.step);
+
     const run_ast = b.addRunArtifact(golden_exe);
     run_ast.addArg("--ast");
     run_ast.addFileArg(b.path("test/cli/hi.dj"));
