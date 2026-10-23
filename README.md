@@ -17,17 +17,17 @@ zig build
 ## CLI usage
 
 ```
-zjot [OPTIONS] [FILE]
+zjot [OPTIONS] [--] [FILE]
 ```
 
-If `FILE` is omitted, reads from stdin. The whole input is read into memory; there is no size limit.
+If `FILE` is omitted or is `-`, reads from stdin. `--` ends the options, so a file whose name starts with `-` can follow it. The whole input is read into memory; there is no size limit.
 
 **Options:**
 
 | Flag | Description |
 | --- | --- |
 | `--ast` | Output AST instead of HTML |
-| `--sourcepos` | Include source positions in AST output |
+| `--sourcepos` | Include source positions in AST output (requires `--ast`) |
 | `-h`, `--help` | Show help |
 
 **Examples:**
