@@ -157,6 +157,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
             pending_attrs = null;
             continue;
         } else if (try self.tryFootnoteDef()) |_| {
+            pending_attrs = null;
             continue;
         } else if (try self.tryDefinitionList()) |dl| {
             node = dl;
@@ -178,15 +179,19 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
 }
 
 fn tryBlockAttr(self: *Parser) !?BlockAttrs {
-    const line = self.lines[self.pos];
+    const found = (try self.blockAttrAt(self.pos)) orelse return null;
+    self.pos += found.lines;
+    return found.attrs;
+}
+
+/// The block attribute starting at `pos`, which may continue over indented lines.
+fn blockAttrAt(self: *Parser, pos: usize) !?struct { attrs: BlockAttrs, lines: usize } {
+    const line = self.lines[pos];
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 1 or trimmed[0] != '{') return null;
 
     if (trimmed[trimmed.len - 1] == '}') {
-        if (attrs_mod.parseAttrsFromStr(self.a, trimmed)) |ba| {
-            self.pos += 1;
-            return ba;
-        }
+        if (attrs_mod.parseAttrsFromStr(self.a, trimmed)) |ba| return .{ .attrs = ba, .lines = 1 };
     }
 
     const indent = indentOf(line);
@@ -194,8 +199,8 @@ fn tryBlockAttr(self: *Parser) !?BlockAttrs {
     try full_text.appendSlice(self.a, trimmed);
     var lines_consumed: usize = 1;
 
-    while (self.pos + lines_consumed < self.lines.len) {
-        const next = self.lines[self.pos + lines_consumed];
+    while (pos + lines_consumed < self.lines.len) {
+        const next = self.lines[pos + lines_consumed];
         if (isBlank(next)) break;
         const next_indent = indentOf(next);
         if (next_indent <= indent) break;
@@ -204,8 +209,7 @@ fn tryBlockAttr(self: *Parser) !?BlockAttrs {
         lines_consumed += 1;
 
         if (attrs_mod.parseAttrsFromStr(self.a, full_text.items)) |ba| {
-            self.pos += lines_consumed;
-            return ba;
+            return .{ .attrs = ba, .lines = lines_consumed };
         }
     }
 
@@ -288,10 +292,8 @@ fn applyInlinePositions(nodes: []const Node, src: []const u8, line_map: LineMap)
 
 fn tryHeading(self: *Parser) !?Node {
     const line = self.lines[self.pos];
-    const trimmed = std.mem.trimStart(u8, line, " ");
-    const hashes = countLeadingChar(trimmed, '#');
-    if (hashes == 0 or hashes > 6) return null;
-    if (hashes >= trimmed.len) {} else if (trimmed[hashes] != ' ' and trimmed[hashes] != '\t') return null;
+    const trimmed = std.mem.trimStart(u8, line, " \t");
+    const hashes = headingLevel(trimmed) orelse return null;
 
     self.pos += 1;
     var content_lines: std.ArrayList([]const u8) = .empty;
@@ -342,12 +344,7 @@ fn tryCodeBlock(self: *Parser) !?Node {
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
         self.pos += 1;
-        const close_char = countLeadingChar(std.mem.trimStart(u8, l, " "), fence_info.char);
-        if (close_char >= fence_info.len and
-            isBlank(std.mem.trimStart(u8, std.mem.trimStart(u8, l, " ")[close_char..], &[_]u8{fence_info.char})))
-        {
-            break;
-        }
+        if (isClosingCodeFence(l, fence_info)) break;
         var stripped = l;
         var indent_remaining = fence_info.indent;
         while (indent_remaining > 0 and stripped.len > 0 and stripped[0] == ' ') {
@@ -402,15 +399,30 @@ fn tryFencedDiv(self: *Parser) !?Node {
     return node;
 }
 
-fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
-    const line = self.lines[self.pos];
+const DefinitionLabel = struct { label: []const u8, rest: []const u8, is_footnote: bool };
+
+/// `[label]:` or `[^label]:` opening a reference or footnote definition: space
+/// indentation only, a label of at least one character, and what follows the colon.
+fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const trimmed = std.mem.trimStart(u8, line, " ");
     if (trimmed.len < 4 or trimmed[0] != '[') return null;
-    const close_bracket = std.mem.indexOfScalar(u8, trimmed[1..], ']') orelse return null;
-    if (close_bracket + 2 >= trimmed.len or trimmed[close_bracket + 2] != ':') return null;
-    const label = trimmed[1 .. close_bracket + 1];
-    var dest_text = std.mem.trim(u8, trimmed[close_bracket + 3 ..], " \t");
-    if (label.len > 0 and label[0] == '^') return null;
+    const close = std.mem.indexOfScalar(u8, trimmed[1..], ']') orelse return null;
+    if (close + 2 >= trimmed.len or trimmed[close + 2] != ':') return null;
+    const label = trimmed[1 .. close + 1];
+    const is_footnote = label.len > 0 and label[0] == '^';
+    if (is_footnote and label.len < 2) return null;
+    return .{
+        .label = if (is_footnote) label[1..] else label,
+        .rest = std.mem.trim(u8, trimmed[close + 3 ..], " \t"),
+        .is_footnote = is_footnote,
+    };
+}
+
+fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
+    const def = definitionLabel(self.lines[self.pos]) orelse return null;
+    if (def.is_footnote) return null;
+    const label = def.label;
+    var dest_text = def.rest;
 
     self.pos += 1;
     var dest_parts: std.ArrayList([]const u8) = .empty;
@@ -445,18 +457,18 @@ fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
 }
 
 fn tryFootnoteDef(self: *Parser) !?void {
-    const line = self.lines[self.pos];
-    const trimmed = std.mem.trimStart(u8, line, " ");
-    if (trimmed.len < 5 or !std.mem.startsWith(u8, trimmed, "[^")) return null;
-    const close = std.mem.indexOfScalar(u8, trimmed[2..], ']') orelse return null;
-    if (close + 3 >= trimmed.len or trimmed[close + 3] != ':') return null;
-
-    const label = trimmed[2 .. close + 2];
-    const rest = std.mem.trim(u8, trimmed[close + 4 ..], " \t");
+    const def = definitionLabel(self.lines[self.pos]) orelse return null;
+    if (!def.is_footnote) return null;
+    const label = def.label;
+    const rest = def.rest;
     self.pos += 1;
 
     var content_lines: std.ArrayList([]const u8) = .empty;
-    if (rest.len > 0) try content_lines.append(self.a, rest);
+    var paragraph = OpenParagraph{};
+    if (rest.len > 0) {
+        try content_lines.append(self.a, rest);
+        paragraph.feed(self.a, rest);
+    }
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
         if (isBlank(l)) {
@@ -467,10 +479,15 @@ fn tryFootnoteDef(self: *Parser) !?void {
                 (self.lines[lookahead][0] == ' ' or self.lines[lookahead][0] == '\t'))
             {
                 try content_lines.append(self.a, "");
+                paragraph.feed(self.a, "");
                 self.pos += 1;
             } else break;
-        } else if (l.len > 0 and (l[0] == ' ' or l[0] == '\t')) {
-            try content_lines.append(self.a, std.mem.trimStart(u8, l, " \t"));
+        } else if ((l[0] == ' ' or l[0] == '\t') or (paragraph.open and !try self.isBlockStartAt(self.pos))) {
+            // Indented lines belong to the footnote; an unindented one continues an
+            // open paragraph, as in a list item.
+            const content = std.mem.trimStart(u8, l, " \t");
+            try content_lines.append(self.a, content);
+            paragraph.feed(self.a, content);
             self.pos += 1;
         } else break;
     }
@@ -550,7 +567,7 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             last_was_blank = false;
             continue;
         }
-        if (!last_was_blank and !isNewBlockStart(next)) {
+        if (!last_was_blank and !(try self.isBlockStartAt(self.pos))) {
             try content.block_lines.append(self.a, std.mem.trimStart(u8, next, " \t"));
             self.pos += 1;
             last_was_blank = false;
@@ -955,17 +972,24 @@ pub fn isBlank(line: []const u8) bool {
     return true;
 }
 
-fn isNewBlockStart(line: []const u8) bool {
+/// Whether the line at `pos` starts a block other than a paragraph, so a container's
+/// lazy paragraph continuation stops there. The set is djot.js's: every block start,
+/// definitions and attribute blocks included.
+fn isBlockStartAt(self: *Parser, pos: usize) !bool {
+    const line = self.lines[pos];
     const trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len == 0) return false;
-    if (trimmed[0] == '#') return true;
-    if (trimmed[0] == '>') return true;
+    if (headingLevel(trimmed) != null) return true;
+    if (startsBlockQuote(line)) return true;
     if (isCodeFence(line) != null) return true;
     if (parseBulletMarker(line) != null) return true;
     if (parseOrderedMarker(line) != null) return true;
     if (isThematicBreak(trimmed)) return true;
     if (trimmed[0] == ':' and trimmed.len > 1 and (trimmed[1] == ' ' or trimmed[1] == '\t')) return true;
-    return false;
+    if (definitionLabel(line) != null) return true;
+    if (isTableRow(line)) return true;
+    if (isFencedDivStart(line) != null) return true;
+    return (try self.blockAttrAt(pos)) != null;
 }
 
 /// Visual indent width. Tabs count as 4 spaces per the djot spec.
@@ -1009,6 +1033,58 @@ fn isThematicBreak(line: []const u8) bool {
 
 const FenceInfo = struct { len: usize, char: u8, lang: ?[]const u8, indent: usize };
 
+fn isClosingCodeFence(line: []const u8, fence: FenceInfo) bool {
+    const rest = std.mem.trimStart(u8, line, " ");
+    const run = countLeadingChar(rest, fence.char);
+    return run >= fence.len and isBlank(std.mem.trimStart(u8, rest[run..], &[_]u8{fence.char}));
+}
+
+/// Whether the lines collected so far into a container leave a paragraph (or another
+/// block that takes continuation lines) open, which is what an unindented line may
+/// lazily continue. Nothing interrupts an open paragraph; after a blank line, a code
+/// block, thematic break, table row, reference definition, empty footnote definition or
+/// attribute line starts closed. A div fence met outside a paragraph opens a div, and a
+/// bare one closes the innermost div and whatever paragraph it held (fence lengths are
+/// not matched; djot.js does not either). One nesting level: a container's own lines
+/// are read as text, so a nested quote whose tip is a code block still counts as open.
+const OpenParagraph = struct {
+    open: bool = false,
+    fence: ?FenceInfo = null,
+    divs: usize = 0,
+
+    fn feed(self: *OpenParagraph, a: Allocator, line: []const u8) void {
+        if (self.fence) |f| {
+            if (isClosingCodeFence(line, f)) self.fence = null;
+            return;
+        }
+        if (isBlank(line)) {
+            self.open = false;
+            return;
+        }
+        if (isFencedDivStart(line)) |div| {
+            if (self.divs > 0 and div.class == null) {
+                self.divs -= 1;
+                self.open = false;
+                return;
+            }
+            if (!self.open) {
+                self.divs += 1;
+                return;
+            }
+        }
+        if (self.open) return;
+        if (isCodeFence(line)) |f| {
+            self.fence = f;
+            return;
+        }
+        if (definitionLabel(line)) |def| {
+            self.open = def.is_footnote and def.rest.len > 0;
+            return;
+        }
+        self.open = !(isThematicBreak(line) or isTableRow(line) or attrs_mod.tryParseBlockAttr(a, line) != null);
+    }
+};
+
 fn isCodeFence(line: []const u8) ?FenceInfo {
     var indent: usize = 0;
     var rest = line;
@@ -1038,6 +1114,14 @@ fn isCodeFence(line: []const u8) ?FenceInfo {
         }
     }
     return .{ .len = fence_len, .char = fence_char, .lang = if (after_fence.len > 0) after_fence else null, .indent = indent };
+}
+
+/// One to six `#` followed by a space, a tab or the end of the line.
+fn headingLevel(trimmed: []const u8) ?usize {
+    const hashes = countLeadingChar(trimmed, '#');
+    if (hashes == 0 or hashes > 6) return null;
+    if (hashes < trimmed.len and trimmed[hashes] != ' ' and trimmed[hashes] != '\t') return null;
+    return hashes;
 }
 
 fn startsBlockQuote(line: []const u8) bool {
