@@ -21,6 +21,7 @@ src/
   main.zig           CLI binary (--ast, --sourcepos, file/stdin)
   node.zig           Node, Tag, Attr, SourcePos, CellAlign
   Parser.zig         Block parsing, sub-parser coordination, list helpers
+  document.zig       Document-level state: Survey (ids, auto refs), Resolver, Sections
   inline.zig         Inline parsing (parseInlineContent + all handlers)
   attributes.zig     AttrParser state machine, BlockAttrs
   html.zig           HTML renderer
@@ -34,9 +35,10 @@ test/
 
 ### Module responsibilities
 
-- **root.zig** -- Public API. Exposes `toHtml`, `toAst`, `toAstOpts`. Creates a `Parser`, calls `parseDoc()`, and renders the result.
+- **root.zig** -- Public API. Exposes `toHtml`, `toAst`, `toAstOpts`. Creates a `Parser`, calls `document.parseDoc`, and renders the result.
 - **node.zig** -- AST types. `Tag` enum (46 tags), `Node` struct with children, text, attributes, source positions. `Attr`, `SourcePos`, `CellAlign`.
-- **Parser.zig** -- Block-level parsing. Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime; plus the resolution state) shared by pointer with sub-parsers. Contains `parseDoc`, `nextBlock`, `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
+- **Parser.zig** -- Block-level parsing, block-local: `nextBlock` yields one block at a time and never generates ids or resolves references. Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime) shared by pointer with sub-parsers. Contains `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
+- **document.zig** -- Document-level state, split by lifetime. `Survey` visits every block once and assigns heading ids (djot.js rule: document order, each generated id avoiding every id seen so far) and auto references. `Resolver` resolves one block at a time against the definitions and the survey (ids by ordinal, links by label, footnote numbers by first use) and builds the endnotes. `Sections` turns headings into open/close events without allocating. `parseDoc` drives the three into one tree.
 - **inline.zig** -- Inline parsing. `parseInlineContent` with opener stack and `resolveItems`. Handlers for emphasis, links, smart quotes, super/subscript, insert/delete/mark, math, symbols, raw inline, autolinks.
 - **attributes.zig** -- Attribute parsing. `AttrParser` state machine for `{#id .class key=value}` syntax. `BlockAttrs` struct. Block and inline attribute parsing entry points.
 - **html.zig** -- HTML rendering. Walks the `Node` tree and produces HTML string output.

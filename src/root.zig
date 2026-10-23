@@ -1,6 +1,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Parser = @import("Parser.zig");
+const document = @import("document.zig");
 const html = @import("html.zig");
 const ast = @import("ast.zig");
 const Node = @import("node.zig").Node;
@@ -14,7 +15,7 @@ pub fn toHtml(a: Allocator, input: []const u8) ![]const u8 {
     const aa = arena.allocator();
     var defs = Parser.Definitions{ .a = aa };
     var parser = Parser.init(aa, input, &defs);
-    const doc = try parser.parseDoc();
+    const doc = try document.parseDoc(aa, &parser);
     var out: std.ArrayList(u8) = .empty;
     try html.renderNode(aa, &out, doc);
     const result = try out.toOwnedSlice(aa);
@@ -32,7 +33,7 @@ pub fn toAstOpts(a: Allocator, input: []const u8, sourcepos: bool) ![]const u8 {
     var defs = Parser.Definitions{ .a = aa };
     var parser = Parser.init(aa, input, &defs);
     parser.track_pos = sourcepos;
-    const doc = try parser.parseDoc();
+    const doc = try document.parseDoc(aa, &parser);
     var out: std.ArrayList(u8) = .empty;
     try ast.renderAstNode(aa, &out, doc, 0, true);
     const result = try out.toOwnedSlice(aa);
@@ -42,4 +43,5 @@ pub fn toAstOpts(a: Allocator, input: []const u8, sourcepos: bool) ![]const u8 {
 test {
     _ = @import("test_runner.zig");
     _ = Parser;
+    _ = document;
 }

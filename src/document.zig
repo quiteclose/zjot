@@ -1,0 +1,363 @@
+//! Document-level concerns, kept apart from the block parser by lifetime: what one
+//! block needs from the rest of the document (`Survey`, `Resolver`) and the section
+//! structure that headings imply (`Sections`). A consumer walks the blocks once to
+//! survey and once to resolve and render, so the two walks need not hold the same
+//! nodes; everything that crosses from one walk to the other lives in the allocator
+//! the consumer keeps for the document.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
+const node_mod = @import("node.zig");
+const Node = node_mod.Node;
+const Tag = node_mod.Tag;
+const inline_mod = @import("inline.zig");
+const Parser = @import("Parser.zig");
+const Definitions = Parser.Definitions;
+
+/// A heading is given a generated id at the top level or directly inside a block
+/// quote, nowhere else. `parent` is null at the top level.
+fn headingGetsId(parent: ?Tag) bool {
+    return parent == null or parent == .block_quote;
+}
+
+/// What a block needs from the rest of the document: generated heading ids and the
+/// implicit link targets that top-level headings provide. Ids follow djot.js: in
+/// document order, each generated id avoids every id seen so far, explicit ones
+/// included, and an explicit id is used as written. Built by visiting every block;
+/// footnote content is not visited, its ids are generated as the endnotes are
+/// resolved. Read through `Resolver`.
+pub const Survey = struct {
+    a: Allocator,
+    ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
+    /// Generated heading ids in visiting order; `Resolver` hands them out by ordinal.
+    heading_ids: std.ArrayList([]const u8) = .empty,
+    /// Heading text to "#id" for top-level headings; a later heading with the same text wins.
+    auto_refs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+
+    pub fn visit(self: *Survey, block: Node) !void {
+        try self.visitNode(block, null);
+    }
+
+    fn visitNode(self: *Survey, node: Node, parent: ?Tag) !void {
+        if (node.id) |id| try self.ids_used.put(self.a, try self.a.dupe(u8, id), {});
+        if (node.tag == .heading and headingGetsId(parent)) {
+            const text = getNodeText(node);
+            const id = node.id orelse blk: {
+                const generated = try self.generateId(text);
+                try self.heading_ids.append(self.a, generated);
+                break :blk generated;
+            };
+            if (parent == null) {
+                const dest = try std.fmt.allocPrint(self.a, "#{s}", .{id});
+                try self.auto_refs.put(self.a, try self.a.dupe(u8, text), dest);
+            }
+        }
+        for (node.children) |child| try self.visitNode(child, node.tag);
+    }
+
+    fn generateId(self: *Survey, text: []const u8) ![]const u8 {
+        var buf: std.ArrayList(u8) = .empty;
+        var prev_hyphen = true;
+        for (text) |c| {
+            if (std.ascii.isAlphanumeric(c)) {
+                try buf.append(self.a, c);
+                prev_hyphen = false;
+            } else if (c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '-' or c == '_') {
+                if (!prev_hyphen and buf.items.len > 0) {
+                    try buf.append(self.a, '-');
+                    prev_hyphen = true;
+                }
+            }
+        }
+        while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '-') _ = buf.pop();
+
+        var base_id = try buf.toOwnedSlice(self.a);
+        if (base_id.len == 0) {
+            base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.ids_used.count() + 1});
+        }
+
+        if (!self.ids_used.contains(base_id)) {
+            try self.ids_used.put(self.a, base_id, {});
+            return base_id;
+        }
+
+        var counter: usize = 1;
+        while (true) : (counter += 1) {
+            const candidate = try std.fmt.allocPrint(self.a, "{s}-{d}", .{ base_id, counter });
+            if (!self.ids_used.contains(candidate)) {
+                try self.ids_used.put(self.a, candidate, {});
+                return candidate;
+            }
+        }
+    }
+};
+
+/// Resolves one block against the document: generated ids by ordinal, reference
+/// links by label, footnote numbers by first use. The resolved tree lives in the
+/// allocator passed per block; the footnote order lives in `a` until the endnotes.
+pub const Resolver = struct {
+    a: Allocator,
+    defs: *const Definitions,
+    survey: *Survey,
+    footnote_order: std.ArrayList([]const u8) = .empty,
+    next_heading: usize = 0,
+    /// Set while resolving footnote content, which the survey never saw: its heading
+    /// ids are generated here, in the order the endnotes are written.
+    generating_ids: bool = false,
+
+    pub fn resolve(self: *Resolver, ba: Allocator, block: Node) !Node {
+        return self.resolveNode(ba, block, null);
+    }
+
+    fn resolveNode(self: *Resolver, ba: Allocator, node: Node, parent: ?Tag) !Node {
+        var n = node;
+        if (n.tag == .heading and n.id == null and headingGetsId(parent)) {
+            if (self.generating_ids) {
+                n.id = try self.survey.generateId(getNodeText(n));
+            } else {
+                n.id = self.survey.heading_ids.items[self.next_heading];
+                self.next_heading += 1;
+            }
+        }
+        if ((n.tag == .link or n.tag == .image) and n.destination == null) {
+            if (n.reference) |ref| {
+                const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(ba, n) catch "");
+                const label = inline_mod.normalizeLabel(ba, raw_label) catch raw_label;
+                if (self.defs.ref_defs.get(label)) |def| {
+                    n.destination = def.url;
+                    if (def.attrs) |attrs| n = inline_mod.mergeRefAttrs(n, attrs, ba);
+                } else if (self.survey.auto_refs.get(label)) |dest| {
+                    n.destination = dest;
+                }
+            }
+        }
+        if (n.tag == .footnote_reference) {
+            const num = try self.footnoteNumber(n.text);
+            n.text = try std.fmt.allocPrint(ba, "{d}", .{num});
+            n.id = try std.fmt.allocPrint(ba, "fnref{d}", .{num});
+            n.destination = try std.fmt.allocPrint(ba, "#fn{d}", .{num});
+        }
+        if (n.children.len > 0) {
+            const children = try ba.alloc(Node, n.children.len);
+            for (n.children, children) |child, *out| out.* = try self.resolveNode(ba, child, n.tag);
+            n.children = children;
+        }
+        return n;
+    }
+
+    fn footnoteNumber(self: *Resolver, label: []const u8) !usize {
+        for (self.footnote_order.items, 1..) |existing, num| {
+            if (std.mem.eql(u8, existing, label)) return num;
+        }
+        try self.footnote_order.append(self.a, try self.a.dupe(u8, label));
+        return self.footnote_order.items.len;
+    }
+
+    /// The endnotes, or null when nothing referenced a footnote. Each footnote's
+    /// content is resolved here, so one that references another extends the list
+    /// while it is being walked.
+    pub fn footnoteSection(self: *Resolver, ba: Allocator) !?Node {
+        if (self.footnote_order.items.len == 0) return null;
+        self.generating_ids = true;
+        defer self.generating_ids = false;
+        var items: std.ArrayList(Node) = .empty;
+        var fn_idx: usize = 0;
+        while (fn_idx < self.footnote_order.items.len) : (fn_idx += 1) {
+            const label = self.footnote_order.items[fn_idx];
+            const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
+            const content = try ba.alloc(Node, raw_content.len);
+            for (raw_content, content) |block, *out| out.* = try self.resolveNode(ba, block, .footnote);
+            const idx = items.items.len + 1;
+            const fn_id = try std.fmt.allocPrint(ba, "fn{d}", .{idx});
+            const backref = try std.fmt.allocPrint(ba, "#fnref{d}", .{idx});
+            var fn_children: std.ArrayList(Node) = .empty;
+            const backlink = Node{
+                .tag = .link,
+                .destination = backref,
+                .text = "\u{21a9}\u{fe0e}",
+                .attrs = &.{.{ .key = "role", .value = "doc-backlink" }},
+            };
+            for (content, 0..) |block, bi| {
+                if (bi == content.len - 1 and block.tag == .para) {
+                    var new_kids: std.ArrayList(Node) = .empty;
+                    for (block.children) |child| try new_kids.append(ba, child);
+                    try new_kids.append(ba, backlink);
+                    try fn_children.append(ba, .{ .tag = .para, .children = try new_kids.toOwnedSlice(ba) });
+                } else {
+                    try fn_children.append(ba, block);
+                }
+            }
+            if (content.len == 0 or content[content.len - 1].tag != .para) {
+                try fn_children.append(ba, .{ .tag = .para, .children = try ba.dupe(Node, &.{backlink}) });
+            }
+            try items.append(ba, .{ .tag = .list_item, .id = fn_id, .children = try fn_children.toOwnedSlice(ba) });
+        }
+        return .{ .tag = .footnote, .children = try items.toOwnedSlice(ba), .attrs = &.{.{ .key = "role", .value = "doc-endnotes" }} };
+    }
+};
+
+/// The section structure as events, so a consumer can write around headings without
+/// building a tree. A heading closes every open section of its level or deeper, opens its own,
+/// and moves its id and attributes onto it. Open levels strictly increase, so the
+/// stack is at most six deep and one block yields at most eight events.
+pub const Sections = struct {
+    levels: [6]u8 = undefined,
+    depth: usize = 0,
+    events: [8]Event = undefined,
+
+    pub const Event = union(enum) {
+        /// A section node without children; its id and attributes came from the heading that follows.
+        open: Node,
+        close,
+        block: Node,
+    };
+
+    /// The events for one block, valid until the next call.
+    pub fn feed(self: *Sections, block: Node) []const Event {
+        if (block.tag != .heading) {
+            self.events[0] = .{ .block = block };
+            return self.events[0..1];
+        }
+        var n: usize = 0;
+        while (self.depth > 0 and self.levels[self.depth - 1] >= block.level) {
+            self.depth -= 1;
+            self.events[n] = .close;
+            n += 1;
+        }
+        self.levels[self.depth] = block.level;
+        self.depth += 1;
+        var heading = block;
+        heading.id = null;
+        heading.attrs = &.{};
+        heading.classes = null;
+        self.events[n] = .{ .open = .{ .tag = .section, .level = block.level, .id = block.id, .attrs = block.attrs, .classes = block.classes } };
+        self.events[n + 1] = .{ .block = heading };
+        return self.events[0 .. n + 2];
+    }
+
+    /// Closes whatever is still open; valid until the next call.
+    pub fn finish(self: *Sections) []const Event {
+        var n: usize = 0;
+        while (self.depth > 0) : (self.depth -= 1) {
+            self.events[n] = .close;
+            n += 1;
+        }
+        return self.events[0..n];
+    }
+};
+
+/// The whole document as one tree, assembled the way a streaming consumer walks the
+/// blocks: survey, then resolve and section each block, then the endnotes.
+pub fn parseDoc(a: Allocator, parser: *Parser) !Node {
+    var blocks: std.ArrayList(Node) = .empty;
+    while (try parser.nextBlock()) |block| try blocks.append(a, block);
+
+    var survey = Survey{ .a = a };
+    for (blocks.items) |block| try survey.visit(block);
+
+    var resolver = Resolver{ .a = a, .defs = parser.defs, .survey = &survey };
+    var sections = Sections{};
+    var tree = TreeBuilder{ .a = a };
+    for (blocks.items) |block| {
+        for (sections.feed(try resolver.resolve(a, block))) |event| try tree.apply(event);
+    }
+    for (sections.finish()) |event| try tree.apply(event);
+    if (try resolver.footnoteSection(a)) |endnotes| try tree.top.append(a, endnotes);
+    return .{ .tag = .section, .children = try tree.top.toOwnedSlice(a) };
+}
+
+const TreeBuilder = struct {
+    const Open = struct { section: Node, children: std.ArrayList(Node) = .empty };
+
+    a: Allocator,
+    stack: std.ArrayList(Open) = .empty,
+    top: std.ArrayList(Node) = .empty,
+
+    fn apply(self: *TreeBuilder, event: Sections.Event) !void {
+        switch (event) {
+            .open => |section| try self.stack.append(self.a, .{ .section = section }),
+            .close => {
+                var open = self.stack.pop().?;
+                open.section.children = try open.children.toOwnedSlice(self.a);
+                try self.append(open.section);
+            },
+            .block => |block| try self.append(block),
+        }
+    }
+
+    fn append(self: *TreeBuilder, node: Node) !void {
+        if (self.stack.items.len > 0) {
+            try self.stack.items[self.stack.items.len - 1].children.append(self.a, node);
+        } else {
+            try self.top.append(self.a, node);
+        }
+    }
+};
+
+fn getNodeText(node: Node) []const u8 {
+    if (node.text.len > 0) return node.text;
+    if (node.children.len == 0) return "";
+    var first: ?[*]const u8 = null;
+    var last_end: [*]const u8 = undefined;
+    for (node.children) |child| {
+        if (child.tag == .str and child.text.len > 0) {
+            if (first == null) first = child.text.ptr;
+            last_end = child.text.ptr + child.text.len;
+        }
+    }
+    if (first) |f| {
+        const len = @intFromPtr(last_end) - @intFromPtr(f);
+        return f[0..len];
+    }
+    return "";
+}
+
+test "sections: a heading closes deeper and equal levels, then opens its own" {
+    var sections = Sections{};
+    const h = struct {
+        fn at(level: u8) Node {
+            return .{ .tag = .heading, .level = level, .id = "x" };
+        }
+    };
+    try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(1)).len); // open, block
+    try std.testing.expectEqual(@as(usize, 1), sections.feed(.{ .tag = .para }).len);
+    try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(3)).len); // nests under 1
+    const back_to_two = sections.feed(h.at(2)); // closes 3, not 1
+    try std.testing.expectEqual(@as(usize, 3), back_to_two.len);
+    try std.testing.expect(back_to_two[0] == .close);
+    try std.testing.expect(back_to_two[1] == .open);
+    try std.testing.expect(back_to_two[1].open.tag == .section);
+    try std.testing.expect(back_to_two[2].block.id == null); // moved onto the section
+    try std.testing.expectEqual(@as(usize, 2), sections.finish().len); // closes 2 and 1
+}
+
+// The two cases where zjot used to differ from djot.js 0.3.2 (checked 2026-10-23):
+// generated ids follow document order wherever the heading sits, and an explicit id
+// met later does not rename an id already generated.
+test "heading ids: document order across nesting, as djot.js" {
+    const zjot = @import("root.zig");
+    const html = try zjot.toHtml(std.testing.allocator, "# Foo\n\n> # Foo\n");
+    defer std.testing.allocator.free(html);
+    try std.testing.expectEqualStrings(
+        "<section id=\"Foo\">\n<h1>Foo</h1>\n<blockquote>\n<h1 id=\"Foo-1\">Foo</h1>\n</blockquote>\n</section>\n",
+        html,
+    );
+}
+
+test "heading ids: a later explicit id does not rename an earlier generated one" {
+    const zjot = @import("root.zig");
+    const html = try zjot.toHtml(std.testing.allocator, "# Foo bar\n\n{#Foo-bar}\nParagraph\n");
+    defer std.testing.allocator.free(html);
+    try std.testing.expectEqualStrings(
+        "<section id=\"Foo-bar\">\n<h1>Foo bar</h1>\n<p id=\"Foo-bar\">Paragraph</p>\n</section>\n",
+        html,
+    );
+}
+
+test "footnote headings: ids follow the endnotes' order, not the definitions'" {
+    const zjot = @import("root.zig");
+    const html = try zjot.toHtml(std.testing.allocator, "[^a]:\n    > # P\n\n[^b]:\n    > # Q\n\ntext[^b] [^a]\n");
+    defer std.testing.allocator.free(html);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<h1 id=\"Q\">Q</h1>") != null);
+    try std.testing.expect(std.mem.indexOf(u8, html, "<h1 id=\"P\">P</h1>") != null);
+}
