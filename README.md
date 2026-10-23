@@ -121,6 +121,7 @@ src/
   main.zig           CLI binary
   node.zig           AST types (Node, Tag, Attr, SourcePos)
   Parser.zig         Block parsing + list helpers + position tracking
+  document.zig       Heading ids, reference resolution, sections
   inline.zig         Inline parsing (emphasis, links, smart quotes, etc.)
   attributes.zig     Attribute parser ({#id .class key=value})
   html.zig           HTML renderer

@@ -22,10 +22,6 @@ pub const Definitions = struct {
     a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
     footnote_defs: std.StringArrayHashMapUnmanaged([]const Node) = .{},
-    // Resolution state read by the document-level functions, not definitions.
-    auto_refs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
-    ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
-    footnote_order: std.ArrayList([]const u8) = .empty,
 };
 
 pub const RefDef = struct {
@@ -91,20 +87,6 @@ fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
         .col = display_col,
         .offset = self.base_offset + offset,
     };
-}
-
-pub fn parseDoc(self: *Parser) !Node {
-    const blocks = try self.parseBlocks();
-    const with_sections = try self.wrapSections(blocks);
-    const resolved = try self.resolveReferences(with_sections);
-
-    if (self.defs.footnote_order.items.len > 0) {
-        var all: std.ArrayList(Node) = .empty;
-        for (resolved) |n| try all.append(self.a, n);
-        try all.append(self.a, try self.buildFootnoteSection());
-        return .{ .tag = .section, .children = try all.toOwnedSlice(self.a) };
-    }
-    return .{ .tag = .section, .children = resolved };
 }
 
 fn parseBlocks(self: *Parser) anyerror![]const Node {
@@ -393,8 +375,7 @@ fn tryBlockQuote(self: *Parser) !?Node {
     const inner_text = try inline_mod.joinLines(self.a, inner_lines.items);
     var inner_parser = Parser.init(self.a, inner_text, self.defs);
     const inner_blocks = try inner_parser.parseBlocks();
-    const tagged = try self.addHeadingIds(inner_blocks);
-    return .{ .tag = .block_quote, .children = tagged };
+    return .{ .tag = .block_quote, .children = inner_blocks };
 }
 
 fn tryFencedDiv(self: *Parser) !?Node {
@@ -949,216 +930,6 @@ fn parseTableRowWithAlign(self: *Parser, line: []const u8, col_aligns: []const C
     return cells.toOwnedSlice(self.a);
 }
 
-// --- Section wrapping, ID generation, reference resolution ---
-
-fn registerExplicitIds(self: *Parser, blocks: []const Node) !void {
-    for (blocks) |block| {
-        if (block.id) |id| try self.defs.ids_used.put(self.a, id, {});
-        if (block.children.len > 0) try self.registerExplicitIds(block.children);
-    }
-}
-
-fn wrapSections(self: *Parser, blocks: []const Node) ![]const Node {
-    try self.registerExplicitIds(blocks);
-
-    var result: std.ArrayList(Node) = .empty;
-    var section_stack: std.ArrayList(SectionInfo) = .empty;
-    defer section_stack.deinit(self.a);
-
-    for (blocks) |block| {
-        if (block.tag == .heading) {
-            const level = block.level;
-            while (section_stack.items.len > 0) {
-                const top = &section_stack.items[section_stack.items.len - 1];
-                if (top.level >= level) {
-                    const sec = try self.closeSection(top);
-                    _ = section_stack.pop();
-                    if (section_stack.items.len > 0) {
-                        try section_stack.items[section_stack.items.len - 1].children.append(self.a, sec);
-                    } else {
-                        try result.append(self.a, sec);
-                    }
-                } else break;
-            }
-
-            const heading_text = getNodeText(block);
-            const heading_id = block.id orelse try self.generateId(heading_text);
-            const dest = try std.fmt.allocPrint(self.a, "#{s}", .{heading_id});
-            try self.defs.auto_refs.put(self.a, heading_text, dest);
-
-            // ID and attributes move from the heading to its wrapping section,
-            // so the section carries the anchor and the heading renders clean.
-            var sec_info = SectionInfo{ .level = level, .id = heading_id, .attrs = block.attrs, .classes = block.classes };
-            var heading_node = block;
-            heading_node.id = null;
-            heading_node.attrs = &.{};
-            heading_node.classes = null;
-            try sec_info.children.append(self.a, heading_node);
-            try section_stack.append(self.a, sec_info);
-        } else {
-            if (section_stack.items.len > 0) {
-                try section_stack.items[section_stack.items.len - 1].children.append(self.a, block);
-            } else {
-                try result.append(self.a, block);
-            }
-        }
-    }
-
-    while (section_stack.items.len > 0) {
-        const top = &section_stack.items[section_stack.items.len - 1];
-        const sec = try self.closeSection(top);
-        _ = section_stack.pop();
-        if (section_stack.items.len > 0) {
-            try section_stack.items[section_stack.items.len - 1].children.append(self.a, sec);
-        } else {
-            try result.append(self.a, sec);
-        }
-    }
-
-    return result.toOwnedSlice(self.a);
-}
-
-const SectionInfo = struct {
-    level: u8 = 0,
-    id: []const u8 = "",
-    children: std.ArrayList(Node) = .empty,
-    attrs: []const Attr = &.{},
-    classes: ?[]const u8 = null,
-};
-
-fn addHeadingIds(self: *Parser, blocks: []const Node) ![]const Node {
-    var result: std.ArrayList(Node) = .empty;
-    for (blocks) |block| {
-        if (block.tag == .heading and block.id == null) {
-            var h = block;
-            const text = getNodeText(block);
-            h.id = try self.generateId(text);
-            try result.append(self.a, h);
-        } else {
-            try result.append(self.a, block);
-        }
-    }
-    return result.toOwnedSlice(self.a);
-}
-
-fn closeSection(self: *Parser, info: *SectionInfo) !Node {
-    return .{ .tag = .section, .id = info.id, .level = info.level, .children = try info.children.toOwnedSlice(self.a), .attrs = info.attrs, .classes = info.classes };
-}
-
-fn generateId(self: *Parser, text: []const u8) ![]const u8 {
-    var buf: std.ArrayList(u8) = .empty;
-    var prev_hyphen = true;
-    for (text) |c| {
-        if (std.ascii.isAlphanumeric(c)) {
-            try buf.append(self.a, c);
-            prev_hyphen = false;
-        } else if (c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '-' or c == '_') {
-            if (!prev_hyphen and buf.items.len > 0) {
-                try buf.append(self.a, '-');
-                prev_hyphen = true;
-            }
-        }
-    }
-    while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '-') _ = buf.pop();
-
-    var base_id = try buf.toOwnedSlice(self.a);
-    if (base_id.len == 0) {
-        base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.defs.ids_used.count() + 1});
-    }
-
-    if (!self.defs.ids_used.contains(base_id)) {
-        try self.defs.ids_used.put(self.a, base_id, {});
-        return base_id;
-    }
-
-    var counter: usize = 1;
-    while (true) : (counter += 1) {
-        const candidate = try std.fmt.allocPrint(self.a, "{s}-{d}", .{ base_id, counter });
-        if (!self.defs.ids_used.contains(candidate)) {
-            try self.defs.ids_used.put(self.a, candidate, {});
-            return candidate;
-        }
-    }
-}
-
-fn resolveReferences(self: *Parser, nodes: []const Node) ![]const Node {
-    var result: std.ArrayList(Node) = .empty;
-    for (nodes) |node| {
-        var n = node;
-        if ((n.tag == .link or n.tag == .image) and n.destination == null) {
-            if (n.reference) |ref| {
-                const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(self.a, n) catch "");
-                const label = inline_mod.normalizeLabel(self.a, raw_label) catch raw_label;
-                if (self.defs.ref_defs.get(label)) |def| {
-                    n.destination = def.url;
-                    if (def.attrs) |ba| n = inline_mod.mergeRefAttrs(n, ba, self.a);
-                } else if (self.defs.auto_refs.get(label)) |dest| {
-                    n.destination = dest;
-                }
-            }
-        }
-        if (n.tag == .footnote_reference) {
-            const label = n.text;
-            var found = false;
-            for (self.defs.footnote_order.items) |existing| {
-                if (std.mem.eql(u8, existing, label)) {
-                    found = true;
-                    break;
-                }
-            }
-            if (!found) try self.defs.footnote_order.append(self.a, label);
-            var fn_num: usize = 0;
-            for (self.defs.footnote_order.items, 1..) |existing, idx| {
-                if (std.mem.eql(u8, existing, label)) {
-                    fn_num = idx;
-                    break;
-                }
-            }
-            n.text = try std.fmt.allocPrint(self.a, "{d}", .{fn_num});
-            n.id = try std.fmt.allocPrint(self.a, "fnref{d}", .{fn_num});
-            n.destination = try std.fmt.allocPrint(self.a, "#fn{d}", .{fn_num});
-        }
-        if (n.children.len > 0) n.children = try self.resolveReferences(n.children);
-        try result.append(self.a, n);
-    }
-    return result.toOwnedSlice(self.a);
-}
-
-fn buildFootnoteSection(self: *Parser) !Node {
-    var items: std.ArrayList(Node) = .empty;
-    var fn_idx: usize = 0;
-    while (fn_idx < self.defs.footnote_order.items.len) : (fn_idx += 1) {
-        const label = self.defs.footnote_order.items[fn_idx];
-        const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
-        const content = try self.resolveReferences(raw_content);
-        const idx = items.items.len + 1;
-        const fn_id = try std.fmt.allocPrint(self.a, "fn{d}", .{idx});
-        const backref = try std.fmt.allocPrint(self.a, "#fnref{d}", .{idx});
-        var fn_children: std.ArrayList(Node) = .empty;
-        const backlink = Node{
-            .tag = .link,
-            .destination = backref,
-            .text = "\u{21a9}\u{fe0e}",
-            .attrs = &.{.{ .key = "role", .value = "doc-backlink" }},
-        };
-        for (content, 0..) |block, bi| {
-            if (bi == content.len - 1 and block.tag == .para) {
-                var new_kids: std.ArrayList(Node) = .empty;
-                for (block.children) |child| try new_kids.append(self.a, child);
-                try new_kids.append(self.a, backlink);
-                try fn_children.append(self.a, .{ .tag = .para, .children = try new_kids.toOwnedSlice(self.a) });
-            } else {
-                try fn_children.append(self.a, block);
-            }
-        }
-        if (content.len == 0 or content[content.len - 1].tag != .para) {
-            try fn_children.append(self.a, .{ .tag = .para, .children = try self.a.dupe(Node, &.{backlink}) });
-        }
-        try items.append(self.a, .{ .tag = .list_item, .id = fn_id, .children = try fn_children.toOwnedSlice(self.a) });
-    }
-    return .{ .tag = .footnote, .children = try items.toOwnedSlice(self.a), .attrs = &.{.{ .key = "role", .value = "doc-endnotes" }} };
-}
-
 // --- Utility functions ---
 
 pub fn isBlank(line: []const u8) bool {
@@ -1278,24 +1049,6 @@ fn isFencedDivStart(line: []const u8) ?DivInfo {
     if (colons < 3) return null;
     const after = std.mem.trim(u8, trimmed[colons..], " \t");
     return .{ .fence = trimmed[0..colons], .class = if (after.len > 0) after else null };
-}
-
-fn getNodeText(node: Node) []const u8 {
-    if (node.text.len > 0) return node.text;
-    if (node.children.len == 0) return "";
-    var first: ?[*]const u8 = null;
-    var last_end: [*]const u8 = undefined;
-    for (node.children) |child| {
-        if (child.tag == .str and child.text.len > 0) {
-            if (first == null) first = child.text.ptr;
-            last_end = child.text.ptr + child.text.len;
-        }
-    }
-    if (first) |f| {
-        const len = @intFromPtr(last_end) - @intFromPtr(f);
-        return f[0..len];
-    }
-    return "";
 }
 
 fn mergeBlockAttrs(a: Allocator, existing: ?BlockAttrs, new_attrs: BlockAttrs) !BlockAttrs {
