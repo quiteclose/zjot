@@ -17,7 +17,7 @@ zjot uses a single-phase recursive descent approach: one pass builds the AST dir
 
 ```
 src/
-  root.zig           Library root: public API (toHtml, toAst, toAstOpts)
+  root.zig           Library root: public API (render, toHtml, toAst, toAstOpts)
   main.zig           CLI binary (--ast, --sourcepos, file/stdin)
   node.zig           Node, Tag, Attr, SourcePos, CellAlign
   Parser.zig         Block parsing, sub-parser coordination, list helpers
@@ -35,10 +35,10 @@ test/
 
 ### Module responsibilities
 
-- **root.zig** -- Public API. Exposes `toHtml`, `toAst`, `toAstOpts`. Creates a `Parser`, calls `document.parseDoc`, and renders the result.
+- **root.zig** -- Public API. `render(a, input, writer, opts)` streams the document block by block: pass one surveys with `nextBlock` and a block arena reset after every block; pass two resolves, sections and writes each block the same way. Only the line index, `Definitions` and `Survey` live for the document. `toHtml`, `toAst`, `toAstOpts` are `render` into an owned slice.
 - **node.zig** -- AST types. `Tag` enum (46 tags), `Node` struct with children, text, attributes, source positions. `Attr`, `SourcePos`, `CellAlign`.
 - **Parser.zig** -- Block-level parsing, block-local: `nextBlock` yields one block at a time and never generates ids or resolves references. Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime) shared by pointer with sub-parsers. Contains `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
-- **document.zig** -- Document-level state, split by lifetime. `Survey` visits every block once and assigns heading ids (djot.js rule: document order, each generated id avoiding every id seen so far) and auto references. `Resolver` resolves one block at a time against the definitions and the survey (ids by ordinal, links by label, footnote numbers by first use) and builds the endnotes. `Sections` turns headings into open/close events without allocating. `parseDoc` drives the three into one tree.
+- **document.zig** -- Document-level state, split by lifetime. `Survey` visits every block once and assigns heading ids (djot.js rule: document order, each generated id avoiding every id seen so far) and auto references. `Resolver` resolves one block at a time against the definitions and the survey (ids by ordinal, links by label, footnote numbers by first use) and builds the endnotes. `Sections` turns headings into open/close events without allocating. `root.render` drives the three.
 - **inline.zig** -- Inline parsing. `parseInlineContent` with opener stack and `resolveItems`. Handlers for emphasis, links, smart quotes, super/subscript, insert/delete/mark, math, symbols, raw inline, autolinks.
 - **attributes.zig** -- Attribute parsing. `AttrParser` state machine for `{#id .class key=value}` syntax. `BlockAttrs` struct. Block and inline attribute parsing entry points.
 - **html.zig** -- HTML rendering. Walks the `Node` tree and produces HTML string output.
@@ -56,7 +56,7 @@ test/
 
 4. **Proper error handling** -- Public API uses Zig error unions (`!` return types). The parser degrades gracefully on malformed input but propagates allocation failures.
 
-5. **Exposed AST** -- The `Node` type is public so consumers like Wig can walk the tree directly rather than being limited to string output.
+5. **Render-only surface** -- The public API is `render` and the `to*` wrappers. `Node` is the currency between the parser, `document.zig` and the renderers, not an exported tree; a tree API, if one is ever needed, would be built on `Survey`, `Resolver` and `Sections` the way `render` is.
 
 ## Conventions
 

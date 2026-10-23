@@ -100,8 +100,12 @@ const ast_pos = try zjot.toAstOpts(allocator, input, true);
 | `toHtml(allocator, input) ![]const u8` | Parse Djot and render to HTML |
 | `toAst(allocator, input) ![]const u8` | Parse Djot and render to AST text |
 | `toAstOpts(allocator, input, sourcepos) ![]const u8` | Parse Djot and render to AST text with optional source positions |
+| `render(allocator, input, writer, opts) !void` | Render to a `std.Io.Writer` block by block; `opts` is `.{ .mode = .html \| .ast, .sourcepos = bool }` |
 
-All functions return owned slices that should be freed by the caller.
+The `to*` functions return owned slices that should be freed by the caller. `render` keeps
+nothing past the call. Nodes are freed block by block; what lives for the whole call is the
+line index, the definitions (all footnote content included) and the heading survey, so
+memory tracks the input and the largest block rather than the document's structure.
 
 ## Tests
 

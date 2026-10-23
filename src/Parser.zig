@@ -22,6 +22,9 @@ pub const Definitions = struct {
     a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
     footnote_defs: std.StringArrayHashMapUnmanaged([]const Node) = .{},
+    /// Set by a consumer that parses the input a second time: definitions are then
+    /// consumed from the input but not recorded again.
+    sealed: bool = false,
 };
 
 pub const RefDef = struct {
@@ -41,31 +44,42 @@ base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
 
-pub fn init(a: Allocator, input: []const u8, defs: *Definitions) Parser {
-    var p = Parser{ .a = a, .input = input, .defs = defs };
-    // OOM here leaves lines empty; parseBlocks sees nothing and returns an empty doc.
-    p.splitLines() catch {};
-    return p;
+/// The line index of an input: one slice per line and each line's byte offset. A
+/// streaming consumer builds it once and keeps it for the document while the
+/// parser's own allocations come and go per block.
+pub const LineIndex = struct {
+    lines: []const []const u8 = &.{},
+    offsets: []const u32 = &.{},
+};
+
+pub fn indexLines(a: Allocator, input: []const u8) !LineIndex {
+    // Sized exactly: the index is the largest thing a streaming consumer keeps.
+    // A trailing newline would produce an empty final line; it is not counted, so
+    // line counts match the visible content.
+    var count = std.mem.count(u8, input, "\n") + 1;
+    if (input.len == 0 or input[input.len - 1] == '\n') count -= 1;
+    const lines = try a.alloc([]const u8, count);
+    const offsets = try a.alloc(u32, count);
+    var offset: u32 = 0;
+    var it = std.mem.splitScalar(u8, input, '\n');
+    for (lines, offsets) |*line, *line_offset| {
+        line.* = it.next().?;
+        line_offset.* = offset;
+        offset += @intCast(line.*.len + 1);
+    }
+    return .{ .lines = lines, .offsets = offsets };
 }
 
-fn splitLines(self: *Parser) !void {
-    var list: std.ArrayList([]const u8) = .empty;
-    var offsets: std.ArrayList(u32) = .empty;
-    var offset: u32 = 0;
-    var it = std.mem.splitScalar(u8, self.input, '\n');
-    while (it.next()) |line| {
-        try list.append(self.a, line);
-        try offsets.append(self.a, offset);
-        offset += @intCast(line.len + 1);
-    }
-    // A trailing newline produces an empty final element; discard it so
-    // line counts match the visible content.
-    if (list.items.len > 0 and list.items[list.items.len - 1].len == 0) {
-        _ = list.pop();
-        _ = offsets.pop();
-    }
-    self.lines = try list.toOwnedSlice(self.a);
-    self.line_offsets = try offsets.toOwnedSlice(self.a);
+pub fn init(a: Allocator, input: []const u8, defs: *Definitions) Parser {
+    // OOM here leaves lines empty; parseBlocks sees nothing and returns an empty doc.
+    const index = indexLines(a, input) catch LineIndex{};
+    return initIndexed(a, input, index, defs);
+}
+
+/// A parser over an index built elsewhere, so the index can outlive what the parser
+/// allocates from `a`.
+pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Definitions) Parser {
+    return .{ .a = a, .input = input, .lines = index.lines, .line_offsets = index.offsets, .defs = defs };
 }
 
 fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
@@ -421,6 +435,7 @@ fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
         dest_text = try buf.toOwnedSlice(self.a);
     }
 
+    if (self.defs.sealed) return {};
     const da = self.defs.a;
     try self.defs.ref_defs.put(da, try da.dupe(u8, label), .{
         .url = try da.dupe(u8, dest_text),
@@ -460,6 +475,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
         } else break;
     }
 
+    if (self.defs.sealed) return {};
     // The footnote's blocks are rendered at the end of the document, so they are
     // parsed with the definitions' allocator rather than the current block's.
     const da = self.defs.a;
