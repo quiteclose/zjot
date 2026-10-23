@@ -1155,3 +1155,407 @@ A tab-indented heading interrupts a block quote's paragraph.
 <h1>H</h1>
 </section>
 ````
+
+A list item's paragraph continues lazily.
+````
+- item
+lazy
+.
+<ul>
+<li>
+item
+lazy
+</li>
+</ul>
+````
+
+A line indented past the marker is item content, whatever it looks like.
+````
+- item
+ # H
+.
+<ul>
+<li>
+item
+# H
+</li>
+</ul>
+````
+
+A list item's paragraph after a blank line continues lazily.
+````
+- item
+
+  para
+lazy
+.
+<ul>
+<li>
+<p>item</p>
+<p>para
+lazy</p>
+</li>
+</ul>
+````
+
+A heading after a blank line ends the list.
+````
+- item
+
+  para
+# H
+.
+<ul>
+<li>
+<p>item</p>
+<p>para</p>
+</li>
+</ul>
+<section id="H">
+<h1>H</h1>
+</section>
+````
+
+A closed code block after a blank line in a list item takes no lazy continuation.
+````
+- item
+
+  ```
+  code
+  ```
+lazy
+.
+<ul>
+<li>
+<p>item</p>
+<pre><code>code
+</code></pre>
+</li>
+</ul>
+<p>lazy</p>
+````
+
+A thematic break after a blank line in a list item takes no lazy continuation.
+````
+- item
+
+  ***
+lazy
+.
+<ul>
+<li>
+<p>item</p>
+<hr>
+</li>
+</ul>
+<p>lazy</p>
+````
+
+A heading interrupts a list item's paragraph.
+````
+- item
+# H
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<section id="H">
+<h1>H</h1>
+</section>
+````
+
+A heading interrupts an ordered list item's paragraph.
+````
+1. item
+# H
+.
+<ol>
+<li>
+item
+</li>
+</ol>
+<section id="H">
+<h1>H</h1>
+</section>
+````
+
+A block quote interrupts a list item's paragraph.
+````
+- item
+> q
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<blockquote>
+<p>q</p>
+</blockquote>
+````
+
+A code fence interrupts a list item's paragraph.
+````
+- item
+```
+code
+```
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<pre><code>code
+</code></pre>
+````
+
+A thematic break interrupts a list item's paragraph.
+````
+- item
+***
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<hr>
+````
+
+A definition list interrupts a list item's paragraph.
+````
+- item
+: term
+
+  def
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<dl>
+<dt>term</dt>
+<dd>
+<p>def</p>
+</dd>
+</dl>
+````
+
+A block attribute line interrupts a list item's paragraph.
+````
+- item
+{.c}
+para
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<p class="c">para</p>
+````
+
+A table row interrupts a list item's paragraph.
+````
+- item
+| a |
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+````
+
+A fenced div interrupts a list item's paragraph.
+````
+- item
+::: d
+content
+:::
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<div class="d">
+<p>content</p>
+</div>
+````
+
+A reference definition interrupts a list item's paragraph.
+````
+- item
+[r]: /url
+
+[r][r]
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<p><a href="/url">r</a></p>
+````
+
+A footnote definition interrupts a list item's paragraph.
+````
+- item
+[^n]: note
+
+x[^n]
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A blank line before a sublist keeps the list tight.
+````
+- a
+
+  - b
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+b
+</li>
+</ul>
+</li>
+</ul>
+````
+
+A blank line before a sublist keeps the list tight across items.
+````
+- a
+
+  - b
+- c
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+b
+</li>
+</ul>
+</li>
+<li>
+c
+</li>
+</ul>
+````
+
+A blank line before a code block makes the list loose.
+````
+- a
+
+  ```
+  c
+  ```
+.
+<ul>
+<li>
+<p>a</p>
+<pre><code>c
+</code></pre>
+</li>
+</ul>
+````
+
+A blank line before a block quote makes the list loose.
+````
+- a
+
+  > q
+.
+<ul>
+<li>
+<p>a</p>
+<blockquote>
+<p>q</p>
+</blockquote>
+</li>
+</ul>
+````
+
+A blank line before a table makes the list loose.
+````
+- a
+
+  | x |
+.
+<ul>
+<li>
+<p>a</p>
+<table>
+<tr>
+<td>x</td>
+</tr>
+</table>
+</li>
+</ul>
+````
+
+A reference definition after a blank line in a list item takes no lazy continuation.
+````
+- a
+
+  [r]: /u
+lazy
+
+[r][r]
+.
+<ul>
+<li>
+<p>a</p>
+</li>
+</ul>
+<p>lazy</p>
+<p><a href="/u">r</a></p>
+````
+
+A blank line before a block quote in an empty item makes the list loose.
+````
+- 
+
+  > q
+- b
+.
+<ul>
+<li>
+<blockquote>
+<p>q</p>
+</blockquote>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+

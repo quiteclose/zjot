@@ -542,6 +542,7 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             if (m.indent <= list_indent) break;
         }
         const next_indent = countIndent(next);
+        if (next_indent <= list_indent and try self.isBlockStartAt(self.pos)) break;
         const strip: u32 = if (next_indent >= content_col) @intCast(content_col) else @intCast(next_indent);
         try content.para_lines.append(self.a, next[strip..]);
         try content.para_orig_lines.append(self.a, self.pos);
@@ -549,13 +550,13 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         self.pos += 1;
     }
 
-    var last_was_blank = true;
+    var paragraph = OpenParagraph{};
     while (self.pos < self.lines.len and content.item_saw_blank) {
         const next = self.lines[self.pos];
         if (isBlank(next)) {
             try content.block_lines.append(self.a, "");
+            paragraph.feed(self.a, "");
             self.pos += 1;
-            last_was_blank = true;
             continue;
         }
         const next_indent = countIndent(next);
@@ -566,14 +567,15 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             else
                 @min(next_indent, content_col);
             try content.block_lines.append(self.a, next[strip..]);
+            paragraph.feed(self.a, next[strip..]);
             self.pos += 1;
-            last_was_blank = false;
             continue;
         }
-        if (!last_was_blank and !(try self.isBlockStartAt(self.pos))) {
-            try content.block_lines.append(self.a, std.mem.trimStart(u8, next, " \t"));
+        if (paragraph.open and !(try self.isBlockStartAt(self.pos))) {
+            const lazy = std.mem.trimStart(u8, next, " \t");
+            try content.block_lines.append(self.a, lazy);
+            paragraph.feed(self.a, lazy);
             self.pos += 1;
-            last_was_blank = false;
             continue;
         }
         break;
@@ -616,11 +618,16 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
 
 fn updateListTightness(is_tight: *bool, saw_blank_between: *bool, content: *const ItemContent, inner_blocks: []const Node) void {
     if (content.item_saw_blank and content.block_lines.items.len > 0) {
-        var para_count: usize = 0;
-        for (inner_blocks) |b| {
-            if (b.tag == .para) para_count += 1;
+        // A blank line before anything but a sublist makes the list loose, as djot.js;
+        // a definition, which leaves no block behind, counts as "anything".
+        const lead: usize = if (content.para_lines.items.len > 0 and content.para_lines.items[0].len > 0) 1 else 0;
+        if (inner_blocks.len <= lead) is_tight.* = false;
+        for (inner_blocks[@min(lead, inner_blocks.len)..]) |b| {
+            switch (b.tag) {
+                .bullet_list, .ordered_list, .task_list => {},
+                else => is_tight.* = false,
+            }
         }
-        if (para_count > 1) is_tight.* = false;
     }
     if (content.item_saw_blank and content.block_lines.items.len == 0) saw_blank_between.* = true;
 }
