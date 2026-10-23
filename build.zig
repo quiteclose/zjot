@@ -55,6 +55,35 @@ pub fn build(b: *std.Build) void {
     run_stdin.expectStdErrEqual("");
     cli_test_step.dependOn(&run_stdin.step);
 
+    const run_help = b.addRunArtifact(exe);
+    run_help.addArg("--help");
+    run_help.expectExitCode(0);
+    run_help.expectStdOutMatch("Usage: zjot [OPTIONS] [FILE]\n");
+    run_help.expectStdErrEqual("");
+    cli_test_step.dependOn(&run_help.step);
+
+    const run_bogus = b.addRunArtifact(exe);
+    run_bogus.addArg("--bogus");
+    run_bogus.expectExitCode(1);
+    run_bogus.expectStdOutEqual("");
+    run_bogus.expectStdErrEqual("zjot: unknown option: --bogus\n");
+    cli_test_step.dependOn(&run_bogus.step);
+
+    const run_missing = b.addRunArtifact(exe);
+    run_missing.addArg("/nope.dj");
+    run_missing.expectExitCode(1);
+    run_missing.expectStdOutEqual("");
+    run_missing.expectStdErrEqual("zjot: file not found: /nope.dj\n");
+    cli_test_step.dependOn(&run_missing.step);
+
+    const run_ast = b.addRunArtifact(exe);
+    run_ast.addArg("--ast");
+    run_ast.addFileArg(b.path("test/cli/hi.dj"));
+    run_ast.expectExitCode(0);
+    run_ast.expectStdOutEqual("doc\n  section id=\"Hi\"\n    heading level=1\n      str text=\"Hi\"\n");
+    run_ast.expectStdErrEqual("");
+    cli_test_step.dependOn(&run_ast.step);
+
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
