@@ -6,7 +6,7 @@ const Allocator = std.mem.Allocator;
 const zjot = @import("zjot");
 
 const Options = struct {
-    mode: enum { html, ast } = .html,
+    mode: zjot.Mode = .html,
     sourcepos: bool = false,
     file_path: ?[]const u8 = null,
 };
@@ -91,13 +91,15 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer a.free(input);
 
-    const output = switch (opts.mode) {
-        .html => try zjot.toHtml(a, input),
-        .ast => try zjot.toAstOpts(a, input, opts.sourcepos),
+    // Rendered straight onto stdout, a block at a time, so the output is never held whole.
+    var out_buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writer(init.io, &out_buf);
+    zjot.render(a, input, &w.interface, .{ .mode = opts.mode, .sourcepos = opts.sourcepos }) catch |err| switch (err) {
+        error.WriteFailed => return writeFailed(init.io),
+        else => |e| return e,
     };
-    defer a.free(output);
-
-    return printOut(init.io, output);
+    w.interface.flush() catch return writeFailed(init.io);
+    return 0;
 }
 
 fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
@@ -123,8 +125,8 @@ fn stdinIsOpen() bool {
     };
 }
 
-/// Writes to stdout and returns the exit code: a failed write (a closed pipe, a full
-/// disk) is reported in one line rather than as an error trace.
+/// Writes a whole message to stdout and returns the exit code; a failed write (a
+/// closed pipe, a full disk) is reported in one line rather than as an error trace.
 fn printOut(io: std.Io, bytes: []const u8) !u8 {
     var buf: [4096]u8 = undefined;
     var w = std.Io.File.stdout().writer(io, &buf);
