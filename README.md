@@ -20,7 +20,7 @@ zig build
 zjot [OPTIONS] [--] [FILE]
 ```
 
-If `FILE` is omitted or is `-`, reads from stdin. `--` ends the options, so a file whose name starts with `-` can follow it. The whole input is read into memory; there is no size limit.
+If `FILE` is omitted or is `-`, reads from stdin. `--` ends the options, so a file whose name starts with `-` can follow it. The whole input is read into memory and the output is written block by block, so memory tracks the input and the largest block rather than the document's structure. There is no size limit. If zjot exits non-zero part-way through a document, stdout may hold a truncated one.
 
 **Options:**
 
