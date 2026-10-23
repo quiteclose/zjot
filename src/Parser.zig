@@ -367,16 +367,19 @@ fn tryBlockQuote(self: *Parser) !?Node {
     if (!startsBlockQuote(line)) return null;
 
     var inner_lines: std.ArrayList([]const u8) = .empty;
+    var paragraph = OpenParagraph{};
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
         if (startsBlockQuote(l)) {
-            try inner_lines.append(self.a, stripBlockQuotePrefix(l));
+            const inner = stripBlockQuotePrefix(l);
+            try inner_lines.append(self.a, inner);
+            paragraph.feed(self.a, inner);
             self.pos += 1;
-        } else if (!isBlank(l) and inner_lines.items.len > 0 and
-            !isBlank(inner_lines.items[inner_lines.items.len - 1]) and
-            !self.isClosingFence(l))
+        } else if (!isBlank(l) and paragraph.open and !self.isClosingFence(l) and
+            !try self.isBlockStartAt(self.pos))
         {
             try inner_lines.append(self.a, l);
+            paragraph.feed(self.a, l);
             self.pos += 1;
         } else {
             break;

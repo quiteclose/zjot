@@ -775,3 +775,383 @@ lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
 </section>
 ````
 
+A block quote's paragraph continues lazily.
+````
+> quote
+lazy
+.
+<blockquote>
+<p>quote
+lazy</p>
+</blockquote>
+````
+
+A nested block quote's paragraph continues lazily.
+````
+> > inner
+lazy
+.
+<blockquote>
+<blockquote>
+<p>inner
+lazy</p>
+</blockquote>
+</blockquote>
+````
+
+A list item inside a block quote continues lazily.
+````
+> - item
+lazy
+.
+<blockquote>
+<ul>
+<li>
+item
+lazy
+</li>
+</ul>
+</blockquote>
+````
+
+A paragraph after a blank line in a block quote continues lazily.
+````
+> quote
+>
+> para
+lazy
+.
+<blockquote>
+<p>quote</p>
+<p>para
+lazy</p>
+</blockquote>
+````
+
+A heading in a block quote continues lazily.
+````
+> quote
+>
+> # H
+lazy
+.
+<blockquote>
+<p>quote</p>
+<h1 id="H-lazy">H
+lazy</h1>
+</blockquote>
+````
+
+A code fence inside a block quote's open paragraph is text; the paragraph continues lazily.
+````
+> quote
+> ```
+> code
+lazy
+.
+<blockquote>
+<p>quote
+<code>
+code
+lazy</code></p>
+</blockquote>
+````
+
+A closed code fence inside a block quote's open paragraph is text; the paragraph continues lazily.
+````
+> quote
+> ```
+> code
+> ```
+lazy
+.
+<blockquote>
+<p>quote
+<code>
+code
+</code>
+lazy</p>
+</blockquote>
+````
+
+A paragraph after a table in a block quote continues lazily.
+````
+> | a |
+> para
+lazy
+.
+<blockquote>
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>para
+lazy</p>
+</blockquote>
+````
+
+A closed code block in a block quote takes no lazy continuation.
+````
+> quote
+>
+> ```
+> code
+> ```
+lazy
+.
+<blockquote>
+<p>quote</p>
+<pre><code>code
+</code></pre>
+</blockquote>
+<p>lazy</p>
+````
+
+A table in a block quote takes no lazy continuation.
+````
+> quote
+>
+> | a |
+lazy
+.
+<blockquote>
+<p>quote</p>
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+</blockquote>
+<p>lazy</p>
+````
+
+A heading interrupts a block quote's paragraph.
+````
+> quote
+# H
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<section id="H">
+<h1>H</h1>
+</section>
+````
+
+A bullet list interrupts a block quote's paragraph.
+````
+> quote
+- item
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<ul>
+<li>
+item
+</li>
+</ul>
+````
+
+An ordered list interrupts a block quote's paragraph.
+````
+> quote
+1. item
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<ol>
+<li>
+item
+</li>
+</ol>
+````
+
+A code fence interrupts a block quote's paragraph.
+````
+> quote
+```
+code
+```
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<pre><code>code
+</code></pre>
+````
+
+A thematic break interrupts a block quote's paragraph.
+````
+> quote
+***
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<hr>
+````
+
+A definition list interrupts a block quote's paragraph.
+````
+> quote
+: term
+
+  def
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<dl>
+<dt>term</dt>
+<dd>
+<p>def</p>
+</dd>
+</dl>
+````
+
+A block attribute line interrupts a block quote's paragraph.
+````
+> quote
+{.c}
+para
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<p class="c">para</p>
+````
+
+A table row interrupts a block quote's paragraph.
+````
+> quote
+| a |
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+````
+
+A fenced div interrupts a block quote's paragraph.
+````
+> quote
+::: d
+c
+:::
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<div class="d">
+<p>c</p>
+</div>
+````
+
+A reference definition interrupts a block quote's paragraph.
+````
+> quote
+[r]: /u
+
+[r][r]
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<p><a href="/u">r</a></p>
+````
+
+A footnote definition interrupts a block quote's paragraph.
+````
+> quote
+[^n]: note
+
+x[^n]
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A reference definition in a block quote takes no lazy continuation.
+````
+> [r]: /u
+lazy
+
+[r][r]
+.
+<blockquote>
+</blockquote>
+<p>lazy</p>
+<p><a href="/u">r</a></p>
+````
+
+A footnote definition with text in a block quote continues lazily into the footnote.
+````
+> [^n]: note
+lazy
+
+x[^n]
+.
+<blockquote>
+</blockquote>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An empty footnote definition in a block quote takes no lazy continuation.
+````
+> [^n]:
+lazy
+
+x[^n]
+.
+<blockquote>
+</blockquote>
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A tab-indented heading interrupts a block quote's paragraph.
+````
+> quote
+	# H
+.
+<blockquote>
+<p>quote</p>
+</blockquote>
+<section id="H">
+<h1>H</h1>
+</section>
+````
