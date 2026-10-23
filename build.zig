@@ -99,6 +99,28 @@ pub fn build(b: *std.Build) void {
     run_dir.expectStdErrEqual("zjot: src: IsDir\n");
     cli_test_step.dependOn(&run_dir.step);
 
+    const run_dash = b.addRunArtifact(golden_exe);
+    run_dash.addArg("-");
+    run_dash.setStdIn(.{ .bytes = "# Hi\n" });
+    run_dash.expectExitCode(0);
+    run_dash.expectStdOutEqual(html);
+    run_dash.expectStdErrEqual("");
+    cli_test_step.dependOn(&run_dash.step);
+
+    const run_extra = b.addRunArtifact(golden_exe);
+    run_extra.addArgs(&.{ "a.dj", "b.dj" });
+    run_extra.expectExitCode(1);
+    run_extra.expectStdOutEqual("");
+    run_extra.expectStdErrEqual("zjot: unexpected argument: b.dj\n");
+    cli_test_step.dependOn(&run_extra.step);
+
+    const run_sourcepos = b.addRunArtifact(golden_exe);
+    run_sourcepos.addArg("--sourcepos");
+    run_sourcepos.expectExitCode(1);
+    run_sourcepos.expectStdOutEqual("");
+    run_sourcepos.expectStdErrEqual("zjot: --sourcepos requires --ast\n");
+    cli_test_step.dependOn(&run_sourcepos.step);
+
     const run_ast = b.addRunArtifact(golden_exe);
     run_ast.addArg("--ast");
     run_ast.addFileArg(b.path("test/cli/hi.dj"));
