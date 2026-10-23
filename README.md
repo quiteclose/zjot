@@ -20,7 +20,7 @@ zig build
 zjot [OPTIONS] [FILE]
 ```
 
-If `FILE` is omitted, reads from stdin.
+If `FILE` is omitted, reads from stdin. The whole input is read into memory; there is no size limit.
 
 **Options:**
 
