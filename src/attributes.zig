@@ -59,6 +59,19 @@ pub const BlockAttrs = struct {
         }
         return result;
     }
+
+    /// A deep copy in `a`, sharing no bytes with the source or the text it was parsed from.
+    pub fn dupe(self: BlockAttrs, a: Allocator) !BlockAttrs {
+        const attrs = try a.alloc(Attr, self.attrs.len);
+        for (self.attrs, attrs) |src, *dst| {
+            dst.* = .{ .key = try a.dupe(u8, src.key), .value = try a.dupe(u8, src.value) };
+        }
+        return .{
+            .id = if (self.id) |id| try a.dupe(u8, id) else null,
+            .classes = if (self.classes) |c| try a.dupe(u8, c) else null,
+            .attrs = attrs,
+        };
+    }
 };
 
 pub const AttrParseStatus = enum { done, fail, @"continue" };

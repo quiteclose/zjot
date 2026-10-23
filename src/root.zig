@@ -12,8 +12,8 @@ pub fn toHtml(a: Allocator, input: []const u8) ![]const u8 {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const aa = arena.allocator();
-    var shared = Parser.SharedState{};
-    var parser = Parser.init(aa, input, &shared);
+    var defs = Parser.Definitions{ .a = aa };
+    var parser = Parser.init(aa, input, &defs);
     const doc = try parser.parseDoc();
     var out: std.ArrayList(u8) = .empty;
     try html.renderNode(aa, &out, doc);
@@ -29,8 +29,8 @@ pub fn toAstOpts(a: Allocator, input: []const u8, sourcepos: bool) ![]const u8 {
     var arena = std.heap.ArenaAllocator.init(a);
     defer arena.deinit();
     const aa = arena.allocator();
-    var shared = Parser.SharedState{};
-    var parser = Parser.init(aa, input, &shared);
+    var defs = Parser.Definitions{ .a = aa };
+    var parser = Parser.init(aa, input, &defs);
     parser.track_pos = sourcepos;
     const doc = try parser.parseDoc();
     var out: std.ArrayList(u8) = .empty;
@@ -41,4 +41,5 @@ pub fn toAstOpts(a: Allocator, input: []const u8, sourcepos: bool) ![]const u8 {
 
 test {
     _ = @import("test_runner.zig");
+    _ = Parser;
 }
