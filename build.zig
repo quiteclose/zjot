@@ -56,50 +56,50 @@ pub fn build(b: *std.Build) void {
     // expectExitCode goes first: expectStdOut* adds an exit-0 check if none exists yet.
     const html = "<section id=\"Hi\">\n<h1>Hi</h1>\n</section>\n";
 
-    const run_file = b.addRunArtifact(golden_exe);
-    run_file.addFileArg(b.path("test/cli/hi.dj"));
+    const run_file = goldenRun(b, golden_exe);
+    run_file.addArg("test/cli/hi.dj");
+    run_file.addFileInput(b.path("test/cli/hi.dj")); // keeps the fixture a cache input
     run_file.expectExitCode(0);
     run_file.expectStdOutEqual(html);
     run_file.expectStdErrEqual(""); // Debug builds report leaks here.
     cli_test_step.dependOn(&run_file.step);
 
-    const run_stdin = b.addRunArtifact(golden_exe);
+    const run_stdin = goldenRun(b, golden_exe);
     run_stdin.setStdIn(.{ .bytes = "# Hi\n" });
     run_stdin.expectExitCode(0);
     run_stdin.expectStdOutEqual(html);
     run_stdin.expectStdErrEqual("");
     cli_test_step.dependOn(&run_stdin.step);
 
-    const run_help = b.addRunArtifact(golden_exe);
+    const run_help = goldenRun(b, golden_exe);
     run_help.addArg("--help");
     run_help.expectExitCode(0);
     run_help.expectStdOutMatch("Usage: zjot [OPTIONS] [--] [FILE]\n");
     run_help.expectStdErrEqual("");
     cli_test_step.dependOn(&run_help.step);
 
-    const run_bogus = b.addRunArtifact(golden_exe);
+    const run_bogus = goldenRun(b, golden_exe);
     run_bogus.addArg("--bogus");
     run_bogus.expectExitCode(1);
     run_bogus.expectStdOutEqual("");
     run_bogus.expectStdErrEqual("zjot: unknown option: --bogus\n");
     cli_test_step.dependOn(&run_bogus.step);
 
-    const run_missing = b.addRunArtifact(golden_exe);
-    run_missing.addArg("/nope.dj");
+    const run_missing = goldenRun(b, golden_exe);
+    run_missing.addArg("nope.dj");
     run_missing.expectExitCode(1);
     run_missing.expectStdOutEqual("");
-    run_missing.expectStdErrEqual("zjot: file not found: /nope.dj\n");
+    run_missing.expectStdErrEqual("zjot: file not found: nope.dj\n");
     cli_test_step.dependOn(&run_missing.step);
 
-    const run_dir = b.addRunArtifact(golden_exe);
-    run_dir.setCwd(b.path("."));
+    const run_dir = goldenRun(b, golden_exe);
     run_dir.addArg("src");
     run_dir.expectExitCode(1);
     run_dir.expectStdOutEqual("");
     run_dir.expectStdErrEqual("zjot: src: IsDir\n");
     cli_test_step.dependOn(&run_dir.step);
 
-    const run_dash = b.addRunArtifact(golden_exe);
+    const run_dash = goldenRun(b, golden_exe);
     run_dash.addArg("-");
     run_dash.setStdIn(.{ .bytes = "# Hi\n" });
     run_dash.expectExitCode(0);
@@ -107,30 +107,31 @@ pub fn build(b: *std.Build) void {
     run_dash.expectStdErrEqual("");
     cli_test_step.dependOn(&run_dash.step);
 
-    const run_extra = b.addRunArtifact(golden_exe);
+    const run_extra = goldenRun(b, golden_exe);
     run_extra.addArgs(&.{ "a.dj", "b.dj" });
     run_extra.expectExitCode(1);
     run_extra.expectStdOutEqual("");
     run_extra.expectStdErrEqual("zjot: unexpected argument: b.dj\n");
     cli_test_step.dependOn(&run_extra.step);
 
-    const run_sourcepos = b.addRunArtifact(golden_exe);
+    const run_sourcepos = goldenRun(b, golden_exe);
     run_sourcepos.addArg("--sourcepos");
     run_sourcepos.expectExitCode(1);
     run_sourcepos.expectStdOutEqual("");
     run_sourcepos.expectStdErrEqual("zjot: --sourcepos requires --ast\n");
     cli_test_step.dependOn(&run_sourcepos.step);
 
-    const run_empty = b.addRunArtifact(golden_exe);
+    const run_empty = goldenRun(b, golden_exe);
     run_empty.addArg("");
     run_empty.expectExitCode(1);
     run_empty.expectStdOutEqual("");
     run_empty.expectStdErrEqual("zjot: empty argument\n");
     cli_test_step.dependOn(&run_empty.step);
 
-    const run_ast = b.addRunArtifact(golden_exe);
+    const run_ast = goldenRun(b, golden_exe);
     run_ast.addArg("--ast");
-    run_ast.addFileArg(b.path("test/cli/hi.dj"));
+    run_ast.addArg("test/cli/hi.dj");
+    run_ast.addFileInput(b.path("test/cli/hi.dj"));
     run_ast.expectExitCode(0);
     run_ast.expectStdOutEqual("doc\n  section id=\"Hi\"\n    heading level=1\n      str text=\"Hi\"\n");
     run_ast.expectStdErrEqual("");
@@ -140,4 +141,12 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(cli_test_step);
+}
+
+/// A golden run has the repo root as its cwd and names fixtures by relative path, so the
+/// same runs work under a WASI preopen of `.`, which hides absolute paths.
+fn goldenRun(b: *std.Build, exe: *std.Build.Step.Compile) *std.Build.Step.Run {
+    const run = b.addRunArtifact(exe);
+    run.setCwd(b.path("."));
+    return run;
 }
