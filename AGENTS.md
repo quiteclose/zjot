@@ -36,7 +36,7 @@ test/
 
 - **root.zig** -- Public API. Exposes `toHtml`, `toAst`, `toAstOpts`. Creates a `Parser`, calls `parseDoc()`, and renders the result.
 - **node.zig** -- AST types. `Tag` enum (46 tags), `Node` struct with children, text, attributes, source positions. `Attr`, `SourcePos`, `CellAlign`.
-- **Parser.zig** -- Block-level parsing. Owns `SharedState` (ref defs, footnotes, auto refs, used IDs) shared by pointer with sub-parsers. Contains `parseDoc`, `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
+- **Parser.zig** -- Block-level parsing. Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime; plus the resolution state) shared by pointer with sub-parsers. Contains `parseDoc`, `nextBlock`, `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
 - **inline.zig** -- Inline parsing. `parseInlineContent` with opener stack and `resolveItems`. Handlers for emphasis, links, smart quotes, super/subscript, insert/delete/mark, math, symbols, raw inline, autolinks.
 - **attributes.zig** -- Attribute parsing. `AttrParser` state machine for `{#id .class key=value}` syntax. `BlockAttrs` struct. Block and inline attribute parsing entry points.
 - **html.zig** -- HTML rendering. Walks the `Node` tree and produces HTML string output.
@@ -46,7 +46,7 @@ test/
 
 ### Key design decisions
 
-1. **SharedState by pointer** -- Sub-parsers (for list items, blockquotes, etc.) receive a `*SharedState` pointer instead of copying hash maps in and out. Mutations are visible to the parent automatically.
+1. **Definitions by pointer, with their own allocator** -- Sub-parsers (for list items, blockquotes, etc.) receive a `*Definitions` pointer instead of copying hash maps in and out, so a definition inside a container is visible to the parent. Everything stored there is duped into `Definitions.a`, so definitions outlive the block that produced them whatever allocator the blocks use.
 
 2. **LineMap for inline positions** -- When content lines are joined for inline parsing, `Parser.buildInlineLineMap` creates a `LineMap` with segments mapping joined offsets to original line/col/offset. After `parseInlineContent` returns, `applyInlinePositions` uses pointer arithmetic to find each `str` node's byte offset in the joined source (O(1) per node) and resolves it via the LineMap. No `indexOf`-based string searching.
 

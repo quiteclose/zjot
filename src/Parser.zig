@@ -13,14 +13,18 @@ const LineMap = @import("LineMap.zig");
 
 const Parser = @This();
 
-/// Shared mutable state across parser and all sub-parsers. Passed by pointer
-/// so mutations in sub-parsers (ref defs, footnotes, etc.) are automatically
-/// visible to the parent without copy-in/copy-out.
-pub const SharedState = struct {
+/// What block-level syntax defines for the whole document: reference link definitions
+/// and footnote definitions. A block anywhere may use a definition from anywhere, so
+/// they outlive any one block: everything stored here is allocated from `a`, which the
+/// caller keeps for the document, whatever allocator the blocks themselves use.
+/// Shared by pointer with sub-parsers so a definition inside a container is seen.
+pub const Definitions = struct {
+    a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
+    footnote_defs: std.StringArrayHashMapUnmanaged([]const Node) = .{},
+    // Resolution state read by the document-level functions, not definitions.
     auto_refs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
-    footnote_defs: std.StringArrayHashMapUnmanaged([]const Node) = .{},
     footnote_order: std.ArrayList([]const u8) = .empty,
 };
 
@@ -34,15 +38,15 @@ input: []const u8,
 lines: []const []const u8 = &.{},
 line_offsets: []const u32 = &.{},
 pos: usize = 0,
-shared: *SharedState,
+defs: *Definitions,
 end_marker: ?[]const u8 = null,
 track_pos: bool = false,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
 
-pub fn init(a: Allocator, input: []const u8, shared: *SharedState) Parser {
-    var p = Parser{ .a = a, .input = input, .shared = shared };
+pub fn init(a: Allocator, input: []const u8, defs: *Definitions) Parser {
+    var p = Parser{ .a = a, .input = input, .defs = defs };
     // OOM here leaves lines empty; parseBlocks sees nothing and returns an empty doc.
     p.splitLines() catch {};
     return p;
@@ -94,7 +98,7 @@ pub fn parseDoc(self: *Parser) !Node {
     const with_sections = try self.wrapSections(blocks);
     const resolved = try self.resolveReferences(with_sections);
 
-    if (self.shared.footnote_order.items.len > 0) {
+    if (self.defs.footnote_order.items.len > 0) {
         var all: std.ArrayList(Node) = .empty;
         for (resolved) |n| try all.append(self.a, n);
         try all.append(self.a, try self.buildFootnoteSection());
@@ -112,6 +116,14 @@ fn parseBlocksUntil(self: *Parser, end_marker: ?[]const u8) anyerror![]const Nod
     self.end_marker = end_marker;
     defer self.end_marker = prev_marker;
     var children: std.ArrayList(Node) = .empty;
+    while (try self.nextBlock()) |n| try children.append(self.a, n);
+    return children.toOwnedSlice(self.a);
+}
+
+/// The next block, or null at the end of the input or at the closing fence of the
+/// enclosing div. Definitions are recorded in `defs` as they are met and never
+/// returned, so a caller may drop each block before asking for the next.
+pub fn nextBlock(self: *Parser) anyerror!?Node {
     var pending_attrs: ?BlockAttrs = null;
 
     while (self.pos < self.lines.len) {
@@ -123,13 +135,9 @@ fn parseBlocksUntil(self: *Parser, end_marker: ?[]const u8) anyerror![]const Nod
             continue;
         }
 
-        if (end_marker) |marker| {
-            if (countLeadingChar(line, ':') >= marker.len and
-                isBlank(std.mem.trimStart(u8, line, ":")))
-            {
-                self.pos += 1;
-                break;
-            }
+        if (self.isClosingFence(line)) {
+            self.pos += 1;
+            return null;
         }
 
         if (try self.tryBlockAttr()) |ba| {
@@ -166,15 +174,11 @@ fn parseBlocksUntil(self: *Parser, end_marker: ?[]const u8) anyerror![]const Nod
             node = try self.parseParagraph();
         }
 
-        if (pending_attrs) |ba| {
-            node = inline_mod.applyBlockAttrsToNode(node, ba);
-            pending_attrs = null;
-        }
-
-        try children.append(self.a, node);
+        if (pending_attrs) |ba| node = inline_mod.applyBlockAttrsToNode(node, ba);
+        return node;
     }
 
-    return children.toOwnedSlice(self.a);
+    return null;
 }
 
 fn tryBlockAttr(self: *Parser) !?BlockAttrs {
@@ -387,7 +391,7 @@ fn tryBlockQuote(self: *Parser) !?Node {
     }
 
     const inner_text = try inline_mod.joinLines(self.a, inner_lines.items);
-    var inner_parser = Parser.init(self.a, inner_text, self.shared);
+    var inner_parser = Parser.init(self.a, inner_text, self.defs);
     const inner_blocks = try inner_parser.parseBlocks();
     const tagged = try self.addHeadingIds(inner_blocks);
     return .{ .tag = .block_quote, .children = tagged };
@@ -436,7 +440,11 @@ fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
         dest_text = try buf.toOwnedSlice(self.a);
     }
 
-    try self.shared.ref_defs.put(self.a, label, .{ .url = dest_text, .attrs = pending_attrs });
+    const da = self.defs.a;
+    try self.defs.ref_defs.put(da, try da.dupe(u8, label), .{
+        .url = try da.dupe(u8, dest_text),
+        .attrs = if (pending_attrs) |ba| try ba.dupe(da) else null,
+    });
     return {};
 }
 
@@ -471,10 +479,13 @@ fn tryFootnoteDef(self: *Parser) !?void {
         } else break;
     }
 
-    const inner_text = try inline_mod.joinLines(self.a, content_lines.items);
-    var inner_parser = Parser.init(self.a, inner_text, self.shared);
+    // The footnote's blocks are rendered at the end of the document, so they are
+    // parsed with the definitions' allocator rather than the current block's.
+    const da = self.defs.a;
+    const inner_text = try inline_mod.joinLines(da, content_lines.items);
+    var inner_parser = Parser.init(da, inner_text, self.defs);
     const inner_blocks = try inner_parser.parseBlocks();
-    try self.shared.footnote_defs.put(self.a, label, inner_blocks);
+    try self.defs.footnote_defs.put(da, try da.dupe(u8, label), inner_blocks);
     return {};
 }
 
@@ -561,7 +572,7 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
 
     const para_text = try inline_mod.joinLines(self.a, content.para_lines.items);
     if (para_text.len > 0) {
-        var para_parser = Parser.init(self.a, para_text, self.shared);
+        var para_parser = Parser.init(self.a, para_text, self.defs);
         if (self.track_pos and content.para_orig_lines.items.len > 0) {
             para_parser.track_pos = true;
             const first_orig = content.para_orig_lines.items[0];
@@ -578,7 +589,7 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
 
     if (content.block_lines.items.len > 0) {
         const block_text = try inline_mod.joinLines(self.a, content.block_lines.items);
-        var block_parser = Parser.init(self.a, block_text, self.shared);
+        var block_parser = Parser.init(self.a, block_text, self.defs);
         const blocks = try block_parser.parseBlocks();
         for (blocks) |b| try inner_blocks.append(self.a, b);
     }
@@ -817,7 +828,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
         }
 
         const content_text = try inline_mod.joinLines(self.a, content_lines.items);
-        var inner_parser = Parser.init(self.a, content_text, self.shared);
+        var inner_parser = Parser.init(self.a, content_text, self.defs);
         const all_blocks = try inner_parser.parseBlocks();
 
         var term_node: Node = undefined;
@@ -942,7 +953,7 @@ fn parseTableRowWithAlign(self: *Parser, line: []const u8, col_aligns: []const C
 
 fn registerExplicitIds(self: *Parser, blocks: []const Node) !void {
     for (blocks) |block| {
-        if (block.id) |id| try self.shared.ids_used.put(self.a, id, {});
+        if (block.id) |id| try self.defs.ids_used.put(self.a, id, {});
         if (block.children.len > 0) try self.registerExplicitIds(block.children);
     }
 }
@@ -973,7 +984,7 @@ fn wrapSections(self: *Parser, blocks: []const Node) ![]const Node {
             const heading_text = getNodeText(block);
             const heading_id = block.id orelse try self.generateId(heading_text);
             const dest = try std.fmt.allocPrint(self.a, "#{s}", .{heading_id});
-            try self.shared.auto_refs.put(self.a, heading_text, dest);
+            try self.defs.auto_refs.put(self.a, heading_text, dest);
 
             // ID and attributes move from the heading to its wrapping section,
             // so the section carries the anchor and the heading renders clean.
@@ -1052,19 +1063,19 @@ fn generateId(self: *Parser, text: []const u8) ![]const u8 {
 
     var base_id = try buf.toOwnedSlice(self.a);
     if (base_id.len == 0) {
-        base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.shared.ids_used.count() + 1});
+        base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.defs.ids_used.count() + 1});
     }
 
-    if (!self.shared.ids_used.contains(base_id)) {
-        try self.shared.ids_used.put(self.a, base_id, {});
+    if (!self.defs.ids_used.contains(base_id)) {
+        try self.defs.ids_used.put(self.a, base_id, {});
         return base_id;
     }
 
     var counter: usize = 1;
     while (true) : (counter += 1) {
         const candidate = try std.fmt.allocPrint(self.a, "{s}-{d}", .{ base_id, counter });
-        if (!self.shared.ids_used.contains(candidate)) {
-            try self.shared.ids_used.put(self.a, candidate, {});
+        if (!self.defs.ids_used.contains(candidate)) {
+            try self.defs.ids_used.put(self.a, candidate, {});
             return candidate;
         }
     }
@@ -1078,10 +1089,10 @@ fn resolveReferences(self: *Parser, nodes: []const Node) ![]const Node {
             if (n.reference) |ref| {
                 const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(self.a, n) catch "");
                 const label = inline_mod.normalizeLabel(self.a, raw_label) catch raw_label;
-                if (self.shared.ref_defs.get(label)) |def| {
+                if (self.defs.ref_defs.get(label)) |def| {
                     n.destination = def.url;
                     if (def.attrs) |ba| n = inline_mod.mergeRefAttrs(n, ba, self.a);
-                } else if (self.shared.auto_refs.get(label)) |dest| {
+                } else if (self.defs.auto_refs.get(label)) |dest| {
                     n.destination = dest;
                 }
             }
@@ -1089,15 +1100,15 @@ fn resolveReferences(self: *Parser, nodes: []const Node) ![]const Node {
         if (n.tag == .footnote_reference) {
             const label = n.text;
             var found = false;
-            for (self.shared.footnote_order.items) |existing| {
+            for (self.defs.footnote_order.items) |existing| {
                 if (std.mem.eql(u8, existing, label)) {
                     found = true;
                     break;
                 }
             }
-            if (!found) try self.shared.footnote_order.append(self.a, label);
+            if (!found) try self.defs.footnote_order.append(self.a, label);
             var fn_num: usize = 0;
-            for (self.shared.footnote_order.items, 1..) |existing, idx| {
+            for (self.defs.footnote_order.items, 1..) |existing, idx| {
                 if (std.mem.eql(u8, existing, label)) {
                     fn_num = idx;
                     break;
@@ -1116,9 +1127,9 @@ fn resolveReferences(self: *Parser, nodes: []const Node) ![]const Node {
 fn buildFootnoteSection(self: *Parser) !Node {
     var items: std.ArrayList(Node) = .empty;
     var fn_idx: usize = 0;
-    while (fn_idx < self.shared.footnote_order.items.len) : (fn_idx += 1) {
-        const label = self.shared.footnote_order.items[fn_idx];
-        const raw_content = self.shared.footnote_defs.get(label) orelse &.{};
+    while (fn_idx < self.defs.footnote_order.items.len) : (fn_idx += 1) {
+        const label = self.defs.footnote_order.items[fn_idx];
+        const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
         const content = try self.resolveReferences(raw_content);
         const idx = items.items.len + 1;
         const fn_id = try std.fmt.allocPrint(self.a, "fn{d}", .{idx});
@@ -1434,11 +1445,17 @@ fn getListStart(marker_text: []const u8, style: ListStyle) usize {
 }
 
 fn isRomanLower(c: u8) bool {
-    return switch (c) { 'i', 'v', 'x', 'l', 'c', 'd', 'm' => true, else => false };
+    return switch (c) {
+        'i', 'v', 'x', 'l', 'c', 'd', 'm' => true,
+        else => false,
+    };
 }
 
 fn isRomanUpper(c: u8) bool {
-    return switch (c) { 'I', 'V', 'X', 'L', 'C', 'D', 'M' => true, else => false };
+    return switch (c) {
+        'I', 'V', 'X', 'L', 'C', 'D', 'M' => true,
+        else => false,
+    };
 }
 
 fn romanToNumber(s: []const u8) usize {
@@ -1448,10 +1465,20 @@ fn romanToNumber(s: []const u8) usize {
     while (i > 0) {
         i -= 1;
         const n: usize = switch (s[i]) {
-            'i', 'I' => 1, 'v', 'V' => 5, 'x', 'X' => 10, 'l', 'L' => 50,
-            'c', 'C' => 100, 'd', 'D' => 500, 'm', 'M' => 1000, else => 0,
+            'i', 'I' => 1,
+            'v', 'V' => 5,
+            'x', 'X' => 10,
+            'l', 'L' => 50,
+            'c', 'C' => 100,
+            'd', 'D' => 500,
+            'm', 'M' => 1000,
+            else => 0,
         };
-        if (n < prev) { total -|= n; } else { total += n; }
+        if (n < prev) {
+            total -|= n;
+        } else {
+            total += n;
+        }
         prev = n;
     }
     return if (total > 0) total else 1;
@@ -1552,4 +1579,33 @@ fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
     }
     try result.append(a, content[cell_start..]);
     return result.toOwnedSlice(a);
+}
+
+test "definitions outlive the block that defined them" {
+    const input =
+        \\> {.c}
+        \\> [x]: /u
+        \\
+        \\[^n]: note
+        \\
+        \\a
+    ;
+    const block_mem = try std.testing.allocator.alloc(u8, 1 << 16);
+    defer std.testing.allocator.free(block_mem);
+    var block_fba = std.heap.FixedBufferAllocator.init(block_mem);
+    var doc_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer doc_arena.deinit();
+    var defs = Definitions{ .a = doc_arena.allocator() };
+
+    var p = Parser.init(block_fba.allocator(), input, &defs);
+    while (try p.nextBlock()) |_| {}
+    // Whatever a definition still shares with the block allocator is now garbage.
+    @memset(block_mem, 0xff);
+
+    const x = defs.ref_defs.get("x").?;
+    try std.testing.expectEqualStrings("/u", x.url);
+    try std.testing.expectEqualStrings("class", x.attrs.?.attrs[0].key);
+    try std.testing.expectEqualStrings("c", x.attrs.?.attrs[0].value);
+    const note = defs.footnote_defs.get("n").?;
+    try std.testing.expectEqualStrings("note", note[0].children[0].text);
 }
