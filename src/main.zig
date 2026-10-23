@@ -1,6 +1,7 @@
 //! CLI: renders a Djot document from FILE or stdin as HTML or AST.
 
 const std = @import("std");
+const builtin = @import("builtin");
 const Allocator = std.mem.Allocator;
 const zjot = @import("zjot");
 
@@ -79,6 +80,10 @@ pub fn main(init: std.process.Init) !u8 {
             return 1;
         },
         error.OutOfMemory => return err,
+        error.StdinClosed => {
+            try printErr(init.io, "zjot: stdin is closed\n", .{});
+            return 1;
+        },
         else => |e| {
             try printErr(init.io, "zjot: {s}: {t}\n", .{ opts.file_path orelse "stdin", e });
             return 1;
@@ -99,9 +104,23 @@ fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
     if (file_path) |path| {
         return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), io, path, a, .unlimited);
     }
+    if (!stdinIsOpen()) return error.StdinClosed;
     var stdin_buf: [4096]u8 = undefined;
     var r = std.Io.File.stdin().reader(io, &stdin_buf);
     return r.interface.allocRemaining(a, .unlimited);
+}
+
+/// std treats a closed descriptor as a program bug and panics on the first read, so
+/// stdin is probed before use. Only Linux has the probe; elsewhere stdin is trusted.
+fn stdinIsOpen() bool {
+    return switch (builtin.os.tag) {
+        .linux => blk: {
+            const linux = std.os.linux;
+            const rc = linux.fcntl(std.Io.File.stdin().handle, linux.F.GETFD, 0);
+            break :blk linux.errno(rc) != .BADF;
+        },
+        else => true,
+    };
 }
 
 /// Writes to stdout and returns the exit code: a failed write (a closed pipe, a full
