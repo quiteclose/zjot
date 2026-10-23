@@ -9,11 +9,9 @@ pub fn renderNode(a: Allocator, out: *std.ArrayList(u8), node: Node) anyerror!vo
     switch (node.tag) {
         .section => {
             if (node.level > 0) {
-                try out.appendSlice(a, "<section");
-                try renderAttrs(a, out, node);
-                try out.appendSlice(a, ">\n");
+                try renderSectionOpen(a, out, node);
                 for (node.children) |child| try renderNode(a, out, child);
-                try out.appendSlice(a, "</section>\n");
+                try out.appendSlice(a, section_close);
             } else {
                 for (node.children) |child| try renderNode(a, out, child);
             }
@@ -369,6 +367,16 @@ fn renderListItem(a: Allocator, out: *std.ArrayList(u8), item: Node, tight: bool
 
     try out.appendSlice(a, "</li>\n");
 }
+
+/// The opening tag of a section on its own, so a streaming consumer can write a
+/// section's children between this and `section_close`.
+pub fn renderSectionOpen(a: Allocator, out: *std.ArrayList(u8), section: Node) !void {
+    try out.appendSlice(a, "<section");
+    try renderAttrs(a, out, section);
+    try out.appendSlice(a, ">\n");
+}
+
+pub const section_close = "</section>\n";
 
 pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     if (node.id) |id| {

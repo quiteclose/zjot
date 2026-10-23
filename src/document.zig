@@ -246,54 +246,6 @@ pub const Sections = struct {
     }
 };
 
-/// The whole document as one tree, assembled the way a streaming consumer walks the
-/// blocks: survey, then resolve and section each block, then the endnotes.
-pub fn parseDoc(a: Allocator, parser: *Parser) !Node {
-    var blocks: std.ArrayList(Node) = .empty;
-    while (try parser.nextBlock()) |block| try blocks.append(a, block);
-
-    var survey = Survey{ .a = a };
-    for (blocks.items) |block| try survey.visit(block);
-
-    var resolver = Resolver{ .a = a, .defs = parser.defs, .survey = &survey };
-    var sections = Sections{};
-    var tree = TreeBuilder{ .a = a };
-    for (blocks.items) |block| {
-        for (sections.feed(try resolver.resolve(a, block))) |event| try tree.apply(event);
-    }
-    for (sections.finish()) |event| try tree.apply(event);
-    if (try resolver.footnoteSection(a)) |endnotes| try tree.top.append(a, endnotes);
-    return .{ .tag = .section, .children = try tree.top.toOwnedSlice(a) };
-}
-
-const TreeBuilder = struct {
-    const Open = struct { section: Node, children: std.ArrayList(Node) = .empty };
-
-    a: Allocator,
-    stack: std.ArrayList(Open) = .empty,
-    top: std.ArrayList(Node) = .empty,
-
-    fn apply(self: *TreeBuilder, event: Sections.Event) !void {
-        switch (event) {
-            .open => |section| try self.stack.append(self.a, .{ .section = section }),
-            .close => {
-                var open = self.stack.pop().?;
-                open.section.children = try open.children.toOwnedSlice(self.a);
-                try self.append(open.section);
-            },
-            .block => |block| try self.append(block),
-        }
-    }
-
-    fn append(self: *TreeBuilder, node: Node) !void {
-        if (self.stack.items.len > 0) {
-            try self.stack.items[self.stack.items.len - 1].children.append(self.a, node);
-        } else {
-            try self.top.append(self.a, node);
-        }
-    }
-};
-
 fn getNodeText(node: Node) []const u8 {
     if (node.text.len > 0) return node.text;
     if (node.children.len == 0) return "";
