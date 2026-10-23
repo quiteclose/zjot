@@ -14,24 +14,35 @@ const Command = union(enum) {
     render: Options,
     help,
     unknown_option: []const u8,
+    extra_argument: []const u8,
+    sourcepos_without_ast,
 };
 
 /// Pure: no allocation, no IO. `args` excludes the program name.
+/// `-` means stdin anywhere, including after `--`; a file named `-` is `./-`.
 fn parseArgs(args: []const [:0]const u8) Command {
     var opts: Options = .{};
+    var have_input = false;
+    var options_done = false;
     for (args) |arg| {
-        if (std.mem.eql(u8, arg, "--ast")) {
+        if (!options_done and std.mem.eql(u8, arg, "--")) {
+            options_done = true;
+        } else if (!options_done and std.mem.eql(u8, arg, "--ast")) {
             opts.mode = .ast;
-        } else if (std.mem.eql(u8, arg, "--sourcepos")) {
+        } else if (!options_done and std.mem.eql(u8, arg, "--sourcepos")) {
             opts.sourcepos = true;
-        } else if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+        } else if (!options_done and (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h"))) {
             return .help;
-        } else if (arg.len > 0 and arg[0] == '-') {
+        } else if (!options_done and arg.len > 1 and arg[0] == '-') {
             return .{ .unknown_option = arg };
+        } else if (have_input) {
+            return .{ .extra_argument = arg };
         } else {
-            opts.file_path = arg;
+            have_input = true;
+            opts.file_path = if (std.mem.eql(u8, arg, "-")) null else arg;
         }
     }
+    if (opts.sourcepos and opts.mode != .ast) return .sourcepos_without_ast;
     return .{ .render = opts };
 }
 
@@ -45,6 +56,14 @@ pub fn main(init: std.process.Init) !u8 {
         },
         .unknown_option => |arg| {
             try printErr(init.io, "zjot: unknown option: {s}\n", .{arg});
+            return 1;
+        },
+        .extra_argument => |arg| {
+            try printErr(init.io, "zjot: unexpected argument: {s}\n", .{arg});
+            return 1;
+        },
+        .sourcepos_without_ast => {
+            try printErr(init.io, "zjot: --sourcepos requires --ast\n", .{});
             return 1;
         },
     };
@@ -124,4 +143,10 @@ test "parseArgs" {
     try std.testing.expectEqual(.ast, r.mode);
     try std.testing.expect(r.sourcepos);
     try std.testing.expectEqualStrings("doc.dj", r.file_path.?);
+
+    try std.testing.expectEqual(null, parseArgs(&.{"-"}).render.file_path);
+    try std.testing.expectEqual(null, parseArgs(&.{ "--", "-" }).render.file_path);
+    try std.testing.expectEqualStrings("-x.dj", parseArgs(&.{ "--", "-x.dj" }).render.file_path.?);
+    try std.testing.expectEqualStrings("b.dj", parseArgs(&.{ "a.dj", "b.dj" }).extra_argument);
+    try std.testing.expectEqual(.sourcepos_without_ast, parseArgs(&.{"--sourcepos"}));
 }
