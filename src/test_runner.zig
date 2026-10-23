@@ -187,6 +187,6 @@ test "djot test suite" {
         std.debug.print("\n  Total: {d}/{d} passed\n\n", .{ total.passed, total.total() });
     }
 
-    // Don't fail the test -- we expect 0/261 initially.
-    // Once the parser is complete, we'll change this to fail on any failure.
+    try std.testing.expect(total.total() > 0);
+    try std.testing.expectEqual(0, total.failed);
 }
