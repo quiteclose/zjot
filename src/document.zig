@@ -282,34 +282,3 @@ test "sections: a heading closes deeper and equal levels, then opens its own" {
     try std.testing.expect(back_to_two[2].block.id == null); // moved onto the section
     try std.testing.expectEqual(@as(usize, 2), sections.finish().len); // closes 2 and 1
 }
-
-// The two cases where zjot used to differ from djot.js 0.3.2 (checked 2026-10-23):
-// generated ids follow document order wherever the heading sits, and an explicit id
-// met later does not rename an id already generated.
-test "heading ids: document order across nesting, as djot.js" {
-    const zjot = @import("root.zig");
-    const html = try zjot.toHtml(std.testing.allocator, "# Foo\n\n> # Foo\n");
-    defer std.testing.allocator.free(html);
-    try std.testing.expectEqualStrings(
-        "<section id=\"Foo\">\n<h1>Foo</h1>\n<blockquote>\n<h1 id=\"Foo-1\">Foo</h1>\n</blockquote>\n</section>\n",
-        html,
-    );
-}
-
-test "heading ids: a later explicit id does not rename an earlier generated one" {
-    const zjot = @import("root.zig");
-    const html = try zjot.toHtml(std.testing.allocator, "# Foo bar\n\n{#Foo-bar}\nParagraph\n");
-    defer std.testing.allocator.free(html);
-    try std.testing.expectEqualStrings(
-        "<section id=\"Foo-bar\">\n<h1>Foo bar</h1>\n<p id=\"Foo-bar\">Paragraph</p>\n</section>\n",
-        html,
-    );
-}
-
-test "footnote headings: ids follow the endnotes' order, not the definitions'" {
-    const zjot = @import("root.zig");
-    const html = try zjot.toHtml(std.testing.allocator, "[^a]:\n    > # P\n\n[^b]:\n    > # Q\n\ntext[^b] [^a]\n");
-    defer std.testing.allocator.free(html);
-    try std.testing.expect(std.mem.indexOf(u8, html, "<h1 id=\"Q\">Q</h1>") != null);
-    try std.testing.expect(std.mem.indexOf(u8, html, "<h1 id=\"P\">P</h1>") != null);
-}

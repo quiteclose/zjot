@@ -1,0 +1,777 @@
+zjot's own cases, in the format of the vendored djot.js files (see test_runner.zig).
+
+Every expected output in this file was produced by djot.js 0.3.2 on 2026-10-23:
+
+    npx -y @djot/djot@0.3.2 input.dj
+
+Expectations are never written by hand. A case goes in only when zjot and djot.js
+agree on it; where zjot deliberately differs from djot.js, the difference is written
+down here instead of pinned as a case. Deliberate differences: none.
+
+
+Heading ids: generated ids follow document order wherever the heading sits.
+````
+# Foo
+
+> # Foo
+.
+<section id="Foo">
+<h1>Foo</h1>
+<blockquote>
+<h1 id="Foo-1">Foo</h1>
+</blockquote>
+</section>
+````
+
+Heading ids: an explicit id met later does not rename an id already generated.
+````
+# Foo bar
+
+{#Foo-bar}
+Paragraph
+.
+<section id="Foo-bar">
+<h1>Foo bar</h1>
+<p id="Foo-bar">Paragraph</p>
+</section>
+````
+
+Footnote heading ids follow the endnotes' order, not the definitions'.
+````
+[^a]:
+    > # P
+
+[^b]:
+    > # Q
+
+text[^b] [^a]
+.
+<p>text<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<blockquote>
+<h1 id="Q">Q</h1>
+</blockquote>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<blockquote>
+<h1 id="P">P</h1>
+</blockquote>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition's paragraph continues across an unindented line (lazy continuation).
+````
+[^n]: note
+para
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+para<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Lazy continuation after a blank line and an indented line.
+````
+[^n]: note
+
+  more
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note</p>
+<p>more
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Lazy continuation after an indented line.
+````
+[^n]: note
+  indented
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+indented
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Lazy continuation ends at a blank line; the next paragraph is body text.
+````
+[^n]: note
+para
+
+body
+
+x[^n]
+.
+<p>body</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+para<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Lazy continuation inside a block quote.
+````
+> [^n]: note
+> para
+
+x[^n]
+.
+<blockquote>
+</blockquote>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+para<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A heading interrupts a footnote's paragraph.
+````
+[^n]: note
+# H
+
+x[^n]
+.
+<section id="H">
+<h1>H</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A bullet list interrupts a footnote's paragraph.
+````
+[^n]: note
+- item
+
+x[^n]
+.
+<ul>
+<li>
+item
+</li>
+</ul>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An ordered list interrupts a footnote's paragraph.
+````
+[^n]: note
+1. item
+
+x[^n]
+.
+<ol>
+<li>
+item
+</li>
+</ol>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A block quote interrupts a footnote's paragraph.
+````
+[^n]: note
+> q
+
+x[^n]
+.
+<blockquote>
+<p>q</p>
+</blockquote>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition interrupts a footnote's paragraph.
+````
+[^n]: note
+[^m]: other
+
+x[^n] y[^m]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> y<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>other<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A reference definition interrupts a footnote's paragraph.
+````
+[^n]: note
+[r]: /url
+
+x[^n] [r][r]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a href="/url">r</a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A block attribute line interrupts a footnote's paragraph.
+````
+[^n]: note
+{.c}
+para
+
+x[^n]
+.
+<p class="c">para</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A table row interrupts a footnote's paragraph.
+````
+[^n]: note
+| a |
+
+x[^n]
+.
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A fenced div interrupts a footnote's paragraph.
+````
+[^n]: note
+::: d
+content
+:::
+
+x[^n]
+.
+<div class="d">
+<p>content</p>
+</div>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A code fence interrupts a footnote's paragraph.
+````
+[^n]: note
+```
+code
+```
+
+x[^n]
+.
+<pre><code>code
+</code></pre>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A thematic break interrupts a footnote's paragraph.
+````
+[^n]: note
+***
+
+x[^n]
+.
+<hr>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A definition list interrupts a footnote's paragraph.
+````
+[^n]: note
+: term
+
+  def
+
+x[^n]
+.
+<dl>
+<dt>term</dt>
+<dd>
+<p>def</p>
+</dd>
+</dl>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A block attribute before a footnote definition is dropped, not applied to the next block.
+````
+{.c}
+[^n]: note
+# H
+
+x[^n]
+.
+<section id="H">
+<h1>H</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A block attribute before a footnote definition is dropped (blank line, then a paragraph).
+````
+{.c}
+[^n]: note
+
+para
+
+x[^n]
+.
+<p>para</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A nested list item's paragraph continues lazily.
+````
+[^n]:
+    - item
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<ul>
+<li>
+item
+lazy
+</li>
+</ul>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A nested block quote's paragraph continues lazily.
+````
+[^n]:
+    > q
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<blockquote>
+<p>q
+lazy</p>
+</blockquote>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A paragraph inside an open fenced div continues lazily.
+````
+[^n]:
+    ::: d
+    content
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<div class="d">
+<p>content
+lazy</p>
+</div>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A paragraph after a table row continues lazily.
+````
+[^n]:
+    | a |
+    para
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>para
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An open code block takes no lazy continuation.
+````
+[^n]:
+    ```
+    code
+lazy
+
+x[^n]
+.
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<pre><code>code
+</code></pre>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A closed code block takes no lazy continuation.
+````
+[^n]: note
+
+    ```
+    code
+    ```
+lazy
+
+x[^n]
+.
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note</p>
+<pre><code>code
+</code></pre>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A thematic break takes no lazy continuation.
+````
+[^n]:
+    ***
+lazy
+
+x[^n]
+.
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<hr>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A table row alone takes no lazy continuation.
+````
+[^n]:
+    | a |
+lazy
+
+x[^n]
+.
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A closed fenced div takes no lazy continuation.
+````
+[^n]:
+    ::: d
+    content
+    :::
+lazy
+
+x[^n]
+.
+<p>lazy</p>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<div class="d">
+<p>content</p>
+</div>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A tab-indented bracket line is not a definition; it continues a list item's paragraph.
+````
+- item
+
+  para
+	[a]: /u
+.
+<ul>
+<li>
+<p>item</p>
+<p>para
+[a]: /u</p>
+</li>
+</ul>
+````
+
+A code fence inside an open paragraph is text; the paragraph still continues lazily.
+````
+[^n]: note
+    ```
+    code
+    ```
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+<code>
+code
+</code>
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A table row inside an open paragraph is text; the paragraph still continues lazily.
+````
+[^n]: note
+    | a |
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+| a |
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A thematic break inside an open paragraph is text; the paragraph still continues lazily.
+````
+[^n]: note
+    ***
+lazy
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note
+***
+lazy<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
