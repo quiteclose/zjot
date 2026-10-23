@@ -1,0 +1,13 @@
+doc
+  section id="Top"
+    heading level=1
+      str text="Top"
+    section id="custom"
+      heading level=2
+        str text="Second"
+      section id="Third"
+        heading level=3
+          str text="Third"
+    section id="Second"
+      heading level=2
+        str text="Second"

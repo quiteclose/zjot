@@ -1,0 +1,17 @@
+doc
+  para
+    str text="Text with a note."
+    footnote_reference text="1" id="fnref1"
+    str text=" And another."
+    footnote_reference text="2" id="fnref2"
+  footnote role="doc-endnotes"
+    list_item id="fn1"
+      para
+        str text="First note."
+        link destination="#fnref1" role="doc-backlink"
+    list_item id="fn2"
+      para
+        str text="Second note,"
+        soft_break
+        str text="with a continuation."
+        link destination="#fnref2" role="doc-backlink"

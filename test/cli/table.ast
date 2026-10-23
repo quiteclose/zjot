@@ -1,0 +1,17 @@
+doc
+  table
+    row head=false
+      cell head=true align="left"
+        str text="a"
+      cell head=true align="right"
+        str text="b"
+    row head=false
+      cell head=false align="left"
+        str text="1"
+      cell head=false align="right"
+        str text="2"
+    row head=false
+      cell head=false align="left"
+        str text="3"
+      cell head=false align="right"
+        str text="4"

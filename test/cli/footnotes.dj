@@ -1,0 +1,6 @@
+Text with a note.[^one] And another.[^two]
+
+[^one]: First note.
+
+[^two]: Second note,
+  with a continuation.

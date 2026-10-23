@@ -1,0 +1,26 @@
+doc
+  bullet_list tight=true style="-"
+    list_item
+      para
+        str text="one"
+    list_item
+      para
+        str text="two"
+      bullet_list tight=true style="-"
+        list_item
+          para
+            str text="nested"
+  ordered_list tight=true
+    list_item
+      para
+        str text="first"
+    list_item
+      para
+        str text="second"
+  task_list
+    task_list_item checked=false
+      para
+        str text="todo"
+    task_list_item checked=true
+      para
+        str text="done"
