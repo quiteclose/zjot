@@ -73,7 +73,7 @@ pub fn build(b: *std.Build) void {
     const run_help = b.addRunArtifact(golden_exe);
     run_help.addArg("--help");
     run_help.expectExitCode(0);
-    run_help.expectStdOutMatch("Usage: zjot [OPTIONS] [FILE]\n");
+    run_help.expectStdOutMatch("Usage: zjot [OPTIONS] [--] [FILE]\n");
     run_help.expectStdErrEqual("");
     cli_test_step.dependOn(&run_help.step);
 

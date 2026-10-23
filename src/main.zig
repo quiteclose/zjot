@@ -116,15 +116,15 @@ fn printErr(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
 }
 
 const usage =
-    \\Usage: zjot [OPTIONS] [FILE]
+    \\Usage: zjot [OPTIONS] [--] [FILE]
     \\
     \\Parse Djot markup and produce output.
     \\
-    \\If FILE is omitted, reads from stdin.
+    \\If FILE is omitted or is -, reads from stdin. -- ends the options.
     \\
     \\Options:
     \\  --ast         Output AST instead of HTML
-    \\  --sourcepos   Include source positions in AST output
+    \\  --sourcepos   Include source positions in AST output (requires --ast)
     \\  -h, --help    Show this help message
     \\
 ;
