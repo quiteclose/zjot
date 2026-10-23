@@ -39,11 +39,21 @@ pub fn build(b: *std.Build) void {
 
     const cli_test_step = b.step("cli-test", "Run CLI golden tests");
     // expectExitCode goes first: expectStdOut* adds an exit-0 check if none exists yet.
+    const html = "<section id=\"Hi\">\n<h1>Hi</h1>\n</section>\n";
+
     const run_file = b.addRunArtifact(exe);
     run_file.addFileArg(b.path("test/cli/hi.dj"));
     run_file.expectExitCode(0);
+    run_file.expectStdOutEqual(html);
     run_file.expectStdErrEqual(""); // Debug builds report leaks here.
     cli_test_step.dependOn(&run_file.step);
+
+    const run_stdin = b.addRunArtifact(exe);
+    run_stdin.setStdIn(.{ .bytes = "# Hi\n" });
+    run_stdin.expectExitCode(0);
+    run_stdin.expectStdOutEqual(html);
+    run_stdin.expectStdErrEqual("");
+    cli_test_step.dependOn(&run_stdin.step);
 
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
