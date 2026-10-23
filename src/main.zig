@@ -4,9 +4,6 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zjot = @import("zjot");
 
-var out_buf: [4096]u8 = undefined;
-var err_buf: [256]u8 = undefined;
-
 const Options = struct {
     mode: enum { html, ast } = .html,
     sourcepos: bool = false,
@@ -82,13 +79,15 @@ fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
 }
 
 fn printOut(io: std.Io, bytes: []const u8) !void {
-    var w = std.Io.File.stdout().writer(io, &out_buf);
+    var buf: [4096]u8 = undefined;
+    var w = std.Io.File.stdout().writer(io, &buf);
     try w.interface.writeAll(bytes);
     try w.interface.flush();
 }
 
 fn printErr(io: std.Io, comptime fmt: []const u8, args: anytype) !void {
-    var w = std.Io.File.stderr().writer(io, &err_buf);
+    var buf: [256]u8 = undefined;
+    var w = std.Io.File.stderr().writer(io, &buf);
     try w.interface.print(fmt, args);
     try w.interface.flush();
 }
