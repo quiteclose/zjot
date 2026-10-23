@@ -1,0 +1,26 @@
+doc
+  bullet_list (1:1:0-6:0:24) tight=true style="-"
+    list_item (1:1:0-2:1:6)
+      para (1:3:2-2:0:5)
+        str (1:3:2-1:5:4) text="one"
+    list_item (2:1:6-6:1:25)
+      para (2:3:8-3:0:11)
+        str (2:3:8-2:5:10) text="two"
+      bullet_list tight=true style="-"
+        list_item
+          para
+            str text="nested"
+  ordered_list (6:1:25-9:0:44) tight=true
+    list_item (6:1:25-7:1:34)
+      para (6:4:28-7:0:33)
+        str (6:4:28-6:8:32) text="first"
+    list_item (7:1:34-9:1:45)
+      para (7:4:37-8:0:43)
+        str (7:4:37-7:9:42) text="second"
+  task_list (9:1:45-11:0:66)
+    task_list_item (9:1:45-10:1:56) checked=false
+      para (9:3:47-10:0:51)
+        str (9:3:47-9:6:50) text="todo"
+    task_list_item (10:1:56-11:0:66) checked=true
+      para (10:3:58-11:0:62)
+        str (10:3:58-10:6:61) text="done"

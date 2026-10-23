@@ -1,0 +1,31 @@
+doc
+  para
+    str text="Some "
+    emph
+      str text="emphasis"
+    str text=", "
+    strong
+      str text="strong"
+    str text=", "
+    verbatim text="code"
+    str text=", a "
+    link destination="https://example.com"
+      str text="link"
+    str text=", and"
+    soft_break
+    str text="a "
+    link destination="https://example.com/ref" reference="ref"
+      str text="reference"
+    str text=" with "
+    superscript
+      str text="super"
+    str text=", "
+    subscript
+      str text="sub"
+    str text=", "
+    mark
+      str text="mark"
+    str text=" and "
+    double_quoted
+      str text="quotes"
+    str text="."

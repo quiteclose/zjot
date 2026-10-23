@@ -1,0 +1,4 @@
+Some _emphasis_, *strong*, `code`, a [link](https://example.com), and
+a [reference][ref] with ^super^, ~sub~, {=mark=} and "quotes".
+
+[ref]: https://example.com/ref

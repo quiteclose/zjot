@@ -54,20 +54,34 @@ pub fn build(b: *std.Build) void {
 
     const cli_test_step = b.step("cli-test", "Run CLI golden tests");
     // expectExitCode goes first: expectStdOut* adds an exit-0 check if none exists yet.
-    const html = "<section id=\"Hi\">\n<h1>Hi</h1>\n</section>\n";
 
-    const run_file = goldenRun(b, golden_exe);
-    run_file.addArg("test/cli/hi.dj");
-    run_file.addFileInput(b.path("test/cli/hi.dj")); // keeps the fixture a cache input
-    run_file.expectExitCode(0);
-    run_file.expectStdOutEqual(html);
-    run_file.expectStdErrEqual(""); // Debug builds report leaks here.
-    cli_test_step.dependOn(&run_file.step);
+    // One fixture per block family: test/cli/NAME.dj, with the expected output of each
+    // mode beside it as NAME.html, NAME.ast and NAME.sourcepos.ast (AGENTS.md: Test suite).
+    const fixtures = [_][]const u8{ "hi", "headings", "inlines", "lists", "code", "blockquote", "table", "footnotes" };
+    for (fixtures) |name| {
+        const dj = b.fmt("test/cli/{s}.dj", .{name});
+        inline for (.{
+            .{ "html", &[_][]const u8{} },
+            .{ "ast", &[_][]const u8{"--ast"} },
+            .{ "sourcepos.ast", &[_][]const u8{ "--ast", "--sourcepos" } },
+        }) |mode| {
+            const run = goldenRun(b, golden_exe);
+            run.addArgs(mode[1]);
+            run.addArg(dj);
+            run.addFileInput(b.path(dj)); // keeps the fixture a cache input
+            run.expectExitCode(0);
+            run.expectStdOutEqual(readGolden(b, b.fmt("test/cli/{s}.{s}", .{ name, mode[0] })));
+            run.expectStdErrEqual(""); // Debug builds report leaks here.
+            cli_test_step.dependOn(&run.step);
+        }
+    }
+
+    const hi_html = readGolden(b, "test/cli/hi.html");
 
     const run_stdin = goldenRun(b, golden_exe);
-    run_stdin.setStdIn(.{ .bytes = "# Hi\n" });
+    run_stdin.setStdIn(.{ .lazy_path = b.path("test/cli/hi.dj") });
     run_stdin.expectExitCode(0);
-    run_stdin.expectStdOutEqual(html);
+    run_stdin.expectStdOutEqual(hi_html);
     run_stdin.expectStdErrEqual("");
     cli_test_step.dependOn(&run_stdin.step);
 
@@ -101,9 +115,9 @@ pub fn build(b: *std.Build) void {
 
     const run_dash = goldenRun(b, golden_exe);
     run_dash.addArg("-");
-    run_dash.setStdIn(.{ .bytes = "# Hi\n" });
+    run_dash.setStdIn(.{ .lazy_path = b.path("test/cli/hi.dj") });
     run_dash.expectExitCode(0);
-    run_dash.expectStdOutEqual(html);
+    run_dash.expectStdOutEqual(hi_html);
     run_dash.expectStdErrEqual("");
     cli_test_step.dependOn(&run_dash.step);
 
@@ -128,19 +142,17 @@ pub fn build(b: *std.Build) void {
     run_empty.expectStdErrEqual("zjot: empty argument\n");
     cli_test_step.dependOn(&run_empty.step);
 
-    const run_ast = goldenRun(b, golden_exe);
-    run_ast.addArg("--ast");
-    run_ast.addArg("test/cli/hi.dj");
-    run_ast.addFileInput(b.path("test/cli/hi.dj"));
-    run_ast.expectExitCode(0);
-    run_ast.expectStdOutEqual("doc\n  section id=\"Hi\"\n    heading level=1\n      str text=\"Hi\"\n");
-    run_ast.expectStdErrEqual("");
-    cli_test_step.dependOn(&run_ast.step);
-
     const test_step = b.step("test", "Run tests");
     test_step.dependOn(&run_mod_tests.step);
     test_step.dependOn(&run_exe_tests.step);
     test_step.dependOn(cli_test_step);
+}
+
+/// The expected output of a golden run, read at configure time so that it lives beside
+/// its fixture. A missing file is a build-script error, not a test failure.
+fn readGolden(b: *std.Build, path: []const u8) []const u8 {
+    return b.build_root.handle.readFileAlloc(b.graph.io, path, b.allocator, .limited(1 << 20)) catch |err|
+        std.debug.panic("cannot read golden {s}: {t}", .{ path, err });
 }
 
 /// A golden run has the repo root as its cwd and names fixtures by relative path, so the

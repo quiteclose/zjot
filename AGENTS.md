@@ -29,6 +29,7 @@ src/
   test_runner.zig    Test harness for .test files
 test/
   *.test             Vendored djot.js test files (26 files, 261 test cases)
+  cli/               CLI golden fixtures: NAME.dj with NAME.html, NAME.ast, NAME.sourcepos.ast
 ```
 
 ### Module responsibilities
@@ -77,6 +78,30 @@ expected output
 Options: `a` = AST mode (compare against AST output instead of HTML), `p` = sourcepos (include source positions in AST).
 
 Run tests: `zig build test`
+
+Run them on WASI (needs wasmtime): `zig build test -Dtarget=wasm32-wasi -fwasmtime`
+
+### CLI goldens
+
+`zig build cli-test` runs the binary against `test/cli/`: one fixture per block family
+(`hi`, `headings`, `inlines`, `lists`, `code`, `blockquote`, `table`, `footnotes`), each in
+HTML, `--ast` and `--ast --sourcepos` mode, plus the stdin, `-`, option and error cases
+written inline in `build.zig`. The goldens test the CLI path (argv to bytes on stdout, exit
+code), not the parser; parser behaviour belongs in the `.test` suite.
+
+To add a fixture: write `test/cli/NAME.dj`, generate the three expected files with the
+binary and read them, then add `NAME` to `fixtures` in `build.zig` (in that order: the
+build script reads every registered golden at configure time and stops on a missing one):
+
+```
+zig build
+zig-out/bin/zjot test/cli/NAME.dj > test/cli/NAME.html
+zig-out/bin/zjot --ast test/cli/NAME.dj > test/cli/NAME.ast
+zig-out/bin/zjot --ast --sourcepos test/cli/NAME.dj > test/cli/NAME.sourcepos.ast
+```
+
+Regenerate the same way after an intended output change, and review the diff: the
+expected files pin zjot's own output, so a regeneration accepts whatever the binary does.
 
 ## Implementation status
 

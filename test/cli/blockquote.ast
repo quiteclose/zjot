@@ -1,0 +1,9 @@
+doc
+  block_quote
+    para
+      str text="A quote"
+      soft_break
+      str text="with two lines."
+    block_quote
+      para
+        str text="Nested."
