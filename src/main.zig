@@ -15,6 +15,7 @@ const Command = union(enum) {
     help,
     unknown_option: []const u8,
     extra_argument: []const u8,
+    empty_argument,
     sourcepos_without_ast,
 };
 
@@ -35,6 +36,8 @@ fn parseArgs(args: []const [:0]const u8) Command {
             return .help;
         } else if (!options_done and arg.len > 1 and arg[0] == '-') {
             return .{ .unknown_option = arg };
+        } else if (arg.len == 0) {
+            return .empty_argument;
         } else if (have_input) {
             return .{ .extra_argument = arg };
         } else {
@@ -57,6 +60,10 @@ pub fn main(init: std.process.Init) !u8 {
         },
         .extra_argument => |arg| {
             try printErr(init.io, "zjot: unexpected argument: {s}\n", .{arg});
+            return 1;
+        },
+        .empty_argument => {
+            try printErr(init.io, "zjot: empty argument\n", .{});
             return 1;
         },
         .sourcepos_without_ast => {
@@ -153,4 +160,6 @@ test "parseArgs" {
     try std.testing.expectEqualStrings("-x.dj", parseArgs(&.{ "--", "-x.dj" }).render.file_path.?);
     try std.testing.expectEqualStrings("b.dj", parseArgs(&.{ "a.dj", "b.dj" }).extra_argument);
     try std.testing.expectEqual(.sourcepos_without_ast, parseArgs(&.{"--sourcepos"}));
+    try std.testing.expectEqual(.empty_argument, parseArgs(&.{""}));
+    try std.testing.expectEqual(.empty_argument, parseArgs(&.{ "--", "" }));
 }

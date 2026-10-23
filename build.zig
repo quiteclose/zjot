@@ -121,6 +121,13 @@ pub fn build(b: *std.Build) void {
     run_sourcepos.expectStdErrEqual("zjot: --sourcepos requires --ast\n");
     cli_test_step.dependOn(&run_sourcepos.step);
 
+    const run_empty = b.addRunArtifact(golden_exe);
+    run_empty.addArg("");
+    run_empty.expectExitCode(1);
+    run_empty.expectStdOutEqual("");
+    run_empty.expectStdErrEqual("zjot: empty argument\n");
+    cli_test_step.dependOn(&run_empty.step);
+
     const run_ast = b.addRunArtifact(golden_exe);
     run_ast.addArg("--ast");
     run_ast.addFileArg(b.path("test/cli/hi.dj"));
