@@ -1986,3 +1986,96 @@ lazy</dt>
 </blockquote>
 ````
 
+A bare - starts an empty list item.
+````
+-
+.
+<ul>
+<li>
+</li>
+</ul>
+````
+
+A bare - followed by another item.
+````
+-
+- b
+.
+<ul>
+<li>
+</li>
+<li>
+b
+</li>
+</ul>
+````
+
+A bare - with indented content on the next line.
+````
+-
+  content
+.
+<ul>
+<li>
+content
+</li>
+</ul>
+````
+
+A bare * starts an empty list item.
+````
+*
+.
+<ul>
+<li>
+</li>
+</ul>
+````
+
+A bare + starts an empty list item.
+````
++
+.
+<ul>
+<li>
+</li>
+</ul>
+````
+
+An empty first item, a blank, then a paragraph: a loose list.
+````
+-
+
+  p
+- b
+.
+<ul>
+<li>
+<p>p</p>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
+A marker with a trailing space starts an empty item (pin).
+````
+- 
+.
+<ul>
+<li>
+</li>
+</ul>
+````
+
+A bare 1. starts an empty ordered item (pin).
+````
+1.
+.
+<ol>
+<li>
+</li>
+</ol>
+````
+

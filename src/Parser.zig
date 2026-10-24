@@ -1217,13 +1217,15 @@ fn parseBulletMarker(line: []const u8) ?BulletInfo {
     var indent: usize = 0;
     while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
     const trimmed = line[indent..];
-    if (trimmed.len < 2) return null;
+    if (trimmed.len < 1) return null;
     if (trimmed[0] != '-' and trimmed[0] != '+' and trimmed[0] != '*') return null;
-    if (trimmed[1] != ' ' and trimmed[1] != '\t') return null;
+    // The marker alone on its line starts an empty item.
+    if (trimmed.len > 1 and trimmed[1] != ' ' and trimmed[1] != '\t') return null;
     if (trimmed[0] == '-' or trimmed[0] == '*') {
         if (isThematicBreak(line)) return null;
     }
-    return .{ .rest = trimmed[2..], .indent = indent, .content_col = indent + 2, .marker = trimmed[0] };
+    const rest = if (trimmed.len > 1) trimmed[2..] else "";
+    return .{ .rest = rest, .indent = indent, .content_col = indent + 2, .marker = trimmed[0] };
 }
 
 const ListStyle = enum {
