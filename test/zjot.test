@@ -1662,3 +1662,154 @@ lazy</p>
 </blockquote>
 ````
 
+Footnote content keeps indentation relative to its first indented line (4 spaces).
+````
+[^n]:
+    ```
+      x
+    ```
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<pre><code>  x
+</code></pre>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Footnote content keeps indentation relative to its first indented line (2 spaces).
+````
+[^n]:
+  ```
+    x
+  ```
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<pre><code>  x
+</code></pre>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote line indented less than the first keeps what it has (pin).
+````
+[^n]:
+    a
+  b
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>a
+b<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A nested list inside a footnote keeps its structure.
+````
+[^n]:
+    - a
+      - b
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<ul>
+<li>
+a
+- b
+</li>
+</ul>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Text on the definition line does not set the content indent.
+````
+[^n]: text
+
+    ```
+      x
+    ```
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>text</p>
+<pre><code>  x
+</code></pre>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+One space of indentation is enough for footnote content (pin).
+````
+[^n]:
+ a
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>a<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A deeper line after a shallower one keeps its extra indent (pin).
+````
+[^n]:
+  a
+    b
+
+x[^n]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>a
+b<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
