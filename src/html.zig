@@ -10,7 +10,8 @@ pub fn renderNode(a: Allocator, out: *std.ArrayList(u8), node: Node) anyerror!vo
 }
 
 /// `tight` is set inside a tight list item, where paragraphs render without `<p>`. As
-/// in djot.js it reaches through block quotes and divs; a nested list sets its own.
+/// in djot.js it reaches through block quotes, divs and definition lists; a nested list
+/// sets its own.
 fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) anyerror!void {
     switch (node.tag) {
         .section => {
@@ -123,11 +124,11 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
         },
         .definition_list => {
             try out.appendSlice(a, "<dl>\n");
-            for (node.children) |child| try renderNode(a, out, child);
+            for (node.children) |child| try renderBlock(a, out, child, tight);
             try out.appendSlice(a, "</dl>\n");
         },
         .definition_list_item => {
-            for (node.children) |child| try renderNode(a, out, child);
+            for (node.children) |child| try renderBlock(a, out, child, tight);
         },
         .term => {
             try out.appendSlice(a, "<dt>");
@@ -136,7 +137,7 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
         },
         .definition => {
             try out.appendSlice(a, "<dd>\n");
-            for (node.children) |child| try renderNode(a, out, child);
+            for (node.children) |child| try renderBlock(a, out, child, tight);
             try out.appendSlice(a, "</dd>\n");
         },
         .table => {
