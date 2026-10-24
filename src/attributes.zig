@@ -385,6 +385,15 @@ pub fn parseAttrsFromStr(a: Allocator, src: []const u8) ?BlockAttrs {
     return null;
 }
 
+/// Whether `line` opens a block attribute it does not close: `{` followed by attribute
+/// syntax that is still incomplete at the end of the line.
+pub fn opensAttr(a: Allocator, line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len < 1 or trimmed[0] != '{') return false;
+    var parser = AttrParser.init(a, trimmed);
+    return parser.feed(0, trimmed.len -| 1).status == .@"continue";
+}
+
 pub fn parseInlineAttrs(a: Allocator, src: []const u8, pos: usize) ?struct { attrs: BlockAttrs, end: usize } {
     if (pos >= src.len or src[pos] != '{') return null;
     var parser = AttrParser.init(a, src);
