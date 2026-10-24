@@ -89,8 +89,9 @@ pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Def
 
 fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
     const col_adj: u32 = if (line_idx < self.col_offsets.len) self.col_offsets[line_idx] else 0;
-    const display_col = col + col_adj;
-    const off_adj: u32 = if (line_idx < self.offset_adjust.len) self.offset_adjust[line_idx] else 0;
+    // col 0 marks the end of the previous line and stays 0 whatever this line strips.
+    const display_col = if (col == 0) 0 else col + col_adj;
+    const off_adj = self.offsetAdjustAt(line_idx);
     // col is 1-based in djot sourcepos. col==0 means "end of previous line"
     // (e.g. a closing fence), so the byte offset points one before this line.
     const offset = if (line_idx < self.line_offsets.len) blk: {
@@ -100,7 +101,7 @@ fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
         }
         break :blk self.line_offsets[line_idx] + col - 1 + off_adj;
     } else if (self.line_offsets.len > 0)
-        self.line_offsets[self.line_offsets.len - 1] + @as(u32, @intCast(self.lines[self.lines.len - 1].len))
+        self.line_offsets[self.line_offsets.len - 1] + @as(u32, @intCast(self.lines[self.lines.len - 1].len)) + off_adj
     else
         0;
     return .{
@@ -372,20 +373,28 @@ fn tryCodeBlock(self: *Parser) !?Node {
 fn tryBlockQuote(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     if (!startsBlockQuote(line)) return null;
+    const start_line = self.pos;
+    const start_col: u32 = @intCast(countIndent(line) + 1);
 
     var inner_lines: std.ArrayList([]const u8) = .empty;
+    var orig_lines: std.ArrayList(usize) = .empty;
+    var col_offsets: std.ArrayList(u32) = .empty;
     var paragraph = OpenParagraph{};
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
         if (startsBlockQuote(l)) {
             const inner = stripBlockQuotePrefix(l);
             try inner_lines.append(self.a, inner);
+            try orig_lines.append(self.a, self.pos);
+            try col_offsets.append(self.a, @intCast(l.len - inner.len));
             try paragraph.feed(self.a, inner);
             self.pos += 1;
         } else if (!isBlank(l) and paragraph.open and !self.isClosingFence(l) and
             !try self.isBlockStartAt(self.pos))
         {
             try inner_lines.append(self.a, l);
+            try orig_lines.append(self.a, self.pos);
+            try col_offsets.append(self.a, 0);
             try paragraph.feed(self.a, l);
             self.pos += 1;
         } else {
@@ -395,8 +404,18 @@ fn tryBlockQuote(self: *Parser) !?Node {
 
     const inner_text = try inline_mod.joinLines(self.a, inner_lines.items);
     var inner_parser = Parser.init(self.a, inner_text, self.defs);
+    try self.positionSubParser(&inner_parser, orig_lines.items, col_offsets.items);
     const inner_blocks = try inner_parser.parseBlocks();
-    return .{ .tag = .block_quote, .children = inner_blocks };
+    var node = Node{ .tag = .block_quote, .children = inner_blocks };
+    if (self.track_pos) {
+        node.start_pos = self.makePos(start_line, start_col);
+        // A quote followed by a blank line ends with that line, as djot.js.
+        node.end_pos = if (self.pos < self.lines.len and isBlank(self.lines[self.pos]))
+            self.makePos(self.pos + 1, 0)
+        else
+            self.containerEnd();
+    }
+    return node;
 }
 
 fn tryFencedDiv(self: *Parser) !?Node {
@@ -525,8 +544,11 @@ const ItemContent = struct {
     para_lines: std.ArrayList([]const u8),
     block_lines: std.ArrayList([]const u8),
     item_saw_blank: bool,
+    /// For each collected line: the line it came from and the bytes stripped before it.
     para_orig_lines: std.ArrayList(usize),
     para_col_offsets: std.ArrayList(u32),
+    block_orig_lines: std.ArrayList(usize),
+    block_col_offsets: std.ArrayList(u32),
 };
 
 fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, first_rest: []const u8) !ItemContent {
@@ -536,6 +558,8 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         .item_saw_blank = false,
         .para_orig_lines = .empty,
         .para_col_offsets = .empty,
+        .block_orig_lines = .empty,
+        .block_col_offsets = .empty,
     };
 
     try content.para_lines.append(self.a, first_rest);
@@ -574,6 +598,8 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         const next = self.lines[self.pos];
         if (isBlank(next)) {
             try content.block_lines.append(self.a, "");
+            try content.block_orig_lines.append(self.a, self.pos);
+            try content.block_col_offsets.append(self.a, 0);
             try paragraph.feed(self.a, "");
             self.pos += 1;
             continue;
@@ -586,6 +612,8 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             else
                 @min(next_indent, content_col);
             try content.block_lines.append(self.a, next[strip..]);
+            try content.block_orig_lines.append(self.a, self.pos);
+            try content.block_col_offsets.append(self.a, @intCast(strip));
             try paragraph.feed(self.a, next[strip..]);
             self.pos += 1;
             continue;
@@ -593,6 +621,8 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         if (paragraph.open and !(try self.isBlockStartAt(self.pos))) {
             const lazy = std.mem.trimStart(u8, next, " \t");
             try content.block_lines.append(self.a, lazy);
+            try content.block_orig_lines.append(self.a, self.pos);
+            try content.block_col_offsets.append(self.a, @intCast(next.len - lazy.len));
             try paragraph.feed(self.a, lazy);
             self.pos += 1;
             continue;
@@ -600,7 +630,11 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         break;
     }
 
-    while (content.block_lines.items.len > 0 and isBlank(content.block_lines.items[content.block_lines.items.len - 1])) _ = content.block_lines.pop();
+    while (content.block_lines.items.len > 0 and isBlank(content.block_lines.items[content.block_lines.items.len - 1])) {
+        _ = content.block_lines.pop();
+        _ = content.block_orig_lines.pop();
+        _ = content.block_col_offsets.pop();
+    }
 
     return content;
 }
@@ -611,22 +645,7 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
     const para_text = try inline_mod.joinLines(self.a, content.para_lines.items);
     if (para_text.len > 0) {
         var para_parser = Parser.init(self.a, para_text, self.defs);
-        if (self.track_pos and content.para_orig_lines.items.len > 0) {
-            para_parser.track_pos = true;
-            const first_orig = content.para_orig_lines.items[0];
-            const first_col_off = content.para_col_offsets.items[0];
-            para_parser.base_line = self.base_line + @as(u32, @intCast(first_orig));
-            para_parser.base_offset = self.makePos(first_orig, first_col_off + 1).offset;
-            para_parser.col_offsets = content.para_col_offsets.items;
-            // The inner text lacks what each line had stripped; offsets add it back.
-            const adjust = try self.a.alloc(u32, content.para_col_offsets.items.len);
-            var stripped: u32 = 0;
-            for (content.para_col_offsets.items, adjust) |strip, *adj| {
-                stripped += strip;
-                adj.* = stripped - first_col_off;
-            }
-            para_parser.offset_adjust = adjust;
-        }
+        try self.positionSubParser(&para_parser, content.para_orig_lines.items, content.para_col_offsets.items);
         const blocks = try para_parser.parseBlocks();
         for (blocks) |b| try inner_blocks.append(self.a, b);
     }
@@ -634,11 +653,60 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
     if (content.block_lines.items.len > 0) {
         const block_text = try inline_mod.joinLines(self.a, content.block_lines.items);
         var block_parser = Parser.init(self.a, block_text, self.defs);
+        try self.positionSubParser(&block_parser, content.block_orig_lines.items, content.block_col_offsets.items);
         const blocks = try block_parser.parseBlocks();
         for (blocks) |b| try inner_blocks.append(self.a, b);
     }
 
     return inner_blocks.toOwnedSlice(self.a);
+}
+
+/// Where a container ends, as djot.js: at the end of the input, or where the next
+/// block's content starts on the line the parser stopped at.
+fn containerEnd(self: *Parser) SourcePos {
+    if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
+    return self.makePos(self.pos, @intCast(countIndent(self.lines[self.pos]) + 1));
+}
+
+/// Where a list item ends, as djot.js: at the end of the input, or on the line the list
+/// stopped at, in the column of the list's marker (col 0, the end of the previous line,
+/// for an unindented list).
+fn itemEnd(self: *Parser, list_indent: usize, marker_line: usize) SourcePos {
+    if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
+    const first = self.makePos(self.pos, 1);
+    const line_start = first.offset - (if (self.pos < self.col_offsets.len) self.col_offsets[self.pos] else 0);
+    const indent: u32 = @as(u32, @intCast(list_indent)) + (if (marker_line < self.col_offsets.len) self.col_offsets[marker_line] else 0);
+    return .{ .line = first.line, .col = indent, .offset = line_start - 1 + indent };
+}
+
+/// Bytes the enclosing containers stripped from this parser's lines up to `line_idx`,
+/// which the joined text no longer contains; past the last line, all of them.
+fn offsetAdjustAt(self: *const Parser, line_idx: usize) u32 {
+    if (self.offset_adjust.len == 0) return 0;
+    return self.offset_adjust[@min(line_idx, self.offset_adjust.len - 1)];
+}
+
+/// Gives a sub-parser over joined container lines the positions of the lines they came
+/// from: `orig_lines` is each line's index here, `col_offsets` the bytes stripped from
+/// its start. Columns add the stripped bytes of their own line, this parser's included;
+/// byte offsets add those of every line so far, at every level.
+fn positionSubParser(self: *Parser, sub: *Parser, orig_lines: []const usize, col_offsets: []const u32) !void {
+    if (!self.track_pos or orig_lines.len == 0) return;
+    sub.track_pos = true;
+    const first_orig = orig_lines[0];
+    const first_col_off = col_offsets[0];
+    sub.base_line = self.base_line + @as(u32, @intCast(first_orig));
+    sub.base_offset = self.makePos(first_orig, first_col_off + 1).offset;
+    const cols = try self.a.alloc(u32, col_offsets.len);
+    const adjust = try self.a.alloc(u32, col_offsets.len);
+    var stripped: u32 = 0;
+    for (col_offsets, orig_lines, cols, adjust) |strip, orig, *col, *adj| {
+        col.* = strip + (if (orig < self.col_offsets.len) self.col_offsets[orig] else 0);
+        stripped += strip;
+        adj.* = stripped - first_col_off + (self.offsetAdjustAt(orig) - self.offsetAdjustAt(first_orig));
+    }
+    sub.col_offsets = cols;
+    sub.offset_adjust = adjust;
 }
 
 fn updateListTightness(is_tight: *bool, saw_blank_between: *bool, content: *const ItemContent, inner_blocks: []const Node) void {
@@ -695,10 +763,7 @@ fn tryBulletList(self: *Parser) !?Node {
 
         const inner_blocks = try self.parseItemContent(&content);
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) blk: {
-            const ep_col: u32 = if (self.pos >= self.lines.len) 0 else 1;
-            break :blk self.makePos(self.pos, ep_col);
-        } else null;
+        const item_ep = if (self.track_pos) self.itemEnd(list_indent, item_start_line) else null;
 
         if (is_task) {
             try items.append(self.a, .{ .tag = .task_list_item, .children = inner_blocks, .checked = task_checked, .start_pos = item_sp, .end_pos = item_ep });
@@ -719,7 +784,7 @@ fn tryBulletList(self: *Parser) !?Node {
 
     const list_tag: Tag = if (has_task) .task_list else .bullet_list;
     const list_sp = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null;
-    const list_ep = if (self.track_pos) self.makePos(self.pos, 0) else null;
+    const list_ep = if (self.track_pos) self.containerEnd() else null;
     const marker_str: []const u8 = switch (marker_char) {
         '-' => "-",
         '+' => "+",
@@ -794,10 +859,7 @@ fn tryOrderedList(self: *Parser) !?Node {
         const inner_blocks = try self.parseItemContent(&content);
 
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) blk: {
-            const ep_col: u32 = if (self.pos >= self.lines.len) 0 else 1;
-            break :blk self.makePos(self.pos, ep_col);
-        } else null;
+        const item_ep = if (self.track_pos) self.itemEnd(list_indent, item_start_line) else null;
         try items.append(self.a, .{ .tag = .list_item, .children = inner_blocks, .start_pos = item_sp, .end_pos = item_ep });
 
         updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
@@ -815,7 +877,7 @@ fn tryOrderedList(self: *Parser) !?Node {
         try ol_attrs.append(self.a, .{ .key = "type", .value = t });
     }
     const list_sp = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null;
-    const list_ep = if (self.track_pos) self.makePos(self.pos, 0) else null;
+    const list_ep = if (self.track_pos) self.containerEnd() else null;
     return .{
         .tag = .ordered_list,
         .children = try items.toOwnedSlice(self.a),
