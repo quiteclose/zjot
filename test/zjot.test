@@ -6,7 +6,16 @@ Every expected output in this file was produced by djot.js 0.3.2 on 2026-10-23:
 
 Expectations are never written by hand. A case goes in only when zjot and djot.js
 agree on it; where zjot deliberately differs from djot.js, the difference is written
-down here instead of pinned as a case. Deliberate differences: none.
+down here instead of pinned as a case.
+
+Deliberate differences from djot.js 0.3.2:
+
+1. Block attributes do not survive a blank line, and a block attribute left pending
+   when a container (block quote, list item, fenced div, footnote) ends is dropped.
+   djot.js 0.3.2 applies `{.c}`, blank, `para` to the paragraph and carries `> {.c}`
+   out of the quote onto the next block, but its own test suite (attributes.test,
+   "If there is a blank line between, the attributes won't be applied") says it must
+   not; zjot follows the suite. Checked 2026-10-23.
 
 
 Heading ids: generated ids follow document order wherever the heading sits.
