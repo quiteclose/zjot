@@ -1,13 +1,13 @@
 doc
   section id="Top"
-    heading level=1
+    heading (1:1:0-2:0:5) level=1
       str text="Top"
     section id="custom"
-      heading level=2
+      heading (4:1:17-5:0:26) level=2
         str text="Second"
       section id="Third"
-        heading level=3
+        heading (6:1:28-7:0:37) level=3
           str text="Third"
     section id="Second"
-      heading level=2
+      heading (8:1:39-9:0:48) level=2
         str text="Second"

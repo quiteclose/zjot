@@ -1,3 +1,3 @@
 doc
-  code_block text="const x = 1;\n" lang="zig"
-  raw_block text="<hr>\n" lang="html"
+  code_block (1:1:0-3:3:23) text="const x = 1;\n" lang="zig"
+  raw_block (5:1:26-7:3:43) text="<hr>\n" lang="html"
