@@ -1559,3 +1559,106 @@ A blank line before a block quote in an empty item makes the list loose.
 </ul>
 ````
 
+A nested block quote whose last block is a code block takes no lazy continuation.
+````
+> > quote
+> >
+> > ```
+> > code
+lazy
+.
+<blockquote>
+<blockquote>
+<p>quote</p>
+<pre><code>code
+</code></pre>
+</blockquote>
+</blockquote>
+<p>lazy</p>
+````
+
+The same through a list item.
+````
+- a
+
+  > q
+  >
+  > ```
+  > code
+lazy
+.
+<ul>
+<li>
+<p>a</p>
+<blockquote>
+<p>q</p>
+<pre><code>code
+</code></pre>
+</blockquote>
+</li>
+</ul>
+<p>lazy</p>
+````
+
+The same at three levels.
+````
+> > > q
+> > >
+> > > ```
+> > > c
+lazy
+.
+<blockquote>
+<blockquote>
+<blockquote>
+<p>q</p>
+<pre><code>c
+</code></pre>
+</blockquote>
+</blockquote>
+</blockquote>
+<p>lazy</p>
+````
+
+A nested block quote's paragraph continues lazily (pin).
+````
+> > quote
+lazy
+.
+<blockquote>
+<blockquote>
+<p>quote
+lazy</p>
+</blockquote>
+</blockquote>
+````
+
+A nested block quote's paragraph after a blank continues lazily (pin).
+````
+> > quote
+> >
+> > para
+lazy
+.
+<blockquote>
+<blockquote>
+<p>quote</p>
+<p>para
+lazy</p>
+</blockquote>
+</blockquote>
+````
+
+A quote line inside an open paragraph is text; the paragraph continues lazily (pin).
+````
+> quote
+> > nested
+lazy
+.
+<blockquote>
+<p>quote
+&gt; nested
+lazy</p>
+</blockquote>
+````
+
