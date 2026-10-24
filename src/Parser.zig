@@ -373,13 +373,13 @@ fn tryBlockQuote(self: *Parser) !?Node {
         if (startsBlockQuote(l)) {
             const inner = stripBlockQuotePrefix(l);
             try inner_lines.append(self.a, inner);
-            paragraph.feed(self.a, inner);
+            try paragraph.feed(self.a, inner);
             self.pos += 1;
         } else if (!isBlank(l) and paragraph.open and !self.isClosingFence(l) and
             !try self.isBlockStartAt(self.pos))
         {
             try inner_lines.append(self.a, l);
-            paragraph.feed(self.a, l);
+            try paragraph.feed(self.a, l);
             self.pos += 1;
         } else {
             break;
@@ -470,7 +470,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
     var paragraph = OpenParagraph{};
     if (rest.len > 0) {
         try content_lines.append(self.a, rest);
-        paragraph.feed(self.a, rest);
+        try paragraph.feed(self.a, rest);
     }
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
@@ -482,7 +482,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
                 (self.lines[lookahead][0] == ' ' or self.lines[lookahead][0] == '\t'))
             {
                 try content_lines.append(self.a, "");
-                paragraph.feed(self.a, "");
+                try paragraph.feed(self.a, "");
                 self.pos += 1;
             } else break;
         } else if ((l[0] == ' ' or l[0] == '\t') or (paragraph.open and !try self.isBlockStartAt(self.pos))) {
@@ -490,7 +490,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
             // open paragraph, as in a list item.
             const content = std.mem.trimStart(u8, l, " \t");
             try content_lines.append(self.a, content);
-            paragraph.feed(self.a, content);
+            try paragraph.feed(self.a, content);
             self.pos += 1;
         } else break;
     }
@@ -555,7 +555,7 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
         const next = self.lines[self.pos];
         if (isBlank(next)) {
             try content.block_lines.append(self.a, "");
-            paragraph.feed(self.a, "");
+            try paragraph.feed(self.a, "");
             self.pos += 1;
             continue;
         }
@@ -567,14 +567,14 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             else
                 @min(next_indent, content_col);
             try content.block_lines.append(self.a, next[strip..]);
-            paragraph.feed(self.a, next[strip..]);
+            try paragraph.feed(self.a, next[strip..]);
             self.pos += 1;
             continue;
         }
         if (paragraph.open and !(try self.isBlockStartAt(self.pos))) {
             const lazy = std.mem.trimStart(u8, next, " \t");
             try content.block_lines.append(self.a, lazy);
-            paragraph.feed(self.a, lazy);
+            try paragraph.feed(self.a, lazy);
             self.pos += 1;
             continue;
         }
@@ -1055,14 +1055,30 @@ fn isClosingCodeFence(line: []const u8, fence: FenceInfo) bool {
 /// block, thematic break, table row, reference definition, empty footnote definition or
 /// attribute line starts closed. A div fence met outside a paragraph opens a div, and a
 /// bare one closes the innermost div and whatever paragraph it held (fence lengths are
-/// not matched; djot.js does not either). One nesting level: a container's own lines
-/// are read as text, so a nested quote whose tip is a code block still counts as open.
+/// not matched; djot.js does not either). A block quote met outside a paragraph gets a
+/// tracker of its own over its stripped lines, so a nested quote whose tip is a code
+/// block counts as closed; list items are read as text (their fences and rules are
+/// recognised whatever the indent).
 const OpenParagraph = struct {
     open: bool = false,
     fence: ?FenceInfo = null,
     divs: usize = 0,
+    quote: ?*OpenParagraph = null,
 
-    fn feed(self: *OpenParagraph, a: Allocator, line: []const u8) void {
+    fn feed(self: *OpenParagraph, a: Allocator, line: []const u8) !void {
+        if (self.quote) |q| {
+            if (isBlank(line)) {
+                self.quote = null;
+                self.open = false;
+                return;
+            }
+            if (startsBlockQuote(line) or q.open) {
+                try q.feed(a, if (startsBlockQuote(line)) stripBlockQuotePrefix(line) else line);
+                self.open = q.open;
+                return;
+            }
+            self.quote = null; // the nested quote is closed; this line is ours
+        }
         if (self.fence) |f| {
             if (isClosingCodeFence(line, f)) self.fence = null;
             return;
@@ -1085,6 +1101,14 @@ const OpenParagraph = struct {
         if (self.open) return;
         if (isCodeFence(line)) |f| {
             self.fence = f;
+            return;
+        }
+        if (startsBlockQuote(line)) {
+            const q = try a.create(OpenParagraph);
+            q.* = .{};
+            try q.feed(a, stripBlockQuotePrefix(line));
+            self.quote = q;
+            self.open = q.open;
             return;
         }
         if (definitionLabel(line)) |def| {
