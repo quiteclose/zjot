@@ -169,6 +169,9 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
             pending_attrs = mergeBlockAttrs(self.a, pending_attrs, ba) catch ba;
             continue;
         }
+        // A block attribute that opened but could not close is text, read without
+        // attributes, as djot.js reparses it.
+        const failed_attr = attrs_mod.opensAttr(self.a, line);
 
         var node: Node = undefined;
 
@@ -197,7 +200,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
         } else if (try self.tryTable()) |tbl| {
             node = tbl;
         } else {
-            node = try self.parseParagraph();
+            node = try self.parseParagraph(failed_attr);
         }
 
         if (pending_attrs) |ba| node = inline_mod.applyBlockAttrsToNode(node, ba);
@@ -250,7 +253,9 @@ fn isClosingFence(self: *const Parser, line: []const u8) bool {
     return countLeadingChar(line, ':') >= marker.len and isBlank(std.mem.trimStart(u8, line, ":"));
 }
 
-fn parseParagraph(self: *Parser) !Node {
+/// `literal_first_line`: the first line was a failed block attribute; no inline attribute
+/// is read from it.
+fn parseParagraph(self: *Parser, literal_first_line: bool) !Node {
     const para_start_line = self.pos;
     var text_lines: std.ArrayList([]const u8) = .empty;
     while (self.pos < self.lines.len) {
@@ -261,7 +266,8 @@ fn parseParagraph(self: *Parser) !Node {
         self.pos += 1;
     }
 
-    var para = Node{ .tag = .para, .children = try self.parseInlinesAt(text_lines.items, para_start_line) };
+    const attrs_from: usize = if (literal_first_line) text_lines.items[0].len else 0;
+    var para = Node{ .tag = .para, .children = try self.parseInlinesFrom(text_lines.items, para_start_line, attrs_from) };
     if (self.track_pos) {
         para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
         para.end_pos = self.leafEnd(para.children, self.pos - 1);
@@ -297,10 +303,15 @@ fn afterNewline(self: *Parser, line_idx: usize) SourcePos {
 /// Parses the inline content of `slices`, each a slice of its line, taken from the
 /// consecutive lines starting at `first_line`; positioned when positions are tracked.
 fn parseInlinesAt(self: *Parser, slices: []const []const u8, first_line: usize) ![]const Node {
+    return self.parseInlinesFrom(slices, first_line, 0);
+}
+
+/// As `parseInlinesAt`, reading no inline attribute before joined offset `attrs_from`.
+fn parseInlinesFrom(self: *Parser, slices: []const []const u8, first_line: usize, attrs_from: usize) ![]const Node {
     const src = try inline_mod.joinLines(self.a, slices);
     if (src.len == 0) return &.{};
     const map: ?LineMap = if (self.track_pos) try self.buildInlineLineMap(slices, first_line) else null;
-    return inline_mod.parseInlineContent(self.a, src, map);
+    return inline_mod.parseInlineContent(self.a, src, map, attrs_from);
 }
 
 fn contentCol(self: *Parser, line_idx: usize) u32 {

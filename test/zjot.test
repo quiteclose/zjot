@@ -5656,3 +5656,75 @@ See [Foo][] and [FOO][]
 <p>See <a href="#Foo">Foo</a> and <a>FOO</a></p>
 </section>
 ````
+
+A block attribute that opens but cannot close is text, as djot.js reparses it.
+````
+{.a
+.b}
+para
+.
+<p>{.a
+.b}
+para</p>
+````
+
+A failed multi-line block attribute followed by text on its closing line.
+````
+{.a
+.b} y
+.
+<p>{.a
+.b} y</p>
+````
+
+A failed block attribute after one that applied.
+````
+{.a .b}
+{.c
+.d}
+para
+.
+<p class="a b">{.c
+.d}
+para</p>
+````
+
+A failed block attribute alone in a paragraph.
+````
+{.a
+.b}
+
+para
+.
+<p>{.a
+.b}</p>
+<p>para</p>
+````
+
+An indented failed block attribute.
+````
+  {.a
+  .b}
+para
+.
+<p>{.a
+.b}
+para</p>
+````
+
+An inline attribute with nothing before it applies to nothing.
+````
+{.a} word
+.
+<p> word</p>
+````
+
+A failed block attribute after a paragraph line is an inline attribute, dropped.
+````
+word
+{.a
+.b}
+.
+<p>word
+</p>
+````

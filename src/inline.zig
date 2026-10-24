@@ -27,9 +27,10 @@ const OpenerInfo = struct {
 };
 
 /// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
-/// the document position of the source it came from; without, none does.
-pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap) anyerror![]const Node {
-    var sc = Scanner{ .a = a, .src = src, .map = map };
+/// the document position of the source it came from; without, none does. No inline
+/// attribute is read before `attrs_from` (the text of a failed block attribute).
+pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize) anyerror![]const Node {
+    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from };
     try sc.run();
     return sc.resolveItems(sc.items.items);
 }
@@ -41,6 +42,7 @@ const Scanner = struct {
     a: Allocator,
     src: []const u8,
     map: ?LineMap,
+    attrs_from: usize = 0,
     items: std.ArrayList(InlineItem) = .empty,
     openers: std.ArrayList(OpenerInfo) = .empty,
 
@@ -211,7 +213,7 @@ const Scanner = struct {
                         }
                     }
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (attrs.parseInlineAttrs(sc.a, src, pos)) |parsed| {
+                    if (if (pos >= sc.attrs_from) attrs.parseInlineAttrs(sc.a, src, pos) else null) |parsed| {
                         try sc.applyInlineAttrs(parsed.attrs);
                         pos = parsed.end;
                     } else {
