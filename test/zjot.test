@@ -2079,3 +2079,104 @@ A bare 1. starts an empty ordered item (pin).
 </ol>
 ````
 
+A code fence ends a nested block quote; the container's paragraph is not open afterwards.
+````
+> > quote
+> ```
+> code
+lazy
+.
+<blockquote>
+<blockquote>
+<p>quote</p>
+</blockquote>
+<pre><code>code
+</code></pre>
+</blockquote>
+<p>lazy</p>
+````
+
+The same through a list item.
+````
+- a
+
+  > q
+  ```
+  code
+lazy
+.
+<ul>
+<li>
+<p>a</p>
+<blockquote>
+<p>q</p>
+</blockquote>
+<pre><code>code
+</code></pre>
+</li>
+</ul>
+<p>lazy</p>
+````
+
+A fenced div ends a nested block quote; the container's paragraph is not open afterwards.
+````
+> > q
+> ::: d
+> x
+> :::
+lazy
+.
+<blockquote>
+<blockquote>
+<p>q</p>
+</blockquote>
+<div class="d">
+<p>x</p>
+</div>
+</blockquote>
+<p>lazy</p>
+````
+
+A code fence ends a heading in a block quote; no lazy continuation after the code block.
+````
+> # H
+> ```
+> code
+lazy
+.
+<blockquote>
+<h1 id="H">H</h1>
+<pre><code>code
+</code></pre>
+</blockquote>
+<p>lazy</p>
+````
+
+A heading in a block quote continues lazily (pin).
+````
+> # H
+lazy
+.
+<blockquote>
+<h1 id="H-lazy">H
+lazy</h1>
+</blockquote>
+````
+
+A list marker ends a heading in a block quote; the item then continues lazily (pin).
+````
+> # H
+> - a
+lazy
+.
+<blockquote>
+<h1 id="H">H</h1>
+<ul>
+<li>
+a
+lazy
+</li>
+</ul>
+</blockquote>
+````
+

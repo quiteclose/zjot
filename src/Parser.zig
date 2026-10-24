@@ -497,9 +497,8 @@ fn tryFootnoteDef(self: *Parser) !?void {
             self.pos += 1;
         } else if (paragraph.open and !try self.isBlockStartAt(self.pos)) {
             // An unindented line continues an open paragraph, as in a list item.
-            const content = std.mem.trimStart(u8, l, " \t");
-            try content_lines.append(self.a, content);
-            try paragraph.feed(self.a, content);
+            try content_lines.append(self.a, l);
+            try paragraph.feed(self.a, l);
             self.pos += 1;
         } else break;
     }
@@ -1007,7 +1006,13 @@ pub fn isBlank(line: []const u8) bool {
 /// lazy paragraph continuation stops there. The set is djot.js's: every block start,
 /// definitions and attribute blocks included.
 fn isBlockStartAt(self: *Parser, pos: usize) !bool {
-    const line = self.lines[pos];
+    if (isBlockStartLine(self.a, self.lines[pos])) return true;
+    return (try self.blockAttrAt(pos)) != null;
+}
+
+/// `isBlockStartAt` for a line on its own: everything but an attribute block that
+/// continues over the following lines.
+fn isBlockStartLine(a: Allocator, line: []const u8) bool {
     const trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len == 0) return false;
     if (headingLevel(trimmed) != null) return true;
@@ -1020,7 +1025,7 @@ fn isBlockStartAt(self: *Parser, pos: usize) !bool {
     if (definitionLabel(line) != null) return true;
     if (isTableRow(line)) return true;
     if (isFencedDivStart(line) != null) return true;
-    return (try self.blockAttrAt(pos)) != null;
+    return attrs_mod.tryParseBlockAttr(a, line) != null;
 }
 
 /// Visual indent width. Tabs count as 4 spaces per the djot spec.
@@ -1070,35 +1075,46 @@ fn isClosingCodeFence(line: []const u8, fence: FenceInfo) bool {
     return run >= fence.len and isBlank(std.mem.trimStart(u8, rest[run..], &[_]u8{fence.char}));
 }
 
-/// Whether the lines collected so far into a container leave a paragraph (or another
-/// block that takes continuation lines) open, which is what an unindented line may
-/// lazily continue. Nothing interrupts an open paragraph; after a blank line, a code
-/// block, thematic break, table row, reference definition, empty footnote definition or
-/// attribute line starts closed. A div fence met outside a paragraph opens a div, and a
-/// bare one closes the innermost div and whatever paragraph it held (fence lengths are
+/// Whether the lines collected so far into a container leave a paragraph (or a heading,
+/// which also takes continuation lines) open, which is what an unindented line may
+/// lazily continue. It follows the parser's own rules: nothing interrupts a paragraph; a
+/// heading ends at what `tryHeading` stops at; a blank line closes either; after that a
+/// code block, thematic break, table row, reference definition, empty footnote
+/// definition or attribute line starts closed. A div fence met outside a paragraph opens
+/// a div and a bare one closes the innermost div and whatever it held (fence lengths are
 /// not matched; djot.js does not either). A block quote met outside a paragraph gets a
-/// tracker of its own over its stripped lines, so a nested quote whose tip is a code
-/// block counts as closed; list items are read as text (their fences and rules are
-/// recognised whatever the indent).
+/// tracker of its own over its stripped lines, and a line that is not a quote line ends
+/// it unless it is lazy text for the quote's open paragraph. List items are read as text
+/// (their fences and rules are recognised whatever the indent).
 const OpenParagraph = struct {
     open: bool = false,
+    heading: bool = false,
     fence: ?FenceInfo = null,
     divs: usize = 0,
     quote: ?*OpenParagraph = null,
+    in_quote: bool = false,
 
     fn feed(self: *OpenParagraph, a: Allocator, line: []const u8) !void {
-        if (self.quote) |q| {
+        if (self.in_quote) {
+            const q = self.quote.?;
             if (isBlank(line)) {
-                self.quote = null;
+                self.in_quote = false;
                 self.open = false;
                 return;
             }
-            if (startsBlockQuote(line) or q.open) {
-                try q.feed(a, if (startsBlockQuote(line)) stripBlockQuotePrefix(line) else line);
+            if (startsBlockQuote(line)) {
+                try q.feed(a, stripBlockQuotePrefix(line));
                 self.open = q.open;
                 return;
             }
-            self.quote = null; // the nested quote is closed; this line is ours
+            if (q.open and !isBlockStartLine(a, line)) {
+                try q.feed(a, line);
+                self.open = q.open;
+                return;
+            }
+            // The nested quote has ended; this line is ours.
+            self.in_quote = false;
+            self.open = false;
         }
         if (self.fence) |f| {
             if (isClosingCodeFence(line, f)) self.fence = null;
@@ -1106,29 +1122,35 @@ const OpenParagraph = struct {
         }
         if (isBlank(line)) {
             self.open = false;
+            self.heading = false;
             return;
         }
-        if (isFencedDivStart(line)) |div| {
-            if (self.divs > 0 and div.class == null) {
-                self.divs -= 1;
-                self.open = false;
-                return;
+        if (self.open and !(self.heading and endsHeading(a, line))) {
+            if (isFencedDivStart(line)) |div| {
+                if (self.divs > 0 and div.class == null) {
+                    self.divs -= 1;
+                    self.open = false;
+                    self.heading = false;
+                }
             }
-            if (!self.open) {
-                self.divs += 1;
-                return;
-            }
+            return;
         }
-        if (self.open) return;
+        self.open = false;
+        self.heading = false;
+        if (isFencedDivStart(line)) |div| {
+            if (self.divs > 0 and div.class == null) self.divs -= 1 else self.divs += 1;
+            return;
+        }
         if (isCodeFence(line)) |f| {
             self.fence = f;
             return;
         }
         if (startsBlockQuote(line)) {
-            const q = try a.create(OpenParagraph);
+            const q = self.quote orelse try a.create(OpenParagraph);
             q.* = .{};
             try q.feed(a, stripBlockQuotePrefix(line));
             self.quote = q;
+            self.in_quote = true;
             self.open = q.open;
             return;
         }
@@ -1136,7 +1158,16 @@ const OpenParagraph = struct {
             self.open = def.is_footnote and def.rest.len > 0;
             return;
         }
-        self.open = !(isThematicBreak(line) or isTableRow(line) or attrs_mod.tryParseBlockAttr(a, line) != null);
+        if (isThematicBreak(line) or isTableRow(line) or attrs_mod.tryParseBlockAttr(a, line) != null) return;
+        self.open = true;
+        self.heading = headingLevel(std.mem.trimStart(u8, line, " \t")) != null;
+    }
+
+    /// What `tryHeading` stops at.
+    fn endsHeading(a: Allocator, line: []const u8) bool {
+        return isThematicBreak(line) or isCodeFence(line) != null or startsBlockQuote(line) or
+            isFencedDivStart(line) != null or parseBulletMarker(line) != null or
+            parseOrderedMarker(line) != null or attrs_mod.tryParseBlockAttr(a, line) != null;
     }
 };
 
