@@ -5728,3 +5728,153 @@ word
 <p>word
 </p>
 ````
+
+Attributes on emphasis render.
+````
+_e_{.a}
+.
+<p><em class="a">e</em></p>
+````
+
+Attributes on strong emphasis render.
+````
+*s*{.a}
+.
+<p><strong class="a">s</strong></p>
+````
+
+Attributes on verbatim render.
+````
+`v`{.a}
+.
+<p><code class="a">v</code></p>
+````
+
+Attributes on superscript render.
+````
+^s^{.a}
+.
+<p><sup class="a">s</sup></p>
+````
+
+Attributes on subscript render.
+````
+~s~{.a}
+.
+<p><sub class="a">s</sub></p>
+````
+
+Attributes on insert render.
+````
+{+i+}{.a}
+.
+<p><ins class="a">i</ins></p>
+````
+
+Attributes on delete render.
+````
+{-d-}{.a}
+.
+<p><del class="a">d</del></p>
+````
+
+Attributes on mark render.
+````
+{=m=}{.a}
+.
+<p><mark class="a">m</mark></p>
+````
+
+Attributes on an image follow its src.
+````
+![i](u){.a}
+.
+<p><img alt="i" src="u" class="a"></p>
+````
+
+Attributes on an autolink follow its href.
+````
+<http://x>{.a}
+.
+<p><a href="http://x" class="a">http://x</a></p>
+````
+
+Attributes on an email autolink.
+````
+<a@b.c>{.a}
+.
+<p><a href="mailto:a@b.c" class="a">a@b.c</a></p>
+````
+
+A class on inline math joins the intrinsic class.
+````
+$`m`{.a}
+.
+<p><span class="math inline a">\(m\)</span></p>
+````
+
+A class on display math joins the intrinsic class.
+````
+$$`m`{.a}
+.
+<p><span class="math display a">\[m\]</span></p>
+````
+
+Id and other attributes on math follow the class.
+````
+$`m`{#i .a k=v}
+.
+<p><span class="math inline a" id="i" k="v">\(m\)</span></p>
+````
+
+Attributes on emphasis keep their source order.
+````
+_e_{#i .a k=v}
+.
+<p><em id="i" class="a" k="v">e</em></p>
+````
+
+Attributes on an image keep their source order.
+````
+![i](u){#i k=v .a}
+.
+<p><img alt="i" src="u" id="i" k="v" class="a"></p>
+````
+
+Id, class and key on verbatim.
+````
+`v`{#i .a k=v}
+.
+<p><code id="i" class="a" k="v">v</code></p>
+````
+
+Id, class and key on a link.
+````
+[l](u){#i .a k=v}
+.
+<p><a href="u" id="i" class="a" k="v">l</a></p>
+````
+
+Id and key on an autolink.
+````
+<http://x>{#i k=v}
+.
+<p><a href="http://x" id="i" k="v">http://x</a></p>
+````
+
+A class on a footnote reference follows its role.
+````
+x[^n]{.a}
+
+[^n]: n
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref" class="a"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>n<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````

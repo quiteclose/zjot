@@ -835,6 +835,11 @@ const Scanner = struct {
             .delete,
             .double_quoted,
             .single_quoted,
+            .url,
+            .email,
+            .inline_math,
+            .display_math,
+            .footnote_reference,
             => {
                 nodes.items[nodes.items.len - 1] = applyBlockAttrsToNode(last.*, ba);
             },

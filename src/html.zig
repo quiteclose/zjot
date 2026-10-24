@@ -179,17 +179,23 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
         .soft_break => try out.append(a, '\n'),
         .hard_break => try out.appendSlice(a, "<br>\n"),
         .emph => {
-            try out.appendSlice(a, "<em>");
+            try out.appendSlice(a, "<em");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</em>");
         },
         .strong => {
-            try out.appendSlice(a, "<strong>");
+            try out.appendSlice(a, "<strong");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</strong>");
         },
         .verbatim => {
-            try out.appendSlice(a, "<code>");
+            try out.appendSlice(a, "<code");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             try appendEscaped(a, out, node.text);
             try out.appendSlice(a, "</code>");
         },
@@ -200,13 +206,7 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
                 try appendAttrEscaped(a, out, dest);
                 try out.appendSlice(a, "\"");
             }
-            for (node.attrs) |attr| {
-                try out.append(a, ' ');
-                try out.appendSlice(a, attr.key);
-                try out.appendSlice(a, "=\"");
-                try appendAttrEscaped(a, out, attr.value);
-                try out.appendSlice(a, "\"");
-            }
+            try renderAttrs(a, out, node);
             try out.appendSlice(a, ">");
             if (node.children.len > 0) {
                 for (node.children) |child| try renderNode(a, out, child);
@@ -224,6 +224,7 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
                 try appendAttrEscaped(a, out, dest);
                 try out.appendSlice(a, "\"");
             }
+            try renderAttrs(a, out, node);
             try out.appendSlice(a, ">");
         },
         .span => {
@@ -245,56 +246,67 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
                 try appendAttrEscaped(a, out, dest);
                 try out.appendSlice(a, "\"");
             }
-            try out.appendSlice(a, " role=\"doc-noteref\"><sup>");
+            try out.appendSlice(a, " role=\"doc-noteref\"");
+            try renderAttrsExceptId(a, out, node);
+            try out.appendSlice(a, "><sup>");
             try appendEscaped(a, out, node.text);
             try out.appendSlice(a, "</sup></a>");
         },
         .superscript => {
-            try out.appendSlice(a, "<sup>");
+            try out.appendSlice(a, "<sup");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</sup>");
         },
         .subscript => {
-            try out.appendSlice(a, "<sub>");
+            try out.appendSlice(a, "<sub");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</sub>");
         },
         .insert => {
-            try out.appendSlice(a, "<ins>");
+            try out.appendSlice(a, "<ins");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</ins>");
         },
         .delete => {
-            try out.appendSlice(a, "<del>");
+            try out.appendSlice(a, "<del");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</del>");
         },
         .mark => {
-            try out.appendSlice(a, "<mark>");
+            try out.appendSlice(a, "<mark");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</mark>");
         },
-        .inline_math => {
-            try out.appendSlice(a, "<span class=\"math inline\">\\(");
+        .inline_math, .display_math => {
+            // The node's class joins the intrinsic one; its other attributes follow, as djot.js.
+            const display = node.tag == .display_math;
+            try out.appendSlice(a, if (display) "<span class=\"math display" else "<span class=\"math inline");
+            if (nodeClass(node)) |cls| {
+                try out.append(a, ' ');
+                try appendAttrEscaped(a, out, cls);
+            }
+            try out.appendSlice(a, "\"");
+            try renderFilteredAttrs(a, out, node, true);
+            try out.appendSlice(a, if (display) ">\\[" else ">\\(");
             try appendEscaped(a, out, node.text);
-            try out.appendSlice(a, "\\)</span>");
+            try out.appendSlice(a, if (display) "\\]</span>" else "\\)</span>");
         },
-        .display_math => {
-            try out.appendSlice(a, "<span class=\"math display\">\\[");
+        .url, .email => {
+            try out.appendSlice(a, if (node.tag == .email) "<a href=\"mailto:" else "<a href=\"");
             try appendEscaped(a, out, node.text);
-            try out.appendSlice(a, "\\]</span>");
-        },
-        .url => {
-            try out.appendSlice(a, "<a href=\"");
-            try appendEscaped(a, out, node.text);
-            try out.appendSlice(a, "\">");
-            try appendEscaped(a, out, node.text);
-            try out.appendSlice(a, "</a>");
-        },
-        .email => {
-            try out.appendSlice(a, "<a href=\"mailto:");
-            try appendEscaped(a, out, node.text);
-            try out.appendSlice(a, "\">");
+            try out.appendSlice(a, "\"");
+            try renderAttrs(a, out, node);
+            try out.appendSlice(a, ">");
             try appendEscaped(a, out, node.text);
             try out.appendSlice(a, "</a>");
         },
@@ -379,12 +391,23 @@ pub fn renderSectionOpen(a: Allocator, out: *std.ArrayList(u8), section: Node) !
 
 pub const section_close = "</section>\n";
 
+/// The node's class, wherever it lives (an attribute named `class`, else `classes`).
+fn nodeClass(node: Node) ?[]const u8 {
+    for (node.attrs) |attr| if (std.mem.eql(u8, attr.key, "class")) return attr.value;
+    return node.classes;
+}
+
 pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     if (node.id) |id| {
         try out.appendSlice(a, " id=\"");
         try appendAttrEscaped(a, out, id);
         try out.appendSlice(a, "\"");
     }
+    try renderAttrsExceptId(a, out, node);
+}
+
+/// The attributes of a node whose id the tag has already written (a footnote reference's).
+fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     var class_rendered = false;
     for (node.attrs) |attr| {
         if (std.mem.eql(u8, attr.key, "class")) class_rendered = true;
