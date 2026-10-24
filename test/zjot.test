@@ -21,6 +21,11 @@ Deliberate differences from djot.js 0.3.2:
    "If there is a blank line between, the attributes won't be applied") says it must
    not; zjot follows the suite. Checked 2026-10-23.
 
+2. A closing `:::` closes the innermost open div (`::: a`, `::: b`, `x`, `:::`): with
+   `--sourcepos` the inner div ends on the fence and the outer at the end of the input.
+   djot.js 0.3.2 reports the reverse (the outer ends on the fence, the inner at the end
+   of the input); the HTML is the same. Checked 2026-10-24.
+
 
 Heading ids: generated ids follow document order wherever the heading sits.
 ````
@@ -2667,3 +2672,146 @@ doc
           str (4:5:15-4:5:15) text="q"
 ````
 
+A thematic break ends where the next line starts; code blocks and divs end on their closing fence.
+```` ap
+para
+
+***
+
+```zig
+code
+```
+
+::: warn
+inner
+:::
+.
+doc
+  para (1:1:0-2:0:4)
+    str (1:1:0-1:4:3) text="para"
+  thematic_break (3:1:6-4:0:9)
+  code_block (5:1:11-7:3:25) text="code\n" lang="zig"
+  div (9:1:28-11:3:45) class="warn"
+    para (10:1:37-11:0:42)
+      str (10:1:37-10:5:41) text="inner"
+````
+
+An unclosed code block ends at the end of the input.
+```` ap
+```
+open
+.
+doc
+  code_block (1:1:0-3:0:8) text="open\n"
+````
+
+Tilde fences; a list closed by a div's fence ends past the fence, its item on the fence.
+```` ap
+~~~
+t
+~~~
+
+:::
+d
+
+- i
+:::
+.
+doc
+  code_block (1:1:0-3:3:8) text="t\n"
+  div (5:1:11-9:3:24)
+    para (6:1:15-7:0:16)
+      str (6:1:15-6:1:15) text="d"
+    bullet_list (8:1:18-10:0:25) tight=true style="-"
+      list_item (8:1:18-9:3:24)
+        para (8:3:20-9:0:21)
+          str (8:3:20-8:3:20) text="i"
+````
+
+A block quote closed by a div's fence ends past the fence.
+```` ap
+:::
+> q
+:::
+.
+doc
+  div (1:1:0-3:3:10)
+    block_quote (2:1:4-4:0:11)
+      para (2:3:6-3:0:7)
+        str (2:3:6-2:3:6) text="q"
+````
+
+Trailing spaces after a fence do not count.
+```` ap
+```  
+code
+```  
+
+:::  
+d
+:::  
+.
+doc
+  code_block (1:1:0-3:3:13) text="code\n"
+  div (5:1:18-7:3:28)
+    para (6:1:24-7:0:25)
+      str (6:1:24-6:1:24) text="d"
+````
+
+An indented code fence starts and ends on its fence characters.
+```` ap
+  ```
+  x
+  ```
+.
+doc
+  code_block (1:3:2-3:5:14) text="x\n"
+````
+
+Code blocks inside a block quote: closed on the fence, unclosed at the end of the input.
+```` ap
+> ```
+> c
+> ```
+
+> ```
+> d
+.
+doc
+  block_quote (1:1:0-5:0:16)
+    code_block (1:3:2-3:5:14) text="c\n"
+  block_quote (5:1:17-7:0:26)
+    code_block (5:3:19-7:0:26) text="d\n"
+````
+
+A code block inside a list item.
+```` ap
+- a
+
+  ```
+  c
+  ```
+- b
+.
+doc
+  bullet_list (1:1:0-7:0:24) tight=false style="-"
+    list_item (1:1:0-6:0:20)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      code_block (3:3:7-5:5:19) text="c\n"
+    list_item (6:1:21-7:0:24)
+      para (6:3:23-7:0:24)
+        str (6:3:23-6:3:23) text="b"
+````
+
+A thematic break inside a block quote.
+```` ap
+> ***
+> p
+.
+doc
+  block_quote (1:1:0-3:0:9)
+    thematic_break (1:3:2-2:0:5)
+    para (2:3:8-3:0:9)
+      str (2:3:8-2:3:8) text="p"
+````

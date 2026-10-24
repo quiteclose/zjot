@@ -39,6 +39,8 @@ line_offsets: []const u32 = &.{},
 pos: usize = 0,
 defs: *Definitions,
 end_marker: ?[]const u8 = null,
+/// The line of the closing fence that ended the last `nextBlock` call, when one did.
+closing_fence: ?usize = null,
 track_pos: bool = false,
 base_offset: u32 = 0,
 base_line: u32 = 1,
@@ -129,6 +131,7 @@ fn parseBlocksUntil(self: *Parser, end_marker: ?[]const u8) anyerror![]const Nod
 /// returned, so a caller may drop each block before asking for the next.
 pub fn nextBlock(self: *Parser) anyerror!?Node {
     var pending_attrs: ?BlockAttrs = null;
+    self.closing_fence = null;
 
     while (self.pos < self.lines.len) {
         const line = self.lines[self.pos];
@@ -140,6 +143,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
         }
 
         if (self.isClosingFence(line)) {
+            self.closing_fence = self.pos;
             self.pos += 1;
             return null;
         }
@@ -302,6 +306,7 @@ fn tryHeading(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     const trimmed = std.mem.trimStart(u8, line, " \t");
     const hashes = headingLevel(trimmed) orelse return null;
+    const start_line = self.pos;
 
     self.pos += 1;
     var content_lines: std.ArrayList([]const u8) = .empty;
@@ -333,26 +338,41 @@ fn tryHeading(self: *Parser) !?Node {
     }
 
     const inlines = try inline_mod.parseInlines(self.a, content_lines.items);
-    return .{ .tag = .heading, .level = @intCast(hashes), .children = inlines };
+    var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = inlines };
+    if (self.track_pos) {
+        node.start_pos = self.makePos(start_line, self.contentCol(start_line));
+        node.end_pos = self.makePos(self.pos, 0);
+    }
+    return node;
 }
 
 fn tryThematicBreak(self: *Parser) ?Node {
     const line = self.lines[self.pos];
     if (!isThematicBreak(line)) return null;
+    var node = Node{ .tag = .thematic_break };
+    if (self.track_pos) {
+        node.start_pos = self.makePos(self.pos, self.contentCol(self.pos));
+        node.end_pos = self.makePos(self.pos + 1, 0);
+    }
     self.pos += 1;
-    return .{ .tag = .thematic_break };
+    return node;
 }
 
 fn tryCodeBlock(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     const fence_info = isCodeFence(line) orelse return null;
+    const open_line = self.pos;
     self.pos += 1;
 
     var content: std.ArrayList(u8) = .empty;
+    var closed_at: ?usize = null;
     while (self.pos < self.lines.len) {
         const l = self.lines[self.pos];
         self.pos += 1;
-        if (isClosingCodeFence(l, fence_info)) break;
+        if (isClosingCodeFence(l, fence_info)) {
+            closed_at = self.pos - 1;
+            break;
+        }
         var stripped = l;
         var indent_remaining = fence_info.indent;
         while (indent_remaining > 0 and stripped.len > 0 and stripped[0] == ' ') {
@@ -364,10 +384,17 @@ fn tryCodeBlock(self: *Parser) !?Node {
     }
 
     const lang = fence_info.lang;
+    var node = Node{ .tag = .code_block, .text = try content.toOwnedSlice(self.a), .lang = lang };
     if (lang != null and lang.?[0] == '=') {
-        return .{ .tag = .raw_block, .text = try content.toOwnedSlice(self.a), .lang = lang.?[1..] };
+        node.tag = .raw_block;
+        node.lang = lang.?[1..];
     }
-    return .{ .tag = .code_block, .text = try content.toOwnedSlice(self.a), .lang = lang };
+    if (self.track_pos) {
+        node.start_pos = self.makePos(open_line, @intCast(fence_info.indent + 1));
+        // A fenced block ends on its closing fence; unclosed, at the end of the input.
+        node.end_pos = if (closed_at) |l| self.fenceEnd(l) else self.makePos(self.pos, 0);
+    }
+    return node;
 }
 
 fn tryBlockQuote(self: *Parser) !?Node {
@@ -421,10 +448,15 @@ fn tryBlockQuote(self: *Parser) !?Node {
 fn tryFencedDiv(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     const div_info = isFencedDivStart(line) orelse return null;
+    const open_line = self.pos;
     self.pos += 1;
     const blocks = try self.parseBlocksUntil(div_info.fence);
     var node = Node{ .tag = .div, .children = blocks };
     if (div_info.class) |cls| node.classes = cls;
+    if (self.track_pos) {
+        node.start_pos = self.makePos(open_line, self.contentCol(open_line));
+        node.end_pos = if (self.closing_fence) |l| self.fenceEnd(l) else self.makePos(self.pos, 0);
+    }
     return node;
 }
 
@@ -661,22 +693,34 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
     return inner_blocks.toOwnedSlice(self.a);
 }
 
-/// Where a container ends, as djot.js: at the end of the input, or where the next
-/// block's content starts on the line the parser stopped at.
+/// Where a container ends, as djot.js: at the end of the input; past the enclosing div's
+/// closing fence when that stopped it; else where the next block's content starts on
+/// the line the parser stopped at.
 fn containerEnd(self: *Parser) SourcePos {
     if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
+    if (self.isClosingFence(self.lines[self.pos])) return self.makePos(self.pos + 1, 0);
     return self.makePos(self.pos, @intCast(countIndent(self.lines[self.pos]) + 1));
 }
 
-/// Where a list item ends, as djot.js: at the end of the input, or on the line the list
-/// stopped at, in the column of the list's marker (col 0, the end of the previous line,
-/// for an unindented list).
+/// Where a list item ends, as djot.js: at the end of the input; on the enclosing div's
+/// closing fence when that stopped it; else on the line the list stopped at, in the
+/// column of the list's marker (col 0, the end of the previous line, for an unindented list).
 fn itemEnd(self: *Parser, list_indent: usize, marker_line: usize) SourcePos {
     if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
+    if (self.isClosingFence(self.lines[self.pos])) return self.fenceEnd(self.pos);
     const first = self.makePos(self.pos, 1);
     const line_start = first.offset - (if (self.pos < self.col_offsets.len) self.col_offsets[self.pos] else 0);
     const indent: u32 = @as(u32, @intCast(list_indent)) + (if (marker_line < self.col_offsets.len) self.col_offsets[marker_line] else 0);
     return .{ .line = first.line, .col = indent, .offset = line_start - 1 + indent };
+}
+
+/// The last fence character of the code or div fence on `line_idx`; what follows it does
+/// not count.
+fn fenceEnd(self: *Parser, line_idx: usize) SourcePos {
+    const line = self.lines[line_idx];
+    const rest = std.mem.trimStart(u8, line, " ");
+    const run = countLeadingChar(rest, rest[0]);
+    return self.makePos(line_idx, @intCast(line.len - rest.len + run));
 }
 
 /// Bytes the enclosing containers stripped from this parser's lines up to `line_idx`,
