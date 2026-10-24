@@ -4147,3 +4147,117 @@ doc
           para (4:3:11-5:0:12)
             str (4:3:11-4:3:11) text="d"
 ````
+
+A task item's paragraph starts after the checkbox.
+```` ap
+- [ ] a
+.
+doc
+  task_list (1:1:0-2:0:7)
+    task_list_item (1:1:0-2:0:7) checked=false
+      para (1:7:6-2:0:7)
+        str (1:7:6-1:7:6) text="a"
+````
+
+A checked task item.
+```` ap
+- [X] b
+.
+doc
+  task_list (1:1:0-2:0:7)
+    task_list_item (1:1:0-2:0:7) checked=true
+      para (1:7:6-2:0:7)
+        str (1:7:6-1:7:6) text="b"
+````
+
+Two spaces after the marker: not a task item.
+```` ap
+-  [ ] c
+.
+doc
+  bullet_list (1:1:0-2:0:8) tight=true style="-"
+    list_item (1:1:0-2:0:8)
+      para (1:4:3-2:0:8)
+        str (1:4:3-1:8:7) text="[ ] c"
+````
+
+A task item continued on the next line.
+```` ap
+- [ ] a
+  b
+.
+doc
+  task_list (1:1:0-3:0:11)
+    task_list_item (1:1:0-3:0:11) checked=false
+      para (1:7:6-3:0:11)
+        str (1:7:6-1:7:6) text="a"
+        soft_break (2:0:7-2:0:7)
+        str (2:3:10-2:3:10) text="b"
+````
+
+An ordered item is never a task item.
+```` ap
+1. [ ] x
+.
+doc
+  ordered_list (1:1:0-2:0:8) tight=true
+    list_item (1:1:0-2:0:8)
+      para (1:4:3-2:0:8)
+        str (1:4:3-1:8:7) text="[ ] x"
+````
+
+Extra spaces after the checkbox: the paragraph starts at its text.
+```` ap
+- [ ]  two
+.
+doc
+  task_list (1:1:0-2:0:10)
+    task_list_item (1:1:0-2:0:10) checked=false
+      para (1:8:7-2:0:10)
+        str (1:8:7-1:10:9) text="two"
+````
+
+Inline formatting after a checkbox.
+```` ap
+- [ ] _em_ `v`
+.
+doc
+  task_list (1:1:0-2:0:14)
+    task_list_item (1:1:0-2:0:14) checked=false
+      para (1:7:6-2:0:14)
+        emph (1:7:6-1:10:9)
+          str (1:8:7-1:9:8) text="em"
+        str (1:11:10-1:11:10) text=" "
+        verbatim (1:12:11-1:14:13) text="v"
+````
+
+A task item inside a block quote.
+```` ap
+> - [x] q
+.
+doc
+  block_quote (1:1:0-2:0:9)
+    task_list (1:3:2-2:0:9)
+      task_list_item (1:3:2-2:0:9) checked=true
+        para (1:9:8-2:0:9)
+          str (1:9:8-1:9:8) text="q"
+````
+
+A loose task list: the second paragraph starts at the content column.
+```` ap
+- [ ] a
+
+  para
+- [x] b
+.
+doc
+  task_list (1:1:0-5:0:23)
+    task_list_item (1:1:0-4:0:15) checked=false
+      para (1:7:6-2:0:7)
+        str (1:7:6-1:7:6) text="a"
+      para (3:3:11-4:0:15)
+        str (3:3:11-3:6:14) text="para"
+    task_list_item (4:1:16-5:0:23) checked=true
+      para (4:7:22-5:0:23)
+        str (4:7:22-4:7:22) text="b"
+````

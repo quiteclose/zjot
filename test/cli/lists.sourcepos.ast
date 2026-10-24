@@ -19,8 +19,8 @@ doc
         str (7:4:37-7:9:42) text="second"
   task_list (9:1:45-11:0:66)
     task_list_item (9:1:45-10:0:55) checked=false
-      para (9:3:47-10:0:55)
-        str (9:3:47-9:6:50) text="todo"
+      para (9:7:51-10:0:55)
+        str (9:7:51-9:10:54) text="todo"
     task_list_item (10:1:56-11:0:66) checked=true
-      para (10:3:58-11:0:66)
-        str (10:3:58-10:6:61) text="done"
+      para (10:7:62-11:0:66)
+        str (10:7:62-10:10:65) text="done"
