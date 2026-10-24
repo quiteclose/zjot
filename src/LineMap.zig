@@ -21,12 +21,14 @@ pub const Segment = struct {
 pub fn resolve(self: LineMap, joined_offset: u32) SourcePos {
     if (self.segments.len == 0) return .{ .line = 1, .col = 1, .offset = joined_offset };
 
-    var best: usize = 0;
-    for (self.segments, 0..) |seg, i| {
-        if (seg.joined_start <= joined_offset) {
-            best = i;
-        } else break;
+    // The last segment starting at or before the offset; the first starts at 0.
+    var lo: usize = 0;
+    var hi: usize = self.segments.len;
+    while (lo < hi) {
+        const mid = lo + (hi - lo) / 2;
+        if (self.segments[mid].joined_start <= joined_offset) lo = mid + 1 else hi = mid;
     }
+    const best = lo - 1;
 
     if (best + 1 < self.segments.len and joined_offset + 1 == self.segments[best + 1].joined_start) {
         const next = self.segments[best + 1];
