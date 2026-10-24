@@ -1,4 +1,4 @@
 doc
-  section id="Hi"
+  section (1:1:0-2:0:4) id="Hi"
     heading (1:1:0-2:0:4) level=1
       str text="Hi"

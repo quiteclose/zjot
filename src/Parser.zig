@@ -42,6 +42,10 @@ end_marker: ?[]const u8 = null,
 /// The line of the closing fence that ended the last `nextBlock` call, when one did.
 closing_fence: ?usize = null,
 track_pos: bool = false,
+/// Where this parser's input ends in the document, when known: the root parser's is the
+/// document's end (`inputEnd`); a sub-parser's is unknown until the enclosing parser
+/// tells it.
+end_hint: ?SourcePos = null,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
@@ -77,6 +81,15 @@ pub fn indexLines(a: Allocator, input: []const u8) !LineIndex {
     return .{ .lines = lines, .offsets = offsets };
 }
 
+/// Where the input ends, as djot.js reports it: on its final newline, or one past the
+/// last character of the last line when there is none.
+pub fn inputEnd(index: LineIndex, input: []const u8) SourcePos {
+    const n: u32 = @intCast(index.lines.len);
+    if (input.len == 0 or input[input.len - 1] == '\n')
+        return .{ .line = n + 1, .col = 0, .offset = @intCast(input.len -| 1) };
+    return .{ .line = n, .col = @intCast(index.lines[n - 1].len + 1), .offset = @intCast(input.len) };
+}
+
 pub fn init(a: Allocator, input: []const u8, defs: *Definitions) Parser {
     // OOM here leaves lines empty; parseBlocks sees nothing and returns an empty doc.
     const index = indexLines(a, input) catch LineIndex{};
@@ -90,6 +103,7 @@ pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Def
 }
 
 fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
+    if (col == 0 and line_idx >= self.lines.len) if (self.end_hint) |end| return end;
     const col_adj: u32 = if (line_idx < self.col_offsets.len) self.col_offsets[line_idx] else 0;
     // col 0 marks the end of the previous line and stays 0 whatever this line strips.
     const display_col = if (col == 0) 0 else col + col_adj;
