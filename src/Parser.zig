@@ -779,6 +779,9 @@ fn tryBulletList(self: *Parser) !?Node {
     const marker_char = first_info.marker;
     const list_start_line = self.pos;
 
+    // A task item after plain items, or the reverse, starts a new list, as djot.js.
+    const list_is_task = isTaskItem(first_info.rest);
+
     var items: std.ArrayList(Node) = .empty;
     var is_tight = true;
     var saw_blank_between = false;
@@ -787,6 +790,8 @@ fn tryBulletList(self: *Parser) !?Node {
         const cur = self.lines[self.pos];
         const cur_li = parseBulletMarker(cur) orelse break;
         if (cur_li.indent != list_indent or cur_li.marker != marker_char) break;
+        const is_task = isTaskItem(cur_li.rest);
+        if (is_task != list_is_task) break;
 
         if (saw_blank_between) is_tight = false;
         saw_blank_between = false;
@@ -794,20 +799,12 @@ fn tryBulletList(self: *Parser) !?Node {
         const item_start_line = self.pos;
         var content = try self.collectItemContent(cur_li.content_col, list_indent, cur_li.rest);
 
-        var is_task = false;
         var task_checked = false;
-        if (content.para_lines.items.len > 0) {
-            const first_line = content.para_lines.items[0];
-            if (std.mem.startsWith(u8, first_line, "[ ] ") or
-                std.mem.startsWith(u8, first_line, "[x] ") or
-                std.mem.startsWith(u8, first_line, "[X] "))
-            {
-                is_task = true;
-                task_checked = first_line[1] != ' ';
-                content.para_lines.items[0] = first_line[4..];
-                // The item's paragraph starts after the checkbox, as djot.js.
-                content.para_col_offsets.items[0] += 4;
-            }
+        if (is_task) {
+            task_checked = cur_li.rest[1] != ' ';
+            content.para_lines.items[0] = cur_li.rest[4..];
+            // The item's paragraph starts after the checkbox, as djot.js.
+            content.para_col_offsets.items[0] += 4;
         }
 
         const inner_blocks = try self.parseItemContent(&content);
@@ -823,15 +820,7 @@ fn tryBulletList(self: *Parser) !?Node {
         updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
     }
 
-    var has_task = false;
-    for (items.items) |item| {
-        if (item.tag == .task_list_item) {
-            has_task = true;
-            break;
-        }
-    }
-
-    const list_tag: Tag = if (has_task) .task_list else .bullet_list;
+    const list_tag: Tag = if (list_is_task) .task_list else .bullet_list;
     const list_sp = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null;
     const list_ep = if (self.track_pos) self.containerEnd() else null;
     const marker_str: []const u8 = switch (marker_char) {
@@ -1436,6 +1425,11 @@ fn mergeBlockAttrs(a: Allocator, existing: ?BlockAttrs, new_attrs: BlockAttrs) !
 }
 
 const BulletInfo = struct { rest: []const u8, indent: usize, content_col: usize, marker: u8 };
+
+/// Whether an item's first line opens with a checkbox.
+fn isTaskItem(rest: []const u8) bool {
+    return std.mem.startsWith(u8, rest, "[ ] ") or std.mem.startsWith(u8, rest, "[x] ") or std.mem.startsWith(u8, rest, "[X] ");
+}
 
 fn parseBulletMarker(line: []const u8) ?BulletInfo {
     var indent: usize = 0;

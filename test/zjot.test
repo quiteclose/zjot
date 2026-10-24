@@ -4261,3 +4261,202 @@ doc
       para (4:7:22-5:0:23)
         str (4:7:22-4:7:22) text="b"
 ````
+
+A change from task items to plain items ends the list; both lists are tight.
+```` ap
+- [ ] task
+- [x] done
+
+- a
+- b
+.
+doc
+  task_list (1:1:0-4:1:23)
+    task_list_item (1:1:0-2:0:10) checked=false
+      para (1:7:6-2:0:10)
+        str (1:7:6-1:10:9) text="task"
+    task_list_item (2:1:11-4:0:22) checked=true
+      para (2:7:17-3:0:21)
+        str (2:7:17-2:10:20) text="done"
+  bullet_list (4:1:23-6:0:30) tight=true style="-"
+    list_item (4:1:23-5:0:26)
+      para (4:3:25-5:0:26)
+        str (4:3:25-4:3:25) text="a"
+    list_item (5:1:27-6:0:30)
+      para (5:3:29-6:0:30)
+        str (5:3:29-5:3:29) text="b"
+````
+
+A change from plain items to a task item ends the list.
+```` ap
+- a
+- b
+- [ ] task
+.
+doc
+  bullet_list (1:1:0-3:1:8) tight=true style="-"
+    list_item (1:1:0-2:0:3)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+    list_item (2:1:4-3:0:7)
+      para (2:3:6-3:0:7)
+        str (2:3:6-2:3:6) text="b"
+  task_list (3:1:8-4:0:18)
+    task_list_item (3:1:8-4:0:18) checked=false
+      para (3:7:14-4:0:18)
+        str (3:7:14-3:10:17) text="task"
+````
+
+Every change of item kind ends the list.
+```` ap
+- [ ] t
+- plain
+- [x] u
+.
+doc
+  task_list (1:1:0-2:1:8)
+    task_list_item (1:1:0-2:0:7) checked=false
+      para (1:7:6-2:0:7)
+        str (1:7:6-1:7:6) text="t"
+  bullet_list (2:1:8-3:1:16) tight=true style="-"
+    list_item (2:1:8-3:0:15)
+      para (2:3:10-3:0:15)
+        str (2:3:10-2:7:14) text="plain"
+  task_list (3:1:16-4:0:23)
+    task_list_item (3:1:16-4:0:23) checked=true
+      para (3:7:22-4:0:23)
+        str (3:7:22-3:7:22) text="u"
+````
+
+Task and plain items inside a block quote.
+```` ap
+> - [ ] t
+> - p
+.
+doc
+  block_quote (1:1:0-3:0:15)
+    task_list (1:3:2-2:3:12)
+      task_list_item (1:3:2-2:2:11) checked=false
+        para (1:9:8-2:0:9)
+          str (1:9:8-1:9:8) text="t"
+    bullet_list (2:3:12-3:0:15) tight=true style="-"
+      list_item (2:3:12-3:0:15)
+        para (2:5:14-3:0:15)
+          str (2:5:14-2:5:14) text="p"
+````
+
+A loose task list followed by a plain item.
+```` ap
+- [ ] t
+
+- [x] u
+
+- p
+.
+doc
+  task_list (1:1:0-5:1:18)
+    task_list_item (1:1:0-3:0:8) checked=false
+      para (1:7:6-2:0:7)
+        str (1:7:6-1:7:6) text="t"
+    task_list_item (3:1:9-5:0:17) checked=true
+      para (3:7:15-4:0:16)
+        str (3:7:15-3:7:15) text="u"
+  bullet_list (5:1:18-6:0:21) tight=true style="-"
+    list_item (5:1:18-6:0:21)
+      para (5:3:20-6:0:21)
+        str (5:3:20-5:3:20) text="p"
+````
+
+A marker line under a task item's text continues its paragraph.
+```` ap
+- [ ] t
+  - sub
+- p
+.
+doc
+  task_list (1:1:0-3:1:16)
+    task_list_item (1:1:0-3:0:15) checked=false
+      para (1:7:6-3:0:15)
+        str (1:7:6-1:7:6) text="t"
+        soft_break (2:0:7-2:0:7)
+        str (2:3:10-2:7:14) text="- sub"
+  bullet_list (3:1:16-4:0:19) tight=true style="-"
+    list_item (3:1:16-4:0:19)
+      para (3:3:18-4:0:19)
+        str (3:3:18-3:3:18) text="p"
+````
+
+Task items then plain items render as two lists, as djot.js.
+````
+- [ ] task
+- [x] done
+
+- a
+- b
+.
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox"/>
+task
+</li>
+<li>
+<input disabled="" type="checkbox" checked=""/>
+done
+</li>
+</ul>
+<ul>
+<li>
+a
+</li>
+<li>
+b
+</li>
+</ul>
+````
+
+Plain items then a task item render as two lists.
+````
+- a
+- b
+- [ ] task
+.
+<ul>
+<li>
+a
+</li>
+<li>
+b
+</li>
+</ul>
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox"/>
+task
+</li>
+</ul>
+````
+
+Alternating item kinds render one list per run.
+````
+- [ ] t
+- plain
+- [x] u
+.
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox"/>
+t
+</li>
+</ul>
+<ul>
+<li>
+plain
+</li>
+</ul>
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox" checked=""/>
+u
+</li>
+</ul>
+````
