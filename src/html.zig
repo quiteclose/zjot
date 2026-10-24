@@ -6,17 +6,28 @@ const Node = @import("node.zig").Node;
 const Tag = @import("node.zig").Tag;
 
 pub fn renderNode(a: Allocator, out: *std.ArrayList(u8), node: Node) anyerror!void {
+    try renderBlock(a, out, node, false);
+}
+
+/// `tight` is set inside a tight list item, where paragraphs render without `<p>`. As
+/// in djot.js it reaches through block quotes and divs; a nested list sets its own.
+fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) anyerror!void {
     switch (node.tag) {
         .section => {
             if (node.level > 0) {
                 try renderSectionOpen(a, out, node);
-                for (node.children) |child| try renderNode(a, out, child);
+                for (node.children) |child| try renderBlock(a, out, child, tight);
                 try out.appendSlice(a, section_close);
             } else {
-                for (node.children) |child| try renderNode(a, out, child);
+                for (node.children) |child| try renderBlock(a, out, child, tight);
             }
         },
         .para => {
+            if (tight) {
+                for (node.children) |child| try renderNode(a, out, child);
+                try out.append(a, '\n');
+                return;
+            }
             try out.appendSlice(a, "<p");
             try renderAttrs(a, out, node);
             try out.appendSlice(a, ">");
@@ -63,14 +74,14 @@ pub fn renderNode(a: Allocator, out: *std.ArrayList(u8), node: Node) anyerror!vo
             try out.appendSlice(a, "<blockquote");
             try renderAttrs(a, out, node);
             try out.appendSlice(a, ">\n");
-            for (node.children) |child| try renderNode(a, out, child);
+            for (node.children) |child| try renderBlock(a, out, child, tight);
             try out.appendSlice(a, "</blockquote>\n");
         },
         .div => {
             try out.appendSlice(a, "<div");
             try renderAttrs(a, out, node);
             try out.appendSlice(a, ">\n");
-            for (node.children) |child| try renderNode(a, out, child);
+            for (node.children) |child| try renderBlock(a, out, child, tight);
             try out.appendSlice(a, "</div>\n");
         },
         .bullet_list => {
@@ -352,18 +363,7 @@ fn renderListItem(a: Allocator, out: *std.ArrayList(u8), item: Node, tight: bool
         try out.appendSlice(a, "<li>\n");
     }
 
-    if (tight) {
-        for (item.children) |child| {
-            if (child.tag == .para) {
-                for (child.children) |inline_child| try renderNode(a, out, inline_child);
-                try out.append(a, '\n');
-            } else {
-                try renderNode(a, out, child);
-            }
-        }
-    } else {
-        for (item.children) |child| try renderNode(a, out, child);
-    }
+    for (item.children) |child| try renderBlock(a, out, child, tight);
 
     try out.appendSlice(a, "</li>\n");
 }
