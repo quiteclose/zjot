@@ -975,22 +975,26 @@ pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
     return buf.toOwnedSlice(a);
 }
 
+/// The string content of a node, as djot.js's `getStringContent`: every node's text
+/// (a symbol's alias and a footnote reference's label excepted, as the djot.js suite has
+/// it for heading ids), a newline for each break, children otherwise. Heading ids and
+/// reference labels are made from it.
 pub fn getPlainText(a: Allocator, node: Node) ![]const u8 {
-    if (node.text.len > 0) return node.text;
     var buf: std.ArrayList(u8) = .empty;
-    for (node.children) |child| {
-        switch (child.tag) {
-            .str => try buf.appendSlice(a, child.text),
-            .soft_break => try buf.append(a, ' '),
-            else => {
-                if (child.children.len > 0) {
-                    const sub = try getPlainText(a, child);
-                    try buf.appendSlice(a, sub);
-                }
-            },
-        }
-    }
+    try addPlainText(a, &buf, node);
     return buf.toOwnedSlice(a);
+}
+
+fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node) !void {
+    switch (node.tag) {
+        .symb, .footnote_reference => {},
+        .soft_break, .hard_break => try buf.append(a, '\n'),
+        else => if (node.text.len > 0) {
+            try buf.appendSlice(a, node.text);
+        } else for (node.children) |child| {
+            try addPlainText(a, buf, child);
+        },
+    }
 }
 
 pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {

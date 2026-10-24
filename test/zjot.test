@@ -21,7 +21,11 @@ Deliberate differences from djot.js 0.3.2:
    "If there is a blank line between, the attributes won't be applied") says it must
    not; zjot follows the suite. Checked 2026-10-23.
 
-2. A closing `:::` closes the innermost open div (`::: a`, `::: b`, `x`, `:::`): with
+2. A footnote reference's label is not part of a heading's text for its id:
+   `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
+   0.3.2 itself produces `Introduction1`. zjot follows the suite. Checked 2026-10-24.
+
+3. A closing `:::` closes the innermost open div (`::: a`, `::: b`, `x`, `:::`): with
    `--sourcepos` the inner div ends on the fence and the outer at the end of the input.
    djot.js 0.3.2 reports the reverse (the outer ends on the fence, the inner at the end
    of the input); the HTML is the same. Checked 2026-10-24.
@@ -29,20 +33,20 @@ Deliberate differences from djot.js 0.3.2:
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
-3. Offsets and columns count bytes; djot.js counts UTF-16 code units (`é _é_` gives
+4. Offsets and columns count bytes; djot.js counts UTF-16 code units (`é _é_` gives
    `emph (1:3:2-…)` there and `(1:4:3-…)` here).
-4. Generated ids are printed on headings and sections; djot.js prints explicit ones only.
-5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
+5. Generated ids are printed on headings and sections; djot.js prints explicit ones only.
+6. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
    nodes where djot.js prints `smart_punctuation`.
-6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
-7. Reference links print the resolved `destination`; djot.js prints the `reference` only.
+7. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
+8. Reference links print the resolved `destination`; djot.js prints the `reference` only.
    Footnote references print the number and `fnref` id, not the label, and the endnotes
    follow as a `footnote` block.
-8. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
+9. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
    rendered by the converter.
-9. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `); zjot
+10. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `); zjot
    keeps it, so only an image at the start of a paragraph is pinned.
-10. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
+11. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
 
@@ -5556,4 +5560,99 @@ foo
 </li>
 </ul>
 <p>foo</p>
+````
+
+A heading whose text is a link gets its id from the link text.
+````
+# [x](u)
+.
+<section id="x">
+<h1><a href="u">x</a></h1>
+</section>
+````
+
+A heading whose text is verbatim gets its id from the verbatim text.
+````
+# `code`
+.
+<section id="code">
+<h1><code>code</code></h1>
+</section>
+````
+
+A heading whose text is emphasised gets its id from the emphasised text.
+````
+# _only_
+.
+<section id="only">
+<h1><em>only</em></h1>
+</section>
+````
+
+An implicit reference to a heading with inline formatting resolves.
+````
+# a _b_ c
+
+See [a b c][]
+.
+<section id="a-b-c">
+<h1>a <em>b</em> c</h1>
+<p>See <a href="#a-b-c">a b c</a></p>
+</section>
+````
+
+Heading ids take verbatim and math text.
+````
+# `code` and $`m` [l](u)
+.
+<section id="code-and-m-l">
+<h1><code>code</code> and <span class="math inline">\(m\)</span> <a href="u">l</a></h1>
+</section>
+````
+
+A hard break in a heading counts as whitespace for its id and implicit reference.
+````
+# a\
+b
+
+[a b][]
+.
+<section id="a-b">
+<h1>a<br>
+b</h1>
+<p><a href="#a-b">a b</a></p>
+</section>
+````
+
+An implicit reference to a heading with strong emphasis.
+````
+# Hi *there*
+
+[Hi there][]
+.
+<section id="Hi-there">
+<h1>Hi <strong>there</strong></h1>
+<p><a href="#Hi-there">Hi there</a></p>
+</section>
+````
+
+A reference label from verbatim link text.
+````
+[`x`][]
+
+[x]: u
+.
+<p><a href="u"><code>x</code></a></p>
+````
+
+An implicit reference must match the heading text exactly: `[FOO][]` to `# Foo` stays unresolved.
+````
+# Foo
+
+See [Foo][] and [FOO][]
+.
+<section id="Foo">
+<h1>Foo</h1>
+<p>See <a href="#Foo">Foo</a> and <a>FOO</a></p>
+</section>
 ````

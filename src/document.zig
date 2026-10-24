@@ -58,7 +58,7 @@ pub const Survey = struct {
     fn visitNode(self: *Survey, node: Node, parent: ?Tag) !void {
         if (node.id) |id| try self.ids_used.put(self.a, try self.a.dupe(u8, id), {});
         if (node.tag == .heading) {
-            const text = getNodeText(node);
+            const text = try inline_mod.getPlainText(self.a, node);
             const id = node.id orelse blk: {
                 const generated = try self.generateId(text);
                 if (self.current_footnote) |label| {
@@ -70,7 +70,7 @@ pub const Survey = struct {
             };
             if (parent == null) {
                 const dest = try std.fmt.allocPrint(self.a, "#{s}", .{id});
-                try self.auto_refs.put(self.a, try self.a.dupe(u8, text), dest);
+                try self.auto_refs.put(self.a, try inline_mod.normalizeLabel(self.a, text), dest);
             }
         }
         for (node.children) |child| try self.visitNode(child, node.tag);
@@ -290,24 +290,6 @@ pub const Sections = struct {
         return self.events[0..n];
     }
 };
-
-fn getNodeText(node: Node) []const u8 {
-    if (node.text.len > 0) return node.text;
-    if (node.children.len == 0) return "";
-    var first: ?[*]const u8 = null;
-    var last_end: [*]const u8 = undefined;
-    for (node.children) |child| {
-        if (child.tag == .str and child.text.len > 0) {
-            if (first == null) first = child.text.ptr;
-            last_end = child.text.ptr + child.text.len;
-        }
-    }
-    if (first) |f| {
-        const len = @intFromPtr(last_end) - @intFromPtr(f);
-        return f[0..len];
-    }
-    return "";
-}
 
 test "heading ids: the next free suffix per base, found without a search" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
