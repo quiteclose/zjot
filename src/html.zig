@@ -144,7 +144,7 @@ fn renderBlock(a: Allocator, out: *std.ArrayList(u8), node: Node, tight: bool) a
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</table>\n");
         },
-        .caption => {
+        .caption => if (node.children.len > 0) {
             try out.appendSlice(a, "<caption>");
             for (node.children) |child| try renderNode(a, out, child);
             try out.appendSlice(a, "</caption>\n");
