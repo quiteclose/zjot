@@ -10,6 +10,7 @@ const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
 const Node = node_mod.Node;
 const Tag = node_mod.Tag;
+const SourcePos = node_mod.SourcePos;
 const inline_mod = @import("inline.zig");
 const Parser = @import("Parser.zig");
 const Definitions = Parser.Definitions;
@@ -237,6 +238,9 @@ pub const Sections = struct {
     levels: [6]u8 = undefined,
     depth: usize = 0,
     events: [8]Event = undefined,
+    /// Where every section ends when positions are wanted: djot.js closes them all at
+    /// the end of the document, whatever heading or input end closed them.
+    doc_end: ?SourcePos = null,
 
     pub const Event = union(enum) {
         /// A section node without children; its id and attributes came from the heading that follows.
@@ -263,7 +267,15 @@ pub const Sections = struct {
         heading.id = null;
         heading.attrs = &.{};
         heading.classes = null;
-        self.events[n] = .{ .open = .{ .tag = .section, .level = block.level, .id = block.id, .attrs = block.attrs, .classes = block.classes } };
+        self.events[n] = .{ .open = .{
+            .tag = .section,
+            .level = block.level,
+            .id = block.id,
+            .attrs = block.attrs,
+            .classes = block.classes,
+            .start_pos = block.start_pos,
+            .end_pos = self.doc_end,
+        } };
         self.events[n + 1] = .{ .block = heading };
         return self.events[0 .. n + 2];
     }
