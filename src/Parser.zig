@@ -821,9 +821,10 @@ fn tryBulletList(self: *Parser) !?Node {
         var task_checked = false;
         if (is_task) {
             task_checked = cur_li.rest[1] != ' ';
-            content.para_lines.items[0] = cur_li.rest[4..];
-            // The item's paragraph starts after the checkbox, as djot.js.
-            content.para_col_offsets.items[0] += 4;
+            // The item's paragraph starts after the checkbox and its space, as djot.js.
+            const after_box = @min(4, cur_li.rest.len);
+            content.para_lines.items[0] = cur_li.rest[after_box..];
+            content.para_col_offsets.items[0] += @intCast(after_box);
         }
 
         const inner_blocks = try self.parseItemContent(&content);
@@ -1444,9 +1445,12 @@ fn mergeBlockAttrs(a: Allocator, existing: ?BlockAttrs, new_attrs: BlockAttrs) !
 
 const BulletInfo = struct { rest: []const u8, indent: usize, content_col: usize, marker: u8 };
 
-/// Whether an item's first line opens with a checkbox.
+/// Whether an item's first line opens with a checkbox: `[ ]`, `[x]` or `[X]` followed by
+/// whitespace or nothing.
 fn isTaskItem(rest: []const u8) bool {
-    return std.mem.startsWith(u8, rest, "[ ] ") or std.mem.startsWith(u8, rest, "[x] ") or std.mem.startsWith(u8, rest, "[X] ");
+    if (rest.len < 3 or rest[0] != '[' or rest[2] != ']') return false;
+    if (rest[1] != ' ' and rest[1] != 'x' and rest[1] != 'X') return false;
+    return rest.len == 3 or rest[3] == ' ' or rest[3] == '\t';
 }
 
 fn parseBulletMarker(line: []const u8) ?BulletInfo {
