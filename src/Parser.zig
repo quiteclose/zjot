@@ -805,6 +805,8 @@ fn tryBulletList(self: *Parser) !?Node {
                 is_task = true;
                 task_checked = first_line[1] != ' ';
                 content.para_lines.items[0] = first_line[4..];
+                // The item's paragraph starts after the checkbox, as djot.js.
+                content.para_col_offsets.items[0] += 4;
             }
         }
 
