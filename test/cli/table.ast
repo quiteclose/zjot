@@ -1,6 +1,7 @@
 doc
   table
-    row head=false
+    caption
+    row head=true
       cell head=true align="left"
         str text="a"
       cell head=true align="right"

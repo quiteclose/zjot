@@ -1030,6 +1030,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
 fn tryTable(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     if (!isTableRow(line)) return null;
+    const start_line = self.pos;
 
     var raw_rows: std.ArrayList([]const u8) = .empty;
     while (self.pos < self.lines.len) {
@@ -1072,20 +1073,29 @@ fn tryTable(self: *Parser) !?Node {
             (if (idx + 1 < aligns.items.len) aligns.items[idx + 1] else current_aligns)
         else
             current_aligns;
-        const cells = try self.parseTableRowWithAlign(r, effective_aligns, is_head_row.items[idx]);
-        try rows.append(self.a, .{ .tag = .row, .children = cells });
+        const line_idx = start_line + idx;
+        const cells = try self.parseTableRowWithAlign(r, line_idx, effective_aligns, is_head_row.items[idx]);
+        var row = Node{ .tag = .row, .children = cells, .head = is_head_row.items[idx] };
+        if (self.track_pos) {
+            row.start_pos = self.makePos(line_idx, self.contentCol(line_idx));
+            row.end_pos = self.afterContent(line_idx);
+        }
+        try rows.append(self.a, row);
     }
+    const rows_end = self.pos;
 
+    // The last caption after the rows wins, as djot.js.
     var cap_lines: std.ArrayList([]const u8) = .empty;
+    var cap_line: usize = rows_end;
     while (self.pos < self.lines.len) {
         var look = self.pos;
         while (look < self.lines.len and isBlank(self.lines[look])) : (look += 1) {}
         if (look >= self.lines.len) break;
-        const t = std.mem.trimStart(u8, self.lines[look], " \t");
-        if (t.len > 1 and t[0] == '^' and t[1] == ' ') {
+        if (captionContent(self.lines[look])) |first| {
             cap_lines.items.len = 0;
+            cap_line = look;
             self.pos = look;
-            try cap_lines.append(self.a, std.mem.trim(u8, t[2..], " \t"));
+            try cap_lines.append(self.a, first);
             self.pos += 1;
             while (self.pos < self.lines.len) {
                 const l = self.lines[self.pos];
@@ -1097,17 +1107,47 @@ fn tryTable(self: *Parser) !?Node {
         } else break;
     }
 
-    var table_children: std.ArrayList(Node) = .empty;
-    if (cap_lines.items.len > 0) {
-        const cap_inlines = try inline_mod.parseInlines(self.a, cap_lines.items);
-        try table_children.append(self.a, .{ .tag = .caption, .children = cap_inlines });
+    // djot.js gives every table a caption, empty when there is none.
+    var caption = Node{ .tag = .caption, .children = try self.parseInlinesAt(cap_lines.items, cap_line) };
+    if (self.track_pos and cap_lines.items.len > 0) {
+        caption.start_pos = self.captionStart(cap_line);
+        caption.end_pos = if (cap_lines.items[0].len == 0) caption.start_pos else self.afterContent(self.pos - 1);
     }
+    var table = Node{ .tag = .table };
+    if (self.track_pos) {
+        table.start_pos = self.makePos(start_line, self.contentCol(start_line));
+        // As djot.js: after a blank line that follows the rows; else where a caption on
+        // the next line starts; else where the next block starts.
+        table.end_pos = if (rows_end < self.lines.len and isBlank(self.lines[rows_end]))
+            self.makePos(rows_end + 1, 0)
+        else if (rows_end < self.lines.len and captionContent(self.lines[rows_end]) != null)
+            self.captionStart(rows_end)
+        else
+            self.containerEnd();
+    }
+    var table_children: std.ArrayList(Node) = .empty;
+    try table_children.append(self.a, caption);
     for (rows.items) |r| try table_children.append(self.a, r);
-
-    return .{ .tag = .table, .children = try table_children.toOwnedSlice(self.a) };
+    table.children = try table_children.toOwnedSlice(self.a);
+    return table;
 }
 
-fn parseTableRowWithAlign(self: *Parser, line: []const u8, col_aligns: []const CellAlign, is_head: bool) ![]const Node {
+/// The text of a caption line (`^ ` and what follows, trimmed), or null for any other line.
+fn captionContent(line: []const u8) ?[]const u8 {
+    const t = std.mem.trimStart(u8, line, " \t");
+    if (t.len > 1 and t[0] == '^' and t[1] == ' ') return std.mem.trim(u8, t[2..], " \t");
+    return null;
+}
+
+/// Where the caption on `line_idx` starts: its text, or the line's newline when it has none.
+fn captionStart(self: *Parser, line_idx: usize) SourcePos {
+    const line = self.lines[line_idx];
+    const content = captionContent(line).?;
+    if (content.len == 0) return self.makePos(line_idx + 1, 0);
+    return self.makePos(line_idx, @intCast(@intFromPtr(content.ptr) - @intFromPtr(line.ptr) + 1));
+}
+
+fn parseTableRowWithAlign(self: *Parser, line: []const u8, line_idx: usize, col_aligns: []const CellAlign, is_head: bool) ![]const Node {
     var cells: std.ArrayList(Node) = .empty;
     const trimmed = std.mem.trim(u8, line, " \t");
     var content = trimmed;
@@ -1117,9 +1157,14 @@ fn parseTableRowWithAlign(self: *Parser, line: []const u8, col_aligns: []const C
     const cell_strs = try splitTableCells(self.a, content);
     for (cell_strs, 0..) |cell, col| {
         const cell_text = std.mem.trim(u8, cell, " \t");
-        const inlines = try inline_mod.parseInlines(self.a, &.{cell_text});
-        var node = Node{ .tag = .cell, .children = inlines, .head = is_head };
+        var node = Node{ .tag = .cell, .children = try self.parseInlinesAt(&.{cell_text}, line_idx), .head = is_head };
         if (col < col_aligns.len) node.cell_align = col_aligns[col];
+        if (self.track_pos) {
+            // A cell runs from its leading pipe to the next one, inclusive.
+            const open_col: u32 = @intCast(@intFromPtr(cell.ptr) - @intFromPtr(line.ptr));
+            node.start_pos = self.makePos(line_idx, open_col);
+            node.end_pos = self.makePos(line_idx, open_col + @as(u32, @intCast(cell.len)) + 1);
+        }
         try cells.append(self.a, node);
     }
     return cells.toOwnedSlice(self.a);
