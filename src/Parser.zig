@@ -332,7 +332,7 @@ fn tryHeading(self: *Parser) !?Node {
             startsBlockQuote(next) or isFencedDivStart(next) != null)
             break;
         if (parseBulletMarker(next) != null or parseOrderedMarker(next) != null) break;
-        if (attrs_mod.tryParseBlockAttr(self.a, next) != null) break;
+        if (attrs_mod.tryParseBlockAttr(self.a, next) != null or definitionLabel(next) != null) break;
         const next_trimmed = std.mem.trimStart(u8, next, " ");
         const next_hashes = countLeadingChar(next_trimmed, '#');
         if (next_hashes == hashes and next_hashes < next_trimmed.len and
@@ -1366,7 +1366,8 @@ const OpenParagraph = struct {
     fn endsHeading(a: Allocator, line: []const u8) bool {
         return isThematicBreak(line) or isCodeFence(line) != null or startsBlockQuote(line) or
             isFencedDivStart(line) != null or parseBulletMarker(line) != null or
-            parseOrderedMarker(line) != null or attrs_mod.tryParseBlockAttr(a, line) != null;
+            parseOrderedMarker(line) != null or attrs_mod.tryParseBlockAttr(a, line) != null or
+            definitionLabel(line) != null;
     }
 };
 

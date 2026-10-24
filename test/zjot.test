@@ -4901,3 +4901,57 @@ doc
       para (6:3:31-7:0:32)
         str (6:3:31-6:3:31) text="y"
 ````
+
+A reference definition line ends a heading.
+````
+# A
+[r]: u
+
+[r]
+.
+<section id="A">
+<h1>A</h1>
+<p>[r]</p>
+</section>
+````
+
+A footnote definition line ends a heading.
+````
+# A
+[^n]: note
+
+x[^n]
+.
+<section id="A">
+<h1>A</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A reference definition without a value on its line ends a heading.
+````
+# A
+[r]:
+  u
+.
+<section id="A">
+<h1>A</h1>
+</section>
+````
+
+A definition line does not interrupt a paragraph.
+````
+para
+[r]: u
+.
+<p>para
+[r]: u</p>
+````
