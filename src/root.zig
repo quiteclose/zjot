@@ -49,8 +49,8 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     var resolver = document.Resolver{ .a = da, .defs = &defs, .survey = &survey };
     var parser = Parser.initIndexed(ba, input, index, &defs);
     parser.track_pos = opts.sourcepos;
-    if (opts.sourcepos) parser.end_hint = Parser.inputEnd(index, input);
-    var sections = document.Sections{ .doc_end = parser.end_hint };
+    if (opts.sourcepos) parser.input_end = Parser.inputEnd(index, input);
+    var sections = document.Sections{ .doc_end = parser.input_end };
     var out = Emitter{ .w = w, .mode = opts.mode };
     try out.root(ba);
     while (try parser.nextBlock()) |block| {

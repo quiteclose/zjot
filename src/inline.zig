@@ -72,23 +72,30 @@ const Scanner = struct {
     }
 
     fn setText(sc: *const Scanner, node: *Node, slice: []const u8) void {
-        const fresh = sc.strNode(slice);
         node.text = slice;
+        if (!sc.within(slice)) return; // a curly quote keeps the position it was given
+        const fresh = sc.strNode(slice);
         node.start_pos = fresh.start_pos;
         node.end_pos = fresh.end_pos;
     }
 
-    /// Appends text from `src`, extending the previous text node when the two are
-    /// contiguous in it. An open bracket is left alone: its opener points at it.
+    /// Extends the text node `last` by `slice` when the two are contiguous in `src` and
+    /// `last` carries no attributes: djot.js reports such text as one `str`.
+    fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) bool {
+        if (last.tag != .str or last.text.ptr + last.text.len != slice.ptr) return false;
+        if (last.id != null or last.classes != null or last.attrs.len > 0) return false;
+        sc.setText(last, last.text.ptr[0 .. last.text.len + slice.len]);
+        return true;
+    }
+
+    /// Appends text from `src`, extending the previous text node when it can. An open
+    /// bracket is left alone: its opener points at it.
     fn text(sc: *Scanner, slice: []const u8) !void {
         const n_items = sc.items.items.len;
         const open_bracket = sc.openers.items.len > 0 and sc.openers.items[sc.openers.items.len - 1].item_idx + 1 == n_items;
         if (n_items > 0 and !open_bracket) {
             switch (sc.items.items[n_items - 1]) {
-                .node => |*n| if (n.tag == .str and n.text.ptr + n.text.len == slice.ptr) {
-                    sc.setText(n, n.text.ptr[0 .. n.text.len + slice.len]);
-                    return;
-                },
+                .node => |*n| if (sc.extendStr(n, slice)) return,
                 else => {},
             }
         }
@@ -726,19 +733,10 @@ const Scanner = struct {
         return sc.strNode(sc.src[op.src_pos .. op.src_pos + len]);
     }
 
-    /// Appends a node, joining it to the previous one when both are text contiguous in
-    /// `src`, as djot.js reports one `str` for text an opener did not divide.
+    /// Appends a node, joining text to the previous node when it can: an opener that did
+    /// not close leaves text djot.js reports as one `str`.
     fn appendNode(sc: *const Scanner, nodes: *std.ArrayList(Node), node: Node) !void {
-        if (node.tag == .str and nodes.items.len > 0) {
-            const last = &nodes.items[nodes.items.len - 1];
-            if (last.tag == .str and last.text.ptr + last.text.len == node.text.ptr and
-                last.id == null and last.classes == null and last.attrs.len == 0)
-            {
-                last.text = last.text.ptr[0 .. last.text.len + node.text.len];
-                last.end_pos = node.end_pos;
-                return;
-            }
-        }
+        if (node.tag == .str and nodes.items.len > 0 and sc.extendStr(&nodes.items[nodes.items.len - 1], node.text)) return;
         try nodes.append(sc.a, node);
     }
 

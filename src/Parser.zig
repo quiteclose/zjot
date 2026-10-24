@@ -42,10 +42,10 @@ end_marker: ?[]const u8 = null,
 /// The line of the closing fence that ended the last `nextBlock` call, when one did.
 closing_fence: ?usize = null,
 track_pos: bool = false,
-/// Where this parser's input ends in the document, when known: the root parser's is the
-/// document's end (`inputEnd`); a sub-parser's is unknown until the enclosing parser
-/// tells it.
-end_hint: ?SourcePos = null,
+/// Where this parser's input ends in the document: the document's end for the root
+/// (`inputEnd`), the line after its last line for a sub-parser (`positionSubParser`).
+/// Set whenever positions are tracked.
+input_end: ?SourcePos = null,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
@@ -102,29 +102,20 @@ pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Def
     return .{ .a = a, .input = input, .lines = index.lines, .line_offsets = index.offsets, .defs = defs };
 }
 
+/// The position of 1-based `col` on `line_idx`; col 0 is the end of the previous line
+/// (its newline), whatever this line strips. Past the last line lies only the input's end.
 fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
-    if (col == 0 and line_idx >= self.lines.len) if (self.end_hint) |end| return end;
+    if (line_idx >= self.lines.len) return self.input_end.?;
     const col_adj: u32 = if (line_idx < self.col_offsets.len) self.col_offsets[line_idx] else 0;
-    // col 0 marks the end of the previous line and stays 0 whatever this line strips.
-    const display_col = if (col == 0) 0 else col + col_adj;
     const off_adj = self.offsetAdjustAt(line_idx);
-    // col is 1-based in djot sourcepos. col==0 means "end of previous line"
-    // (e.g. a closing fence), so the byte offset points one before this line.
-    const offset = if (line_idx < self.line_offsets.len) blk: {
-        if (col == 0) {
-            // End of the previous line: before this line's own stripped bytes.
-            break :blk if (self.line_offsets[line_idx] > 0) self.line_offsets[line_idx] - 1 + off_adj - col_adj else 0;
-        }
-        break :blk self.line_offsets[line_idx] + col - 1 + off_adj;
-    } else if (self.line_offsets.len > 0)
-        self.line_offsets[self.line_offsets.len - 1] + @as(u32, @intCast(self.lines[self.lines.len - 1].len)) + off_adj
-    else
-        0;
-    return .{
-        .line = self.base_line + @as(u32, @intCast(line_idx)),
-        .col = display_col,
-        .offset = self.base_offset + offset,
-    };
+    const line_offset = self.line_offsets[line_idx];
+    const line = self.base_line + @as(u32, @intCast(line_idx));
+    if (col == 0) {
+        // Before this line's own stripped bytes.
+        const offset = if (line_offset > 0) line_offset - 1 + off_adj - col_adj else 0;
+        return .{ .line = line, .col = 0, .offset = self.base_offset + offset };
+    }
+    return .{ .line = line, .col = col + col_adj, .offset = self.base_offset + line_offset + col - 1 + off_adj };
 }
 
 fn parseBlocks(self: *Parser) anyerror![]const Node {
@@ -298,7 +289,9 @@ fn buildInlineLineMap(self: *Parser, slices: []const []const u8, start_line: usi
     var joined_pos: u32 = 0;
     for (slices, 0..) |line, i| {
         const orig_line_idx = start_line + i;
-        const col: u32 = @intCast(@intFromPtr(line.ptr) - @intFromPtr(self.lines[orig_line_idx].ptr) + 1);
+        const orig = self.lines[orig_line_idx];
+        std.debug.assert(@intFromPtr(line.ptr) >= @intFromPtr(orig.ptr) and @intFromPtr(line.ptr) + line.len <= @intFromPtr(orig.ptr) + orig.len);
+        const col: u32 = @intCast(@intFromPtr(line.ptr) - @intFromPtr(orig.ptr) + 1);
         const pos_val = self.makePos(orig_line_idx, col);
         try segs.append(self.a, .{
             .joined_start = joined_pos,
@@ -750,6 +743,7 @@ fn positionSubParser(self: *Parser, sub: *Parser, orig_lines: []const usize, col
     const first_col_off = col_offsets[0];
     sub.base_line = self.base_line + @as(u32, @intCast(first_orig));
     sub.base_offset = self.makePos(first_orig, first_col_off + 1).offset;
+    sub.input_end = self.makePos(orig_lines[orig_lines.len - 1] + 1, 0);
     const cols = try self.a.alloc(u32, col_offsets.len);
     const adjust = try self.a.alloc(u32, col_offsets.len);
     var stripped: u32 = 0;
