@@ -3489,3 +3489,154 @@ doc
       para (1:3:2-2:0:3)
         str (1:3:2-1:3:2) text="a"
 ````
+
+A heading inside a block quote: its inlines carry positions and a soft break sits on the newline.
+```` ap
+> {#h}
+> # H
+> more
+.
+doc
+  block_quote (1:1:0-4:0:19)
+    heading (2:3:9-4:0:19) level=1 id="h"
+      str (2:5:11-2:5:11) text="H"
+      soft_break (3:0:12-3:0:12)
+      str (3:3:15-3:6:18) text="more"
+````
+
+A section starts at its heading and ends at the end of the document.
+```` ap
+{#a}
+# A
+
+p
+.
+doc
+  section (2:1:5-5:0:11) id="a"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="A"
+    para (4:1:10-5:0:11)
+      str (4:1:10-4:1:10) text="p"
+````
+
+A lazy continuation line of a heading.
+```` ap
+{#h}
+# H
+lazy
+
+para
+.
+doc
+  section (2:1:5-6:0:19) id="h"
+    heading (2:1:5-4:0:13) level=1
+      str (2:3:7-2:3:7) text="H"
+      soft_break (3:0:8-3:0:8)
+      str (3:1:9-3:4:12) text="lazy"
+    para (5:1:15-6:0:19)
+      str (5:1:15-5:4:18) text="para"
+````
+
+Nested sections all end at the end of the document.
+```` ap
+{#a}
+# A
+
+p
+
+{#b}
+## B
+
+q
+
+{#c}
+# C
+r
+.
+doc
+  section (2:1:5-14:0:37) id="a"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="A"
+    para (4:1:10-5:0:11)
+      str (4:1:10-4:1:10) text="p"
+    section (7:1:18-14:0:37) id="b"
+      heading (7:1:18-8:0:22) level=2
+        str (7:4:21-7:4:21) text="B"
+      para (9:1:24-10:0:25)
+        str (9:1:24-9:1:24) text="q"
+  section (12:1:32-14:0:37) id="c"
+    heading (12:1:32-14:0:37) level=1
+      str (12:3:34-12:3:34) text="C"
+      soft_break (13:0:35-13:0:35)
+      str (13:1:36-13:1:36) text="r"
+````
+
+Inline formatting inside a heading.
+```` ap
+{#h}
+# _em_ and `v`
+.
+doc
+  section (2:1:5-3:0:19) id="h"
+    heading (2:1:5-3:0:19) level=1
+      emph (2:3:7-2:6:10)
+        str (2:4:8-2:5:9) text="em"
+      str (2:7:11-2:11:15) text=" and "
+      verbatim (2:12:16-2:14:18) text="v"
+````
+
+An empty heading.
+```` ap
+{#e}
+#
+
+p
+.
+doc
+  section (2:1:5-5:0:9) id="e"
+    heading (2:1:5-3:0:6) level=1
+    para (4:1:8-5:0:9)
+      str (4:1:8-4:1:8) text="p"
+````
+
+A heading inside a list item.
+```` ap
+- a
+
+  {#h}
+  # H
+.
+doc
+  bullet_list (1:1:0-5:0:17) tight=false style="-"
+    list_item (1:1:0-5:0:17)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      heading (4:3:14-5:0:17) level=1 id="h"
+        str (4:5:16-4:5:16) text="H"
+````
+
+An indented heading starts at its first `#`.
+```` ap
+  {#h}
+  ## Indented
+.
+doc
+  section (2:3:9-3:0:20) id="h"
+    heading (2:3:9-3:0:20) level=2
+      str (2:6:12-2:13:19) text="Indented"
+````
+
+A heading followed by a paragraph inside a block quote.
+```` ap
+> {#h}
+> # H
+>
+> p
+.
+doc
+  block_quote (1:1:0-5:0:18)
+    heading (2:3:9-3:0:12) level=1 id="h"
+      str (2:5:11-2:5:11) text="H"
+    para (4:3:17-5:0:18)
+      str (4:3:17-4:3:17) text="p"
+````

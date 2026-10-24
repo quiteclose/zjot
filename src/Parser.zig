@@ -258,11 +258,7 @@ fn parseParagraph(self: *Parser) !Node {
         self.pos += 1;
     }
 
-    const src = try inline_mod.joinLines(self.a, text_lines.items);
-    const map: ?LineMap = if (self.track_pos) try self.buildInlineLineMap(text_lines.items, para_start_line) else null;
-    const inlines = if (src.len > 0) try inline_mod.parseInlineContent(self.a, src, map) else &.{};
-
-    var para = Node{ .tag = .para, .children = inlines };
+    var para = Node{ .tag = .para, .children = try self.parseInlinesAt(text_lines.items, para_start_line) };
     if (self.track_pos) {
         para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
         para.end_pos = self.afterContent(self.pos - 1);
@@ -279,6 +275,15 @@ fn afterContent(self: *Parser, line_idx: usize) SourcePos {
     return self.makePos(line_idx, @intCast(content + 1));
 }
 
+/// Parses the inline content of `slices`, each a slice of its line, taken from the
+/// consecutive lines starting at `first_line`; positioned when positions are tracked.
+fn parseInlinesAt(self: *Parser, slices: []const []const u8, first_line: usize) ![]const Node {
+    const src = try inline_mod.joinLines(self.a, slices);
+    if (src.len == 0) return &.{};
+    const map: ?LineMap = if (self.track_pos) try self.buildInlineLineMap(slices, first_line) else null;
+    return inline_mod.parseInlineContent(self.a, src, map);
+}
+
 fn contentCol(self: *Parser, line_idx: usize) u32 {
     if (line_idx >= self.lines.len) return 1;
     const full_line = self.lines[line_idx];
@@ -286,12 +291,14 @@ fn contentCol(self: *Parser, line_idx: usize) u32 {
     return @intCast(full_line.len - trimmed.len + 1);
 }
 
-fn buildInlineLineMap(self: *Parser, text_lines: []const []const u8, start_line: usize) !LineMap {
+/// The map from the joined `slices` back to their lines, which start at `start_line`;
+/// each slice's column is where it lies in its line.
+fn buildInlineLineMap(self: *Parser, slices: []const []const u8, start_line: usize) !LineMap {
     var segs: std.ArrayList(LineMap.Segment) = .empty;
     var joined_pos: u32 = 0;
-    for (text_lines, 0..) |line, i| {
+    for (slices, 0..) |line, i| {
         const orig_line_idx = start_line + i;
-        const col = self.contentCol(orig_line_idx);
+        const col: u32 = @intCast(@intFromPtr(line.ptr) - @intFromPtr(self.lines[orig_line_idx].ptr) + 1);
         const pos_val = self.makePos(orig_line_idx, col);
         try segs.append(self.a, .{
             .joined_start = joined_pos,
@@ -314,6 +321,7 @@ fn tryHeading(self: *Parser) !?Node {
     var content_lines: std.ArrayList([]const u8) = .empty;
     const after_hashes = std.mem.trim(u8, trimmed[hashes..], " \t");
     if (after_hashes.len > 0) try content_lines.append(self.a, after_hashes);
+    const first_content_line = if (after_hashes.len > 0) start_line else start_line + 1;
 
     while (self.pos < self.lines.len) {
         const next = self.lines[self.pos];
@@ -339,8 +347,7 @@ fn tryHeading(self: *Parser) !?Node {
         self.pos += 1;
     }
 
-    const inlines = try inline_mod.parseInlines(self.a, content_lines.items);
-    var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = inlines };
+    var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = try self.parseInlinesAt(content_lines.items, first_content_line) };
     if (self.track_pos) {
         node.start_pos = self.makePos(start_line, self.contentCol(start_line));
         node.end_pos = self.afterContent(self.pos - 1);
