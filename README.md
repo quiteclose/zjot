@@ -117,7 +117,7 @@ Runs 261 test cases vendored from the djot.js test suite, covering attributes, b
 
 ## Architecture
 
-zjot is a single-phase recursive descent parser. One pass through the input builds an AST (`Node` tree) directly, without an intermediate event stream.
+zjot is a block-streaming renderer in two passes. The block parser is a recursive descent over the input's lines that yields one block at a time (`Parser.nextBlock`) as a `Node` tree for that block alone; there is no intermediate event stream and no tree of the whole document. `render` runs the parser twice, because Djot lets a block refer to a later one: the first pass surveys the document (heading ids, implicit references, link and footnote definitions), the second resolves each block against that survey, wraps headings in sections and writes the block, resetting the block arena after each. Only the line index, the definitions and the survey live for the whole document.
 
 ```
 src/

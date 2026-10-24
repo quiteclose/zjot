@@ -11,7 +11,7 @@ The reference implementations used during development are:
 - **djot.js** -- John MacFarlane's canonical JavaScript implementation (2-phase event stream to AST)
 - **jotdown** -- Rust implementation (2-phase block events to inline events)
 
-zjot uses a single-phase recursive descent approach: one pass builds the AST directly. This is simpler than the multi-phase designs and adequate for our needs.
+zjot parses in two block-streaming passes (see Architecture): a recursive descent over lines yields one block's `Node` tree at a time, with no event stream and no whole-document tree.
 
 ## Architecture
 
