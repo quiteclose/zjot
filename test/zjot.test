@@ -5133,3 +5133,127 @@ doc
       para (6:3:20-7:0:21)
         str (6:3:20-6:3:20) text="y"
 ````
+
+Tight rendering reaches into a definition inside a tight list item.
+````
+- x
+
+  : t
+
+    d
+
+    e
+- y
+.
+<ul>
+<li>
+x
+<dl>
+<dt>t</dt>
+<dd>
+d
+e
+</dd>
+</dl>
+</li>
+<li>
+y
+</li>
+</ul>
+````
+
+A definition's paragraph outside a list keeps its `<p>`.
+````
+: t
+
+  d
+.
+<dl>
+<dt>t</dt>
+<dd>
+<p>d</p>
+</dd>
+</dl>
+````
+
+A blank line inside an item's definition list keeps the list tight.
+````
+- x
+
+  : t
+
+    d
+
+- y
+.
+<ul>
+<li>
+x
+<dl>
+<dt>t</dt>
+<dd>
+d
+</dd>
+</dl>
+</li>
+<li>
+y
+</li>
+</ul>
+````
+
+Tight rendering reaches through a block quote inside a definition.
+````
+- x
+
+  : t
+
+    > q
+- y
+.
+<ul>
+<li>
+x
+<dl>
+<dt>t</dt>
+<dd>
+<blockquote>
+q
+</blockquote>
+</dd>
+</dl>
+</li>
+<li>
+y
+</li>
+</ul>
+````
+
+A list inside a definition sets its own tightness.
+````
+- x
+
+  : t
+
+    - s
+- y
+.
+<ul>
+<li>
+x
+<dl>
+<dt>t</dt>
+<dd>
+<ul>
+<li>
+s
+</li>
+</ul>
+</dd>
+</dl>
+</li>
+<li>
+y
+</li>
+</ul>
+````
