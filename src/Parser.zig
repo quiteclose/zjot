@@ -828,7 +828,9 @@ fn tryDefinitionList(self: *Parser) !?Node {
         self.pos += 1;
 
         var content_lines: std.ArrayList([]const u8) = .empty;
+        var paragraph = OpenParagraph{};
         try content_lines.append(self.a, first_content);
+        try paragraph.feed(self.a, first_content);
 
         while (self.pos < self.lines.len) {
             const next = self.lines[self.pos];
@@ -843,7 +845,10 @@ fn tryDefinitionList(self: *Parser) !?Node {
                 const peek = self.lines[self.pos];
                 if (countIndent(peek) >= content_indent) {
                     var b: usize = 0;
-                    while (b < blanks) : (b += 1) try content_lines.append(self.a, "");
+                    while (b < blanks) : (b += 1) {
+                        try content_lines.append(self.a, "");
+                        try paragraph.feed(self.a, "");
+                    }
                     continue;
                 }
                 break;
@@ -851,9 +856,16 @@ fn tryDefinitionList(self: *Parser) !?Node {
             const ni = countIndent(next);
             if (ni >= content_indent) {
                 try content_lines.append(self.a, next[content_indent..]);
+                try paragraph.feed(self.a, next[content_indent..]);
                 self.pos += 1;
-            } else if (ni > marker_indent and ni < content_indent) {
-                try content_lines.append(self.a, std.mem.trimStart(u8, next, " \t"));
+            } else if ((ni > marker_indent and ni < content_indent) or
+                (paragraph.open and !try self.isBlockStartAt(self.pos)))
+            {
+                // Under-indented lines, and unindented ones while a paragraph (the
+                // term, or a definition's paragraph) is open, continue it lazily.
+                const lazy = std.mem.trimStart(u8, next, " \t");
+                try content_lines.append(self.a, lazy);
+                try paragraph.feed(self.a, lazy);
                 self.pos += 1;
             } else {
                 break;

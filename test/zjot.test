@@ -1912,3 +1912,77 @@ A blank line before a heading makes the list loose; the heading gets an id.
 </ul>
 ````
 
+A definition term continues lazily.
+````
+: term
+lazy
+.
+<dl>
+<dt>term
+lazy</dt>
+<dd>
+</dd>
+</dl>
+````
+
+A definition term continues across an indented line and a lazy one.
+````
+: term
+  def
+lazy
+.
+<dl>
+<dt>term
+def
+lazy</dt>
+<dd>
+</dd>
+</dl>
+````
+
+A definition's paragraph continues lazily.
+````
+: term
+
+  def
+lazy
+.
+<dl>
+<dt>term</dt>
+<dd>
+<p>def
+lazy</p>
+</dd>
+</dl>
+````
+
+A heading interrupts a definition list (pin).
+````
+: term
+# H
+.
+<dl>
+<dt>term</dt>
+<dd>
+</dd>
+</dl>
+<section id="H">
+<h1>H</h1>
+</section>
+````
+
+A definition term inside a block quote continues lazily.
+````
+> : term
+lazy
+.
+<blockquote>
+<dl>
+<dt>term
+lazy</dt>
+<dd>
+</dd>
+</dl>
+</blockquote>
+````
+
