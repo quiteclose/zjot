@@ -259,17 +259,24 @@ fn parseParagraph(self: *Parser) !Node {
     }
 
     const src = try inline_mod.joinLines(self.a, text_lines.items);
-    const inlines = if (src.len > 0) try inline_mod.parseInlineContent(self.a, src) else &.{};
+    const map: ?LineMap = if (self.track_pos) try self.buildInlineLineMap(text_lines.items, para_start_line) else null;
+    const inlines = if (src.len > 0) try inline_mod.parseInlineContent(self.a, src, map) else &.{};
 
     var para = Node{ .tag = .para, .children = inlines };
     if (self.track_pos) {
-        const first_col = self.contentCol(para_start_line);
-        para.start_pos = self.makePos(para_start_line, first_col);
-        para.end_pos = self.makePos(self.pos, 0);
-        const line_map = try self.buildInlineLineMap(text_lines.items, para_start_line);
-        applyInlinePositions(inlines, src, line_map);
+        para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
+        para.end_pos = self.afterContent(self.pos - 1);
     }
     return para;
+}
+
+/// One past the last non-blank character of `line_idx`, where djot.js ends a paragraph
+/// or heading: the line's newline (col 0 of the next line) unless whitespace trails it.
+fn afterContent(self: *Parser, line_idx: usize) SourcePos {
+    const line = self.lines[line_idx];
+    const content = std.mem.trimEnd(u8, line, " \t").len;
+    if (content == line.len) return self.makePos(line_idx + 1, 0);
+    return self.makePos(line_idx, @intCast(content + 1));
 }
 
 fn contentCol(self: *Parser, line_idx: usize) u32 {
@@ -295,25 +302,6 @@ fn buildInlineLineMap(self: *Parser, text_lines: []const []const u8, start_line:
         joined_pos += @intCast(line.len + 1);
     }
     return .{ .segments = try segs.toOwnedSlice(self.a) };
-}
-
-/// Sets source positions on str nodes using pointer arithmetic against
-/// the joined source text. O(1) per node via LineMap, no string searching.
-fn applyInlinePositions(nodes: []const Node, src: []const u8, line_map: LineMap) void {
-    const src_start = @intFromPtr(src.ptr);
-    const src_end = src_start + src.len;
-    for (nodes) |*node_const| {
-        const node = @constCast(node_const);
-        if (node.tag == .str and node.text.len > 0) {
-            const text_ptr = @intFromPtr(node.text.ptr);
-            if (text_ptr >= src_start and text_ptr < src_end) {
-                const offset: u32 = @intCast(text_ptr - src_start);
-                node.start_pos = line_map.resolve(offset);
-                const end_offset: u32 = offset + @as(u32, @intCast(node.text.len)) - 1;
-                node.end_pos = line_map.resolve(end_offset);
-            }
-        }
-    }
 }
 
 fn tryHeading(self: *Parser) !?Node {
@@ -355,7 +343,7 @@ fn tryHeading(self: *Parser) !?Node {
     var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = inlines };
     if (self.track_pos) {
         node.start_pos = self.makePos(start_line, self.contentCol(start_line));
-        node.end_pos = self.makePos(self.pos, 0);
+        node.end_pos = self.afterContent(self.pos - 1);
     }
     return node;
 }
