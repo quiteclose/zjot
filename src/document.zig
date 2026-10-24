@@ -17,14 +17,19 @@ const Definitions = Parser.Definitions;
 /// What a block needs from the rest of the document: generated heading ids and the
 /// implicit link targets that top-level headings provide. Ids follow djot.js: every
 /// heading gets one, wherever it sits; in document order, each generated id avoids
-/// every id seen so far, explicit ones included, and an explicit id is used as written. Built by visiting every block;
-/// footnote content is not visited, its ids are generated as the endnotes are
-/// resolved. Read through `Resolver`.
+/// every id seen so far, explicit ones included, and an explicit id is used as written.
+/// Built by visiting every block and, as they are met, the footnote definitions, so a
+/// footnote's headings take their place in the sequence where the definition stands.
+/// Read through `Resolver`.
 pub const Survey = struct {
     a: Allocator,
     ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
     /// Generated heading ids in visiting order; `Resolver` hands them out by ordinal.
     heading_ids: std.ArrayList([]const u8) = .empty,
+    /// The same for each footnote's headings, by label; handed out as its endnote is written.
+    footnote_heading_ids: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .{},
+    visited_footnotes: usize = 0,
+    current_footnote: ?[]const u8 = null,
     /// Heading text to "#id" for top-level headings; a later heading with the same text wins.
     auto_refs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
     /// The next suffix to try for each base id already taken, so a repeated heading
@@ -36,13 +41,30 @@ pub const Survey = struct {
         try self.visitNode(block, null);
     }
 
+    /// Visits the footnote definitions recorded since the last call, in the order they
+    /// were met, so their heading ids are generated where the definitions stand.
+    pub fn visitFootnotes(self: *Survey, defs: *const Definitions) !void {
+        while (self.visited_footnotes < defs.footnote_defs.count()) : (self.visited_footnotes += 1) {
+            const label = defs.footnote_defs.keys()[self.visited_footnotes];
+            const ids = try self.footnote_heading_ids.getOrPut(self.a, label);
+            if (!ids.found_existing) ids.value_ptr.* = .empty;
+            self.current_footnote = label;
+            defer self.current_footnote = null;
+            for (defs.footnote_defs.values()[self.visited_footnotes]) |block| try self.visitNode(block, .footnote);
+        }
+    }
+
     fn visitNode(self: *Survey, node: Node, parent: ?Tag) !void {
         if (node.id) |id| try self.ids_used.put(self.a, try self.a.dupe(u8, id), {});
         if (node.tag == .heading) {
             const text = getNodeText(node);
             const id = node.id orelse blk: {
                 const generated = try self.generateId(text);
-                try self.heading_ids.append(self.a, generated);
+                if (self.current_footnote) |label| {
+                    try self.footnote_heading_ids.getPtr(label).?.append(self.a, generated);
+                } else {
+                    try self.heading_ids.append(self.a, generated);
+                }
                 break :blk generated;
             };
             if (parent == null) {
@@ -110,9 +132,9 @@ pub const Resolver = struct {
     survey: *Survey,
     footnote_order: std.ArrayList([]const u8) = .empty,
     next_heading: usize = 0,
-    /// Set while resolving footnote content, which the survey never saw: its heading
-    /// ids are generated here, in the order the endnotes are written.
-    generating_ids: bool = false,
+    /// While an endnote is written: its footnote's generated heading ids, in order.
+    footnote_ids: ?[]const []const u8 = null,
+    next_footnote_id: usize = 0,
 
     pub fn resolve(self: *Resolver, ba: Allocator, block: Node) !Node {
         return self.resolveNode(ba, block);
@@ -121,8 +143,9 @@ pub const Resolver = struct {
     fn resolveNode(self: *Resolver, ba: Allocator, node: Node) !Node {
         var n = node;
         if (n.tag == .heading and n.id == null) {
-            if (self.generating_ids) {
-                n.id = try self.survey.generateId(getNodeText(n));
+            if (self.footnote_ids) |ids| {
+                n.id = ids[self.next_footnote_id];
+                self.next_footnote_id += 1;
             } else {
                 n.id = self.survey.heading_ids.items[self.next_heading];
                 self.next_heading += 1;
@@ -167,13 +190,14 @@ pub const Resolver = struct {
     /// while it is being walked.
     pub fn footnoteSection(self: *Resolver, ba: Allocator) !?Node {
         if (self.footnote_order.items.len == 0) return null;
-        self.generating_ids = true;
-        defer self.generating_ids = false;
+        defer self.footnote_ids = null;
         var items: std.ArrayList(Node) = .empty;
         var fn_idx: usize = 0;
         while (fn_idx < self.footnote_order.items.len) : (fn_idx += 1) {
             const label = self.footnote_order.items[fn_idx];
             const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
+            self.footnote_ids = if (self.survey.footnote_heading_ids.get(label)) |ids| ids.items else &.{};
+            self.next_footnote_id = 0;
             const content = try ba.alloc(Node, raw_content.len);
             for (raw_content, content) |block, *out| out.* = try self.resolveNode(ba, block);
             const idx = items.items.len + 1;
