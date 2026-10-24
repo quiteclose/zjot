@@ -2236,3 +2236,76 @@ b
 </ul>
 ````
 
+A footnote's heading takes its id where the definition stands: before the body heading of the same text.
+````
+[^n]:
+    # H
+
+# H
+
+x[^n]
+.
+<section id="H-1">
+<h1>H</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="H">H</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+The same with the body heading first (pin).
+````
+# H
+
+[^n]:
+    # H
+
+x[^n]
+.
+<section id="H">
+<h1>H</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="H-1">H</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Two footnotes with the same heading text: ids follow definition order, not reference order.
+````
+[^a]:
+    # H
+
+[^b]:
+    # H
+
+x[^b] y[^a]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> y<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="H-1">H</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<h1 id="H">H</h1>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````

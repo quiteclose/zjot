@@ -37,9 +37,12 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     {
         var parser = Parser.initIndexed(ba, input, index, &defs);
         while (try parser.nextBlock()) |block| {
+            // Definitions met before this block come first in the id sequence.
+            try survey.visitFootnotes(&defs);
             try survey.visit(block);
             _ = block_arena.reset(.retain_capacity);
         }
+        try survey.visitFootnotes(&defs);
     }
     defs.sealed = true;
 
