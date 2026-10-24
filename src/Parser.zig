@@ -468,6 +468,9 @@ fn tryFootnoteDef(self: *Parser) !?void {
 
     var content_lines: std.ArrayList([]const u8) = .empty;
     var paragraph = OpenParagraph{};
+    // The first indented line sets the content indent; deeper lines keep the rest, as
+    // in a list item (`collectItemContent`).
+    var content_indent: ?usize = null;
     if (rest.len > 0) {
         try content_lines.append(self.a, rest);
         try paragraph.feed(self.a, rest);
@@ -485,9 +488,15 @@ fn tryFootnoteDef(self: *Parser) !?void {
                 try paragraph.feed(self.a, "");
                 self.pos += 1;
             } else break;
-        } else if ((l[0] == ' ' or l[0] == '\t') or (paragraph.open and !try self.isBlockStartAt(self.pos))) {
-            // Indented lines belong to the footnote; an unindented one continues an
-            // open paragraph, as in a list item.
+        } else if (l[0] == ' ' or l[0] == '\t') {
+            const indent = countIndent(l);
+            const strip = @min(indent, content_indent orelse indent);
+            if (content_indent == null) content_indent = indent;
+            try content_lines.append(self.a, l[strip..]);
+            try paragraph.feed(self.a, l[strip..]);
+            self.pos += 1;
+        } else if (paragraph.open and !try self.isBlockStartAt(self.pos)) {
+            // An unindented line continues an open paragraph, as in a list item.
             const content = std.mem.trimStart(u8, l, " \t");
             try content_lines.append(self.a, content);
             try paragraph.feed(self.a, content);
