@@ -27,6 +27,10 @@ pub const Survey = struct {
     heading_ids: std.ArrayList([]const u8) = .empty,
     /// Heading text to "#id" for top-level headings; a later heading with the same text wins.
     auto_refs: std.StringArrayHashMapUnmanaged([]const u8) = .{},
+    /// The next suffix to try for each base id already taken, so a repeated heading
+    /// text costs one lookup instead of a search from `-1` (quadratic over a document).
+    next_suffix: std.StringArrayHashMapUnmanaged(usize) = .{},
+    scratch: std.ArrayList(u8) = .empty,
 
     pub fn visit(self: *Survey, block: Node) !void {
         try self.visitNode(block, null);
@@ -75,12 +79,23 @@ pub const Survey = struct {
             return base_id;
         }
 
-        var counter: usize = 1;
+        // Ids are only ever added, so the first free suffix is never below the last
+        // one handed out for this base; the search resumes there. Candidates are built
+        // in a scratch buffer and only the accepted one is kept.
+        const next = try self.next_suffix.getOrPut(self.a, base_id);
+        if (!next.found_existing) next.value_ptr.* = 1;
+        var counter = next.value_ptr.*;
         while (true) : (counter += 1) {
-            const candidate = try std.fmt.allocPrint(self.a, "{s}-{d}", .{ base_id, counter });
-            if (!self.ids_used.contains(candidate)) {
-                try self.ids_used.put(self.a, candidate, {});
-                return candidate;
+            self.scratch.clearRetainingCapacity();
+            try self.scratch.appendSlice(self.a, base_id);
+            try self.scratch.append(self.a, '-');
+            var digits: [20]u8 = undefined;
+            try self.scratch.appendSlice(self.a, try std.fmt.bufPrint(&digits, "{d}", .{counter}));
+            if (!self.ids_used.contains(self.scratch.items)) {
+                const id = try self.a.dupe(u8, self.scratch.items);
+                try self.ids_used.put(self.a, id, {});
+                next.value_ptr.* = counter + 1;
+                return id;
             }
         }
     }
@@ -256,6 +271,20 @@ fn getNodeText(node: Node) []const u8 {
         return f[0..len];
     }
     return "";
+}
+
+test "heading ids: the next free suffix per base, found without a search" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    var survey = Survey{ .a = arena.allocator() };
+    try std.testing.expectEqualStrings("x", try survey.generateId("x"));
+    try survey.ids_used.put(survey.a, "x-2", {}); // an explicit id in the way
+    try std.testing.expectEqualStrings("x-1", try survey.generateId("x"));
+    try std.testing.expectEqualStrings("x-3", try survey.generateId("x"));
+    var i: usize = 4;
+    while (i < 10_000) : (i += 1) _ = try survey.generateId("x");
+    try std.testing.expectEqualStrings("x-10000", try survey.generateId("x"));
+    try std.testing.expectEqualStrings("y", try survey.generateId("y"));
 }
 
 test "sections: a heading closes deeper and equal levels, then opens its own" {
