@@ -113,7 +113,9 @@ const Scanner = struct {
                 '\\' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 >= src.len) {
-                        try sc.text(src[pos .. pos + 1]);
+                        // A backslash ending the block is a hard break on its newline, as djot.js.
+                        sc.stripTrailingSpacesFromLastStr();
+                        try sc.emit(.{ .tag = .hard_break }, pos + 1, pos + 1);
                         pos += 1;
                     } else {
                         const next = src[pos + 1];

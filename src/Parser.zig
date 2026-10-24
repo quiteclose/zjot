@@ -55,6 +55,9 @@ input_end: ?SourcePos = null,
 stop: ?SourcePos = null,
 stop_before: ?SourcePos = null,
 blank_after: ?SourcePos = null,
+/// For a sub-parser, the first byte after its input in the enclosing parser
+/// (`afterNewline`): where a paragraph ending in a hard break ends.
+after_input: ?SourcePos = null,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
@@ -261,18 +264,34 @@ fn parseParagraph(self: *Parser) !Node {
     var para = Node{ .tag = .para, .children = try self.parseInlinesAt(text_lines.items, para_start_line) };
     if (self.track_pos) {
         para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
-        para.end_pos = self.afterContent(self.pos - 1);
+        para.end_pos = self.leafEnd(para.children, self.pos - 1);
     }
     return para;
 }
 
-/// One past the last non-blank character of `line_idx`, where djot.js ends a paragraph
-/// or heading: the line's newline (col 0 of the next line) unless whitespace trails it.
+/// Where a paragraph or heading whose last line is `last_line` ends, as djot.js: one past
+/// its last non-blank character (the line's newline, col 0 of the next line, unless
+/// whitespace trails it), or one past a hard break that ends it.
+fn leafEnd(self: *Parser, children: []const Node, last_line: usize) SourcePos {
+    if (children.len > 0 and children[children.len - 1].tag == .hard_break) return self.afterNewline(last_line + 1);
+    return self.afterContent(last_line);
+}
+
+/// One past the last non-blank character of `line_idx`: the line's newline (col 0 of the
+/// next line) unless whitespace trails it.
 fn afterContent(self: *Parser, line_idx: usize) SourcePos {
     const line = self.lines[line_idx];
     const content = std.mem.trimEnd(u8, line, " \t").len;
     if (content == line.len) return self.makePos(line_idx + 1, 0);
     return self.makePos(line_idx, @intCast(content + 1));
+}
+
+/// The first byte of `line_idx`: its newline when it is empty, the enclosing parser's
+/// next byte or the document's end past this parser's input.
+fn afterNewline(self: *Parser, line_idx: usize) SourcePos {
+    if (line_idx >= self.lines.len) return self.after_input orelse self.input_end.?;
+    if (self.lines[line_idx].len == 0) return self.makePos(line_idx + 1, 0);
+    return self.makePos(line_idx, 1);
 }
 
 /// Parses the inline content of `slices`, each a slice of its line, taken from the
@@ -310,7 +329,7 @@ fn buildInlineLineMap(self: *Parser, slices: []const []const u8, start_line: usi
         });
         joined_pos += @intCast(line.len + 1);
     }
-    return .{ .segments = try segs.toOwnedSlice(self.a) };
+    return .{ .segments = try segs.toOwnedSlice(self.a), .total = joined_pos - 1, .end = self.makePos(start_line + slices.len, 0) };
 }
 
 fn tryHeading(self: *Parser) !?Node {
@@ -352,7 +371,7 @@ fn tryHeading(self: *Parser) !?Node {
     var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = try self.parseInlinesAt(content_lines.items, first_content_line) };
     if (self.track_pos) {
         node.start_pos = self.makePos(start_line, self.contentCol(start_line));
-        node.end_pos = self.afterContent(self.pos - 1);
+        node.end_pos = self.leafEnd(node.children, self.pos - 1);
     }
     return node;
 }
@@ -763,6 +782,7 @@ fn positionSubParser(self: *Parser, sub: *Parser, orig_lines: []const usize, col
     sub.stop = self.containerEnd();
     sub.stop_before = self.stopBefore();
     sub.blank_after = if (last_orig + 1 < self.lines.len and isBlank(self.lines[last_orig + 1])) self.makePos(last_orig + 2, 0) else null;
+    sub.after_input = self.afterNewline(last_orig + 1);
     const cols = try self.a.alloc(u32, col_offsets.len);
     const adjust = try self.a.alloc(u32, col_offsets.len);
     var stripped: u32 = 0;

@@ -6,6 +6,10 @@ const SourcePos = @import("node.zig").SourcePos;
 /// block parser when it joins a block's content lines (`Parser.buildInlineLineMap`),
 /// used by the inline parser to position each node as it is made.
 segments: []const Segment = &.{},
+/// The length of the joined text, and the position just past it (the newline after the
+/// last line, or the document's end), where a hard break ending the block sits.
+total: u32 = 0,
+end: SourcePos = .{ .line = 1, .col = 1, .offset = 0 },
 
 const LineMap = @This();
 
@@ -20,6 +24,7 @@ pub const Segment = struct {
 /// two lines is col 0 of the line after it, where djot.js puts a soft or hard break.
 pub fn resolve(self: LineMap, joined_offset: u32) SourcePos {
     if (self.segments.len == 0) return .{ .line = 1, .col = 1, .offset = joined_offset };
+    if (joined_offset >= self.total) return self.end;
 
     // The last segment starting at or before the offset; the first starts at 0.
     var lo: usize = 0;
