@@ -4460,3 +4460,444 @@ u
 </li>
 </ul>
 ````
+
+A list ending a block quote before a blank line ends on the blank's newline, its item on the line before.
+```` ap
+> - a
+> - b
+
+para
+.
+doc
+  block_quote (1:1:0-4:0:12)
+    bullet_list (1:3:2-4:0:12) tight=true style="-"
+      list_item (1:3:2-2:2:7)
+        para (1:5:4-2:0:5)
+          str (1:5:4-1:5:4) text="a"
+      list_item (2:3:8-3:0:11)
+        para (2:5:10-3:0:11)
+          str (2:5:10-2:5:10) text="b"
+  para (4:1:13-5:0:17)
+    str (4:1:13-4:4:16) text="para"
+````
+
+A list ending a block quote that a list follows ends where that list starts.
+```` ap
+> - a
+> - b
+- c
+.
+doc
+  block_quote (1:1:0-3:1:12)
+    bullet_list (1:3:2-3:1:12) tight=true style="-"
+      list_item (1:3:2-2:2:7)
+        para (1:5:4-2:0:5)
+          str (1:5:4-1:5:4) text="a"
+      list_item (2:3:8-3:0:11)
+        para (2:5:10-3:0:11)
+          str (2:5:10-2:5:10) text="b"
+  bullet_list (3:1:12-4:0:15) tight=true style="-"
+    list_item (3:1:12-4:0:15)
+      para (3:3:14-4:0:15)
+        str (3:3:14-3:3:14) text="c"
+````
+
+A nested list followed by a paragraph in the same item ends where the paragraph starts.
+```` ap
+- a
+
+  - b
+
+  c
+.
+doc
+  bullet_list (1:1:0-6:0:15) tight=true style="-"
+    list_item (1:1:0-6:0:15)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-5:3:14) tight=true style="-"
+        list_item (3:3:7-5:2:13)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+      para (5:3:14-6:0:15)
+        str (5:3:14-5:3:14) text="c"
+````
+
+A block quote ending an item before a blank line ends on the blank's newline.
+```` ap
+- a
+
+  > q
+
+para
+.
+doc
+  bullet_list (1:1:0-5:1:12) tight=false style="-"
+    list_item (1:1:0-5:0:11)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      block_quote (3:3:7-5:0:11)
+        para (3:5:9-4:0:10)
+          str (3:5:9-3:5:9) text="q"
+  para (5:1:12-6:0:16)
+    str (5:1:12-5:4:15) text="para"
+````
+
+A nested block quote continued lazily.
+```` ap
+> > inner
+> para
+.
+doc
+  block_quote (1:1:0-3:0:16)
+    block_quote (1:3:2-3:0:16)
+      para (1:5:4-3:0:16)
+        str (1:5:4-1:9:8) text="inner"
+        soft_break (2:0:9-2:0:9)
+        str (2:3:12-2:6:15) text="para"
+````
+
+A nested list ending an item ends where the next item starts, its item at col 0.
+```` ap
+- a
+
+  - b
+- c
+.
+doc
+  bullet_list (1:1:0-5:0:14) tight=true style="-"
+    list_item (1:1:0-4:0:10)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-4:1:11) tight=true style="-"
+        list_item (3:3:7-4:0:10)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+    list_item (4:1:11-5:0:14)
+      para (4:3:13-5:0:14)
+        str (4:3:13-4:3:13) text="c"
+````
+
+A nested list in an ordered item.
+```` ap
+1. a
+
+   - b
+2. c
+.
+doc
+  ordered_list (1:1:0-5:0:17) tight=true
+    list_item (1:1:0-4:0:12)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+      bullet_list (3:4:9-4:1:13) tight=true style="-"
+        list_item (3:4:9-4:0:12)
+          para (3:6:11-4:0:12)
+            str (3:6:11-3:6:11) text="b"
+    list_item (4:1:13-5:0:17)
+      para (4:4:16-5:0:17)
+        str (4:4:16-4:4:16) text="c"
+````
+
+A list ending a block quote at the end of the input.
+```` ap
+> - a
+.
+doc
+  block_quote (1:1:0-2:0:5)
+    bullet_list (1:3:2-2:0:5) tight=true style="-"
+      list_item (1:3:2-2:0:5)
+        para (1:5:4-2:0:5)
+          str (1:5:4-1:5:4) text="a"
+````
+
+A block quote ending an item at the end of the input.
+```` ap
+- a
+
+  > q
+.
+doc
+  bullet_list (1:1:0-4:0:10) tight=false style="-"
+    list_item (1:1:0-4:0:10)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      block_quote (3:3:7-4:0:10)
+        para (3:5:9-4:0:10)
+          str (3:5:9-3:5:9) text="q"
+````
+
+Blank lines between a nested list and the next item.
+```` ap
+- a
+
+  - b
+
+
+- c
+.
+doc
+  bullet_list (1:1:0-7:0:16) tight=true style="-"
+    list_item (1:1:0-6:0:12)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-6:1:13) tight=true style="-"
+        list_item (3:3:7-6:0:12)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+    list_item (6:1:13-7:0:16)
+      para (6:3:15-7:0:16)
+        str (6:3:15-6:3:15) text="c"
+````
+
+A list ending a definition before a blank line and a paragraph.
+```` ap
+: t
+
+  - a
+
+para
+.
+doc
+  definition_list (1:1:0-5:1:12)
+    definition_list_item (1:1:0-5:0:11)
+      term
+        str (1:3:2-1:3:2) text="t"
+      definition
+        bullet_list (3:3:7-5:1:12) tight=true style="-"
+          list_item (3:3:7-5:0:11)
+            para (3:5:9-4:0:10)
+              str (3:5:9-3:5:9) text="a"
+  para (5:1:12-6:0:16)
+    str (5:1:12-5:4:15) text="para"
+````
+
+A nested block quote followed by a blank quote line.
+```` ap
+> > a
+>
+> b
+.
+doc
+  block_quote (1:1:0-4:0:11)
+    block_quote (1:3:2-3:0:7)
+      para (1:5:4-2:0:5)
+        str (1:5:4-1:5:4) text="a"
+    para (3:3:10-4:0:11)
+      str (3:3:10-3:3:10) text="b"
+````
+
+A loose nested list ending an item before a blank line and a paragraph.
+```` ap
+- a
+
+  - b
+
+  - c
+
+para
+.
+doc
+  bullet_list (1:1:0-7:1:19) tight=true style="-"
+    list_item (1:1:0-7:0:18)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-7:1:19) tight=false style="-"
+        list_item (3:3:7-5:2:13)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+        list_item (5:3:14-7:0:18)
+          para (5:5:16-6:0:17)
+            str (5:5:16-5:5:16) text="c"
+  para (7:1:19-8:0:23)
+    str (7:1:19-7:4:22) text="para"
+````
+
+A list inside a block quote followed by a paragraph in the quote.
+```` ap
+> - a
+>
+> b
+.
+doc
+  block_quote (1:1:0-4:0:11)
+    bullet_list (1:3:2-3:3:10) tight=true style="-"
+      list_item (1:3:2-3:2:9)
+        para (1:5:4-2:0:5)
+          str (1:5:4-1:5:4) text="a"
+    para (3:3:10-4:0:11)
+      str (3:3:10-3:3:10) text="b"
+````
+
+A block quote as an item's first line, followed by the next item.
+```` ap
+- > q
+- b
+.
+doc
+  bullet_list (1:1:0-3:0:9) tight=true style="-"
+    list_item (1:1:0-2:0:5)
+      block_quote (1:3:2-2:1:6)
+        para (1:5:4-2:0:5)
+          str (1:5:4-1:5:4) text="q"
+    list_item (2:1:6-3:0:9)
+      para (2:3:8-3:0:9)
+        str (2:3:8-2:3:8) text="b"
+````
+
+A quote marker under an item's text is lazy text.
+```` ap
+- a
+  > q
+
+para
+.
+doc
+  bullet_list (1:1:0-4:1:11) tight=true style="-"
+    list_item (1:1:0-4:0:10)
+      para (1:3:2-3:0:9)
+        str (1:3:2-1:3:2) text="a"
+        soft_break (2:0:3-2:0:3)
+        str (2:3:6-2:5:8) text="> q"
+  para (4:1:11-5:0:15)
+    str (4:1:11-4:4:14) text="para"
+````
+
+An indented paragraph that ends a list: the item ends before its indentation.
+```` ap
+- a
+
+ para
+.
+doc
+  bullet_list (1:1:0-4:0:10) tight=false style="-"
+    list_item (1:1:0-4:0:10)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      para (3:2:6-4:0:10)
+        str (3:2:6-3:5:9) text="para"
+````
+
+An indented list whose last paragraph is under-indented.
+```` ap
+ - a
+
+   b
+
+  c
+.
+doc
+  bullet_list (1:2:1-6:0:15) tight=false style="-"
+    list_item (1:2:1-6:0:15)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+      para (3:4:9-4:0:10)
+        str (3:4:9-3:4:9) text="b"
+      para (5:3:14-6:0:15)
+        str (5:3:14-5:3:14) text="c"
+````
+
+A table ending an item before a blank line ends on the blank's newline.
+```` ap
+- a
+
+  | x |
+  |---|
+
+para
+.
+doc
+  bullet_list (1:1:0-6:1:22) tight=false style="-"
+    list_item (1:1:0-6:0:21)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      table (3:3:7-6:0:21)
+        caption
+        row (3:3:7-4:0:12) head=true
+          cell (3:3:7-3:7:11) head=true align="default"
+            str (3:5:9-3:5:9) text="x"
+  para (6:1:22-7:0:26)
+    str (6:1:22-6:4:25) text="para"
+````
+
+A list inside a div closed by its fence: the item ends on the fence.
+```` ap
+::: d
+- a
+  > q
+:::
+.
+doc
+  div (1:1:0-4:3:18) class="d"
+    bullet_list (2:1:6-5:0:19) tight=true style="-"
+      list_item (2:1:6-4:3:18)
+        para (2:3:8-4:0:15)
+          str (2:3:8-2:3:8) text="a"
+          soft_break (3:0:9-3:0:9)
+          str (3:3:12-3:5:14) text="> q"
+````
+
+A code block in an item, a table, a lazy term: every block positioned.
+```` ap
+- a
+
+  ```
+  c
+  ```
+- b
+
+| x |
+|---|
+
+: t
+  d
+.
+doc
+  bullet_list (1:1:0-8:1:26) tight=false style="-"
+    list_item (1:1:0-6:0:20)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      code_block (3:3:7-5:5:19) text="c\n"
+    list_item (6:1:21-8:0:25)
+      para (6:3:23-7:0:24)
+        str (6:3:23-6:3:23) text="b"
+  table (8:1:26-11:0:38)
+    caption
+    row (8:1:26-9:0:31) head=true
+      cell (8:1:26-8:5:30) head=true align="default"
+        str (8:3:28-8:3:28) text="x"
+  definition_list (11:1:39-13:0:46)
+    definition_list_item (11:1:39-13:0:46)
+      term
+        str (11:3:41-11:3:41) text="t"
+        soft_break (12:0:42-12:0:42)
+        str (12:3:45-12:3:45) text="d"
+      definition
+````
+
+A table ending an item followed by the next item ends where that item starts.
+```` ap
+- x
+
+  | a |
+  |---|
+  | 1 |
+- y
+.
+doc
+  bullet_list (1:1:0-7:0:32) tight=false style="-"
+    list_item (1:1:0-6:0:28)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="x"
+      table (3:3:7-6:1:29)
+        caption
+        row (3:3:7-4:0:12) head=true
+          cell (3:3:7-3:7:11) head=true align="default"
+            str (3:5:9-3:5:9) text="a"
+        row (5:3:23-6:0:28) head=false
+          cell (5:3:23-5:7:27) head=false align="default"
+            str (5:5:25-5:5:25) text="1"
+    list_item (6:1:29-7:0:32)
+      para (6:3:31-7:0:32)
+        str (6:3:31-6:3:31) text="y"
+````

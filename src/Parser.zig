@@ -46,6 +46,15 @@ track_pos: bool = false,
 /// (`inputEnd`), the line after its last line for a sub-parser (`positionSubParser`).
 /// Set whenever positions are tracked.
 input_end: ?SourcePos = null,
+/// For a sub-parser, where the enclosing parser's structure stopped (`containerEnd`
+/// there), where an item ends there (`stopBefore`), and the newline of the blank line
+/// after this parser's last line, when there is one. A block that ends with this
+/// parser's input ends at one of these, as djot.js closes containers at the line that
+/// fails to continue them: lists and items at the stop, block quotes and tables at the
+/// first blank line. Null in the root, where the input's end serves.
+stop: ?SourcePos = null,
+stop_before: ?SourcePos = null,
+blank_after: ?SourcePos = null,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
@@ -438,11 +447,7 @@ fn tryBlockQuote(self: *Parser) !?Node {
     var node = Node{ .tag = .block_quote, .children = inner_blocks };
     if (self.track_pos) {
         node.start_pos = self.makePos(start_line, start_col);
-        // A quote followed by a blank line ends with that line, as djot.js.
-        node.end_pos = if (self.pos < self.lines.len and isBlank(self.lines[self.pos]))
-            self.makePos(self.pos + 1, 0)
-        else
-            self.containerEnd();
+        node.end_pos = self.endAtBlank(self.pos);
     }
     return node;
 }
@@ -695,25 +700,35 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
     return inner_blocks.toOwnedSlice(self.a);
 }
 
-/// Where a container ends, as djot.js: at the end of the input; past the enclosing div's
-/// closing fence when that stopped it; else where the next block's content starts on
-/// the line the parser stopped at.
+/// Where a container ends, as djot.js: where the next block's content starts on the line
+/// the parser stopped at, or that line's newline when it is blank (a block quote stops
+/// there); past the enclosing div's closing fence when that stopped it; at the end of
+/// this parser's input, where the enclosing parser stopped, or the document's end.
 fn containerEnd(self: *Parser) SourcePos {
-    if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
-    if (self.isClosingFence(self.lines[self.pos])) return self.makePos(self.pos + 1, 0);
-    return self.makePos(self.pos, @intCast(countIndent(self.lines[self.pos]) + 1));
+    if (self.pos >= self.lines.len) return self.stop orelse self.input_end.?;
+    const line = self.lines[self.pos];
+    if (isBlank(line) or self.isClosingFence(line)) return self.makePos(self.pos + 1, 0);
+    return self.makePos(self.pos, @intCast(countIndent(line) + 1));
 }
 
-/// Where a list item ends, as djot.js: at the end of the input; on the enclosing div's
-/// closing fence when that stopped it; else on the line the list stopped at, in the
-/// column of the list's marker (col 0, the end of the previous line, for an unindented list).
-fn itemEnd(self: *Parser, list_indent: usize, marker_line: usize) SourcePos {
-    if (self.pos >= self.lines.len) return self.makePos(self.pos, 0);
-    if (self.isClosingFence(self.lines[self.pos])) return self.fenceEnd(self.pos);
-    const first = self.makePos(self.pos, 1);
-    const line_start = first.offset - (if (self.pos < self.col_offsets.len) self.col_offsets[self.pos] else 0);
-    const indent: u32 = @as(u32, @intCast(list_indent)) + (if (marker_line < self.col_offsets.len) self.col_offsets[marker_line] else 0);
-    return .{ .line = first.line, .col = indent, .offset = line_start - 1 + indent };
+/// Where an item ends, as djot.js: one position before `containerEnd` (the character
+/// before the stop line's content, or col 0, the previous line's end, when it has none),
+/// on the closing fence's last character, or where the enclosing parser's items end.
+fn stopBefore(self: *Parser) SourcePos {
+    if (self.pos >= self.lines.len) return self.stop_before orelse self.input_end.?;
+    const line = self.lines[self.pos];
+    if (self.isClosingFence(line)) return self.fenceEnd(self.pos);
+    if (isBlank(line)) return self.makePos(self.pos, 0);
+    const stop = self.containerEnd();
+    return .{ .line = stop.line, .col = stop.col - 1, .offset = stop.offset - 1 };
+}
+
+/// Where a block quote or table ends, as djot.js: on the newline of the blank line at
+/// `line_idx` that follows it, in this parser or the enclosing one; else at `containerEnd`.
+fn endAtBlank(self: *Parser, line_idx: usize) SourcePos {
+    if (line_idx >= self.lines.len) return self.blank_after orelse self.containerEnd();
+    if (isBlank(self.lines[line_idx])) return self.makePos(line_idx + 1, 0);
+    return self.containerEnd();
 }
 
 /// The last fence character of the code or div fence on `line_idx`; what follows it does
@@ -743,7 +758,11 @@ fn positionSubParser(self: *Parser, sub: *Parser, orig_lines: []const usize, col
     const first_col_off = col_offsets[0];
     sub.base_line = self.base_line + @as(u32, @intCast(first_orig));
     sub.base_offset = self.makePos(first_orig, first_col_off + 1).offset;
-    sub.input_end = self.makePos(orig_lines[orig_lines.len - 1] + 1, 0);
+    const last_orig = orig_lines[orig_lines.len - 1];
+    sub.input_end = self.makePos(last_orig + 1, 0);
+    sub.stop = self.containerEnd();
+    sub.stop_before = self.stopBefore();
+    sub.blank_after = if (last_orig + 1 < self.lines.len and isBlank(self.lines[last_orig + 1])) self.makePos(last_orig + 2, 0) else null;
     const cols = try self.a.alloc(u32, col_offsets.len);
     const adjust = try self.a.alloc(u32, col_offsets.len);
     var stripped: u32 = 0;
@@ -809,7 +828,7 @@ fn tryBulletList(self: *Parser) !?Node {
 
         const inner_blocks = try self.parseItemContent(&content);
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) self.itemEnd(list_indent, item_start_line) else null;
+        const item_ep = if (self.track_pos) self.stopBefore() else null;
 
         if (is_task) {
             try items.append(self.a, .{ .tag = .task_list_item, .children = inner_blocks, .checked = task_checked, .start_pos = item_sp, .end_pos = item_ep });
@@ -897,7 +916,7 @@ fn tryOrderedList(self: *Parser) !?Node {
         const inner_blocks = try self.parseItemContent(&content);
 
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) self.itemEnd(list_indent, item_start_line) else null;
+        const item_ep = if (self.track_pos) self.stopBefore() else null;
         try items.append(self.a, .{ .tag = .list_item, .children = inner_blocks, .start_pos = item_sp, .end_pos = item_ep });
 
         updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
@@ -1018,7 +1037,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
         var item = Node{ .tag = .definition_list_item, .children = try item_children.toOwnedSlice(self.a) };
         if (self.track_pos) {
             item.start_pos = self.makePos(item_line, @intCast(marker_indent + 1));
-            item.end_pos = self.itemEnd(marker_indent, item_line);
+            item.end_pos = self.stopBefore();
         }
         try items.append(self.a, item);
     }
@@ -1121,14 +1140,12 @@ fn tryTable(self: *Parser) !?Node {
     var table = Node{ .tag = .table };
     if (self.track_pos) {
         table.start_pos = self.makePos(start_line, self.contentCol(start_line));
-        // As djot.js: after a blank line that follows the rows; else where a caption on
-        // the next line starts; else where the next block starts.
-        table.end_pos = if (rows_end < self.lines.len and isBlank(self.lines[rows_end]))
-            self.makePos(rows_end + 1, 0)
-        else if (rows_end < self.lines.len and captionContent(self.lines[rows_end]) != null)
+        // As djot.js: where a caption on the line after the rows starts; else at the blank
+        // line that follows the rows, or where the next block starts.
+        table.end_pos = if (rows_end < self.lines.len and captionContent(self.lines[rows_end]) != null)
             self.captionStart(rows_end)
         else
-            self.containerEnd();
+            self.endAtBlank(rows_end);
     }
     var table_children: std.ArrayList(Node) = .empty;
     try table_children.append(self.a, caption);
