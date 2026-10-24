@@ -14,16 +14,10 @@ const inline_mod = @import("inline.zig");
 const Parser = @import("Parser.zig");
 const Definitions = Parser.Definitions;
 
-/// A heading is given a generated id at the top level or directly inside a block
-/// quote, nowhere else. `parent` is null at the top level.
-fn headingGetsId(parent: ?Tag) bool {
-    return parent == null or parent == .block_quote;
-}
-
 /// What a block needs from the rest of the document: generated heading ids and the
-/// implicit link targets that top-level headings provide. Ids follow djot.js: in
-/// document order, each generated id avoids every id seen so far, explicit ones
-/// included, and an explicit id is used as written. Built by visiting every block;
+/// implicit link targets that top-level headings provide. Ids follow djot.js: every
+/// heading gets one, wherever it sits; in document order, each generated id avoids
+/// every id seen so far, explicit ones included, and an explicit id is used as written. Built by visiting every block;
 /// footnote content is not visited, its ids are generated as the endnotes are
 /// resolved. Read through `Resolver`.
 pub const Survey = struct {
@@ -40,7 +34,7 @@ pub const Survey = struct {
 
     fn visitNode(self: *Survey, node: Node, parent: ?Tag) !void {
         if (node.id) |id| try self.ids_used.put(self.a, try self.a.dupe(u8, id), {});
-        if (node.tag == .heading and headingGetsId(parent)) {
+        if (node.tag == .heading) {
             const text = getNodeText(node);
             const id = node.id orelse blk: {
                 const generated = try self.generateId(text);
@@ -106,12 +100,12 @@ pub const Resolver = struct {
     generating_ids: bool = false,
 
     pub fn resolve(self: *Resolver, ba: Allocator, block: Node) !Node {
-        return self.resolveNode(ba, block, null);
+        return self.resolveNode(ba, block);
     }
 
-    fn resolveNode(self: *Resolver, ba: Allocator, node: Node, parent: ?Tag) !Node {
+    fn resolveNode(self: *Resolver, ba: Allocator, node: Node) !Node {
         var n = node;
-        if (n.tag == .heading and n.id == null and headingGetsId(parent)) {
+        if (n.tag == .heading and n.id == null) {
             if (self.generating_ids) {
                 n.id = try self.survey.generateId(getNodeText(n));
             } else {
@@ -139,7 +133,7 @@ pub const Resolver = struct {
         }
         if (n.children.len > 0) {
             const children = try ba.alloc(Node, n.children.len);
-            for (n.children, children) |child, *out| out.* = try self.resolveNode(ba, child, n.tag);
+            for (n.children, children) |child, *out| out.* = try self.resolveNode(ba, child);
             n.children = children;
         }
         return n;
@@ -166,7 +160,7 @@ pub const Resolver = struct {
             const label = self.footnote_order.items[fn_idx];
             const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
             const content = try ba.alloc(Node, raw_content.len);
-            for (raw_content, content) |block, *out| out.* = try self.resolveNode(ba, block, .footnote);
+            for (raw_content, content) |block, *out| out.* = try self.resolveNode(ba, block);
             const idx = items.items.len + 1;
             const fn_id = try std.fmt.allocPrint(ba, "fn{d}", .{idx});
             const backref = try std.fmt.allocPrint(ba, "#fnref{d}", .{idx});
