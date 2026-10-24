@@ -5344,3 +5344,163 @@ more
 </li>
 </ul>
 ````
+
+A backslash ending a paragraph is a hard break on the newline; the paragraph ends there at the end of the input.
+```` ap
+a\
+.
+doc
+  para (1:1:0-2:0:2)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (2:0:2-2:0:2)
+````
+
+A paragraph ending in a hard break ends one past it: on the following blank line's newline.
+```` ap
+a\
+
+b
+.
+doc
+  para (1:1:0-3:0:3)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (2:0:2-2:0:2)
+  para (3:1:4-4:0:5)
+    str (3:1:4-3:1:4) text="b"
+````
+
+A backslash ending a list item's paragraph.
+```` ap
+- a\
+.
+doc
+  bullet_list (1:1:0-2:0:4) tight=true style="-"
+    list_item (1:1:0-2:0:4)
+      para (1:3:2-2:0:4)
+        str (1:3:2-1:3:2) text="a"
+        hard_break (2:0:4-2:0:4)
+````
+
+A backslash ending a paragraph in a block quote.
+```` ap
+> q\
+.
+doc
+  block_quote (1:1:0-2:0:4)
+    para (1:3:2-2:0:4)
+      str (1:3:2-1:3:2) text="q"
+      hard_break (2:0:4-2:0:4)
+````
+
+Spaces before the ending backslash are stripped.
+```` ap
+a \
+.
+doc
+  para (1:1:0-2:0:3)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (2:0:3-2:0:3)
+````
+
+An escaped backslash at the end is text.
+```` ap
+a\\
+.
+doc
+  para (1:1:0-2:0:3)
+    str (1:1:0-1:1:0) text="a"
+    str (1:3:2-1:3:2) text="\\"
+````
+
+A paragraph ending in a hard break before the next item ends on that item's first byte.
+```` ap
+- a\
+- b
+.
+doc
+  bullet_list (1:1:0-3:0:8) tight=true style="-"
+    list_item (1:1:0-2:0:4)
+      para (1:3:2-2:1:5)
+        str (1:3:2-1:3:2) text="a"
+        hard_break (2:0:4-2:0:4)
+    list_item (2:1:5-3:0:8)
+      para (2:3:7-3:0:8)
+        str (2:3:7-2:3:7) text="b"
+````
+
+A paragraph ending in a hard break before a blank line and the next item.
+```` ap
+- a\
+
+- b
+.
+doc
+  bullet_list (1:1:0-4:0:9) tight=false style="-"
+    list_item (1:1:0-3:0:5)
+      para (1:3:2-3:0:5)
+        str (1:3:2-1:3:2) text="a"
+        hard_break (2:0:4-2:0:4)
+    list_item (3:1:6-4:0:9)
+      para (3:3:8-4:0:9)
+        str (3:3:8-3:3:8) text="b"
+````
+
+A paragraph ending in a hard break before a closing fence ends on the fence's first byte.
+```` ap
+:::
+a\
+:::
+.
+doc
+  div (1:1:0-3:3:9)
+    para (2:1:4-3:1:7)
+      str (2:1:4-2:1:4) text="a"
+      hard_break (3:0:6-3:0:6)
+````
+
+A block quote's paragraph ending in a hard break before a blank line.
+```` ap
+> a\
+
+para
+.
+doc
+  block_quote (1:1:0-3:0:5)
+    para (1:3:2-3:0:5)
+      str (1:3:2-1:3:2) text="a"
+      hard_break (2:0:4-2:0:4)
+  para (3:1:6-4:0:10)
+    str (3:1:6-3:4:9) text="para"
+````
+
+A hard break followed by a continuation line.
+```` ap
+- a\
+   - b
+.
+doc
+  bullet_list (1:1:0-3:0:11) tight=true style="-"
+    list_item (1:1:0-3:0:11)
+      para (1:3:2-3:0:11)
+        str (1:3:2-1:3:2) text="a"
+        hard_break (2:0:4-2:0:4)
+        str (2:4:8-2:6:10) text="- b"
+````
+
+A backslash ending a paragraph renders `<br>`.
+````
+a\
+.
+<p>a<br>
+</p>
+````
+
+A backslash ending a heading renders `<br>`.
+````
+# h\
+.
+<section id="h">
+<h1>h<br>
+</h1>
+</section>
+````
