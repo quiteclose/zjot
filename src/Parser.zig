@@ -945,6 +945,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     const trimmed = std.mem.trimStart(u8, line, " ");
     if (trimmed.len < 2 or trimmed[0] != ':' or (trimmed[1] != ' ' and trimmed[1] != '\t')) return null;
+    const list_start_line = self.pos;
 
     var items: std.ArrayList(Node) = .empty;
 
@@ -956,28 +957,32 @@ fn tryDefinitionList(self: *Parser) !?Node {
         const marker_indent = @as(usize, @intCast(cur.len - cur_trimmed.len));
         const content_indent = marker_indent + 2;
         const first_content = cur_trimmed[2..];
+        const item_line = self.pos;
         self.pos += 1;
 
+        // Each collected line with the line it came from and the bytes stripped before it.
         var content_lines: std.ArrayList([]const u8) = .empty;
+        var orig_lines: std.ArrayList(usize) = .empty;
+        var col_offsets: std.ArrayList(u32) = .empty;
         var paragraph = OpenParagraph{};
         try content_lines.append(self.a, first_content);
+        try orig_lines.append(self.a, item_line);
+        try col_offsets.append(self.a, @intCast(content_indent));
         try paragraph.feed(self.a, first_content);
 
         while (self.pos < self.lines.len) {
             const next = self.lines[self.pos];
             if (isBlank(next)) {
+                const first_blank = self.pos;
                 self.pos += 1;
-                var blanks: usize = 1;
-                while (self.pos < self.lines.len and isBlank(self.lines[self.pos])) {
-                    self.pos += 1;
-                    blanks += 1;
-                }
+                while (self.pos < self.lines.len and isBlank(self.lines[self.pos])) self.pos += 1;
                 if (self.pos >= self.lines.len) break;
                 const peek = self.lines[self.pos];
                 if (countIndent(peek) >= content_indent) {
-                    var b: usize = 0;
-                    while (b < blanks) : (b += 1) {
+                    for (first_blank..self.pos) |blank| {
                         try content_lines.append(self.a, "");
+                        try orig_lines.append(self.a, blank);
+                        try col_offsets.append(self.a, 0);
                         try paragraph.feed(self.a, "");
                     }
                     continue;
@@ -987,6 +992,8 @@ fn tryDefinitionList(self: *Parser) !?Node {
             const ni = countIndent(next);
             if (ni >= content_indent) {
                 try content_lines.append(self.a, next[content_indent..]);
+                try orig_lines.append(self.a, self.pos);
+                try col_offsets.append(self.a, @intCast(content_indent));
                 try paragraph.feed(self.a, next[content_indent..]);
                 self.pos += 1;
             } else if ((ni > marker_indent and ni < content_indent) or
@@ -996,6 +1003,8 @@ fn tryDefinitionList(self: *Parser) !?Node {
                 // term, or a definition's paragraph) is open, continue it lazily.
                 const lazy = std.mem.trimStart(u8, next, " \t");
                 try content_lines.append(self.a, lazy);
+                try orig_lines.append(self.a, self.pos);
+                try col_offsets.append(self.a, @intCast(next.len - lazy.len));
                 try paragraph.feed(self.a, lazy);
                 self.pos += 1;
             } else {
@@ -1005,6 +1014,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
 
         const content_text = try inline_mod.joinLines(self.a, content_lines.items);
         var inner_parser = Parser.init(self.a, content_text, self.defs);
+        try self.positionSubParser(&inner_parser, orig_lines.items, col_offsets.items);
         const all_blocks = try inner_parser.parseBlocks();
 
         var term_node: Node = undefined;
@@ -1020,11 +1030,21 @@ fn tryDefinitionList(self: *Parser) !?Node {
         var item_children: std.ArrayList(Node) = .empty;
         try item_children.append(self.a, term_node);
         try item_children.append(self.a, .{ .tag = .definition, .children = def_blocks });
-        try items.append(self.a, .{ .tag = .definition_list_item, .children = try item_children.toOwnedSlice(self.a) });
+        var item = Node{ .tag = .definition_list_item, .children = try item_children.toOwnedSlice(self.a) };
+        if (self.track_pos) {
+            item.start_pos = self.makePos(item_line, @intCast(marker_indent + 1));
+            item.end_pos = self.itemEnd(marker_indent, item_line);
+        }
+        try items.append(self.a, item);
     }
 
     if (items.items.len == 0) return null;
-    return .{ .tag = .definition_list, .children = try items.toOwnedSlice(self.a) };
+    var list = Node{ .tag = .definition_list, .children = try items.toOwnedSlice(self.a) };
+    if (self.track_pos) {
+        list.start_pos = self.makePos(list_start_line, @intCast(countIndent(line) + 1));
+        list.end_pos = self.containerEnd();
+    }
+    return list;
 }
 
 fn tryTable(self: *Parser) !?Node {

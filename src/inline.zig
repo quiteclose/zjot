@@ -12,12 +12,6 @@ const attrs = @import("attributes.zig");
 const BlockAttrs = attrs.BlockAttrs;
 const LineMap = @import("LineMap.zig");
 
-pub fn parseInlines(a: Allocator, lines: []const []const u8) ![]const Node {
-    if (lines.len == 0) return &.{};
-    const src = try joinLines(a, lines);
-    return parseInlineContent(a, src, null);
-}
-
 const InlineItem = union(enum) {
     node: Node,
     opener: OpenerInfo,
