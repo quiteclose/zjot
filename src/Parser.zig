@@ -43,6 +43,9 @@ track_pos: bool = false,
 base_offset: u32 = 0,
 base_line: u32 = 1,
 col_offsets: []const u32 = &.{},
+/// Per line, the bytes stripped from this and earlier lines of the enclosing item that
+/// the inner text does not contain; added to byte offsets, not to columns.
+offset_adjust: []const u32 = &.{},
 
 /// The line index of an input: one slice per line and each line's byte offset. A
 /// streaming consumer builds it once and keeps it for the document while the
@@ -63,9 +66,11 @@ pub fn indexLines(a: Allocator, input: []const u8) !LineIndex {
     var offset: u32 = 0;
     var it = std.mem.splitScalar(u8, input, '\n');
     for (lines, offsets) |*line, *line_offset| {
-        line.* = it.next().?;
+        // CRLF input: the line is indexed without its carriage return; offsets keep it.
+        const raw = it.next().?;
+        line.* = std.mem.trimEnd(u8, raw, "\r");
         line_offset.* = offset;
-        offset += @intCast(line.*.len + 1);
+        offset += @intCast(raw.len + 1);
     }
     return .{ .lines = lines, .offsets = offsets };
 }
@@ -85,13 +90,15 @@ pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Def
 fn makePos(self: *Parser, line_idx: usize, col: u32) SourcePos {
     const col_adj: u32 = if (line_idx < self.col_offsets.len) self.col_offsets[line_idx] else 0;
     const display_col = col + col_adj;
+    const off_adj: u32 = if (line_idx < self.offset_adjust.len) self.offset_adjust[line_idx] else 0;
     // col is 1-based in djot sourcepos. col==0 means "end of previous line"
     // (e.g. a closing fence), so the byte offset points one before this line.
     const offset = if (line_idx < self.line_offsets.len) blk: {
         if (col == 0) {
-            break :blk if (self.line_offsets[line_idx] > 0) self.line_offsets[line_idx] - 1 else 0;
+            // End of the previous line: before this line's own stripped bytes.
+            break :blk if (self.line_offsets[line_idx] > 0) self.line_offsets[line_idx] - 1 + off_adj - col_adj else 0;
         }
-        break :blk self.line_offsets[line_idx] + col - 1;
+        break :blk self.line_offsets[line_idx] + col - 1 + off_adj;
     } else if (self.line_offsets.len > 0)
         self.line_offsets[self.line_offsets.len - 1] + @as(u32, @intCast(self.lines[self.lines.len - 1].len))
     else
@@ -533,8 +540,10 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
 
     try content.para_lines.append(self.a, first_rest);
     try content.para_orig_lines.append(self.a, self.pos);
-    try content.para_col_offsets.append(self.a, @intCast(content_col));
+    // A bare marker's line is shorter than its content column.
+    try content.para_col_offsets.append(self.a, @intCast(@min(content_col, self.lines[self.pos].len)));
     self.pos += 1;
+    var para_open = first_rest.len > 0;
 
     while (self.pos < self.lines.len and !content.item_saw_blank) {
         const next = self.lines[self.pos];
@@ -550,11 +559,13 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
             if (m.indent <= list_indent) break;
         }
         const next_indent = countIndent(next);
-        if (next_indent <= list_indent and try self.isBlockStartAt(self.pos)) break;
+        // An unindented line is lazy text for an open paragraph; an empty item has none.
+        if (next_indent <= list_indent and (!para_open or try self.isBlockStartAt(self.pos))) break;
         const strip: u32 = if (next_indent >= content_col) @intCast(content_col) else @intCast(next_indent);
         try content.para_lines.append(self.a, next[strip..]);
         try content.para_orig_lines.append(self.a, self.pos);
         try content.para_col_offsets.append(self.a, strip);
+        para_open = true;
         self.pos += 1;
     }
 
@@ -605,10 +616,16 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
             const first_orig = content.para_orig_lines.items[0];
             const first_col_off = content.para_col_offsets.items[0];
             para_parser.base_line = self.base_line + @as(u32, @intCast(first_orig));
-            para_parser.base_offset = self.base_offset +
-                (if (first_orig < self.line_offsets.len) self.line_offsets[first_orig] else 0) +
-                first_col_off;
+            para_parser.base_offset = self.makePos(first_orig, first_col_off + 1).offset;
             para_parser.col_offsets = content.para_col_offsets.items;
+            // The inner text lacks what each line had stripped; offsets add it back.
+            const adjust = try self.a.alloc(u32, content.para_col_offsets.items.len);
+            var stripped: u32 = 0;
+            for (content.para_col_offsets.items, adjust) |strip, *adj| {
+                stripped += strip;
+                adj.* = stripped - first_col_off;
+            }
+            para_parser.offset_adjust = adjust;
         }
         const blocks = try para_parser.parseBlocks();
         for (blocks) |b| try inner_blocks.append(self.a, b);
@@ -1520,6 +1537,15 @@ fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
     }
     try result.append(a, content[cell_start..]);
     return result.toOwnedSlice(a);
+}
+
+test "CRLF input is indexed without carriage returns; offsets count them" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const index = try indexLines(arena.allocator(), "-\r\n- b\r\n");
+    try std.testing.expectEqualStrings("-", index.lines[0]);
+    try std.testing.expectEqualStrings("- b", index.lines[1]);
+    try std.testing.expectEqual(@as(u32, 3), index.offsets[1]);
 }
 
 test "definitions outlive the block that defined them" {

@@ -2180,3 +2180,59 @@ lazy
 </blockquote>
 ````
 
+An empty item takes no lazy text; the next line is a paragraph after the list.
+````
+-
+bar
+.
+<ul>
+<li>
+</li>
+</ul>
+<p>bar</p>
+````
+
+The same after a heading.
+````
+# H
+-
+bar
+.
+<section id="H">
+<h1>H</h1>
+<ul>
+<li>
+</li>
+</ul>
+<p>bar</p>
+</section>
+````
+
+The same for an ordered marker.
+````
+1.
+bar
+.
+<ol>
+<li>
+</li>
+</ol>
+<p>bar</p>
+````
+
+A bare marker's indented content, then another item (pin).
+````
+-
+  content
+- b
+.
+<ul>
+<li>
+content
+</li>
+<li>
+b
+</li>
+</ul>
+````
+
