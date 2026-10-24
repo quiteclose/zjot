@@ -4955,3 +4955,87 @@ para
 <p>para
 [r]: u</p>
 ````
+
+Rows without a closing pipe are a paragraph, as djot.js.
+````
+| a | b
+|---|---
+| 1 | 2
+.
+<p>| a | b
+|—|—
+| 1 | 2</p>
+````
+
+A separator row without a closing pipe ends the table; the rows above have no header.
+````
+| a | b |
+|---|---
+| 1 | 2 |
+.
+<table>
+<tr>
+<td>a</td>
+<td>b</td>
+</tr>
+</table>
+<p>|—|—
+| 1 | 2 |</p>
+````
+
+A second row without a closing pipe is a paragraph.
+````
+| a |
+| b
+.
+<table>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>| b</p>
+````
+
+Trailing spaces after a row's closing pipe.
+```` ap
+| a |  
+|---|
+| 1 |
+.
+doc
+  table (1:1:0-4:0:19)
+    caption
+    row (1:1:0-1:6:5) head=true
+      cell (1:1:0-1:5:4) head=true align="default"
+        str (1:3:2-1:3:2) text="a"
+    row (3:1:14-4:0:19) head=false
+      cell (3:1:14-3:5:18) head=false align="default"
+        str (3:3:16-3:3:16) text="1"
+````
+
+A row needs no spaces around its pipes.
+```` ap
+|a|
+.
+doc
+  table (1:1:0-2:0:3)
+    caption
+    row (1:1:0-2:0:3) head=false
+      cell (1:1:0-1:3:2) head=false align="default"
+        str (1:2:1-1:2:1) text="a"
+````
+
+A row without a closing pipe ends the table where it starts.
+```` ap
+| a |
+| b
+.
+doc
+  table (1:1:0-2:1:6)
+    caption
+    row (1:1:0-2:0:5) head=false
+      cell (1:1:0-1:5:4) head=false align="default"
+        str (1:3:2-1:3:2) text="a"
+  para (2:1:6-3:0:9)
+    str (2:1:6-2:3:8) text="| b"
+````

@@ -1651,22 +1651,23 @@ fn skipBacktickSpan(text: []const u8, start: usize) usize {
     return text.len;
 }
 
+/// A table row starts and ends with an unescaped pipe outside verbatim, as djot.js.
 fn isTableRow(line: []const u8) bool {
     const trimmed = std.mem.trim(u8, line, " \t");
-    if (trimmed.len < 1 or trimmed[0] != '|') return false;
-    var pipes: usize = 0;
+    if (trimmed.len < 2 or trimmed[0] != '|') return false;
     var i: usize = 0;
+    var ends_with_pipe = false;
     while (i < trimmed.len) {
         if (trimmed[i] == '\\' and i + 1 < trimmed.len) {
             i += 2;
         } else if (trimmed[i] == '`') {
             i = skipBacktickSpan(trimmed, i);
         } else {
-            if (trimmed[i] == '|') pipes += 1;
+            ends_with_pipe = trimmed[i] == '|' and i == trimmed.len - 1;
             i += 1;
         }
     }
-    return pipes >= 2;
+    return ends_with_pipe;
 }
 
 fn isTableSep(line: []const u8) bool {
