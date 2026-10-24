@@ -644,14 +644,14 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
 fn updateListTightness(is_tight: *bool, saw_blank_between: *bool, content: *const ItemContent, inner_blocks: []const Node) void {
     if (content.item_saw_blank and content.block_lines.items.len > 0) {
         // A blank line before anything but a sublist makes the list loose, as djot.js;
-        // a definition, which leaves no block behind, counts as "anything".
+        // only the block right after the blank counts, and a definition, which leaves
+        // no block behind, counts as "anything".
         const lead: usize = if (content.para_lines.items.len > 0 and content.para_lines.items[0].len > 0) 1 else 0;
-        if (inner_blocks.len <= lead) is_tight.* = false;
-        for (inner_blocks[@min(lead, inner_blocks.len)..]) |b| {
-            switch (b.tag) {
-                .bullet_list, .ordered_list, .task_list => {},
-                else => is_tight.* = false,
-            }
+        if (inner_blocks.len <= lead) {
+            is_tight.* = false;
+        } else switch (inner_blocks[lead].tag) {
+            .bullet_list, .ordered_list, .task_list => {},
+            else => is_tight.* = false,
         }
     }
     if (content.item_saw_blank and content.block_lines.items.len == 0) saw_blank_between.* = true;

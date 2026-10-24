@@ -2309,3 +2309,204 @@ x[^b] y[^a]
 </ol>
 </section>
 ````
+
+A sublist after a blank keeps the list tight even when a block quote follows it.
+````
+- a
+
+  - b
+  > q
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+b
+</li>
+</ul>
+<blockquote>
+q
+</blockquote>
+</li>
+</ul>
+````
+
+The same with a blank line before the block quote.
+````
+- a
+
+  - b
+
+  > q
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+b
+</li>
+</ul>
+<blockquote>
+q
+</blockquote>
+</li>
+</ul>
+````
+
+Blanks between sublist items make the sublist loose, not the list (pin).
+````
+- a
+
+  - b
+
+  - c
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+<p>b</p>
+</li>
+<li>
+<p>c</p>
+</li>
+</ul>
+</li>
+</ul>
+````
+
+A block quote right after the blank makes the list loose even if a sublist follows (pin).
+````
+- a
+
+  > q
+  - b
+.
+<ul>
+<li>
+<p>a</p>
+<blockquote>
+<p>q</p>
+</blockquote>
+<ul>
+<li>
+b
+</li>
+</ul>
+</li>
+</ul>
+````
+
+A paragraph line after a sublist is the sublist item's lazy text (pin).
+````
+- a
+
+  - b
+  para
+.
+<ul>
+<li>
+a
+<ul>
+<li>
+b
+para
+</li>
+</ul>
+</li>
+</ul>
+````
+
+In a tight list item, a paragraph inside a block quote renders without p tags, as djot.js.
+````
+-
+  > q
+.
+<ul>
+<li>
+<blockquote>
+q
+</blockquote>
+</li>
+</ul>
+````
+
+The same inside a fenced div.
+````
+-
+  ::: d
+  q
+  :::
+.
+<ul>
+<li>
+<div class="d">
+q
+</div>
+</li>
+</ul>
+````
+
+Two paragraphs in a block quote in a tight item.
+````
+-
+  > q
+  >
+  > r
+.
+<ul>
+<li>
+<blockquote>
+q
+r
+</blockquote>
+</li>
+</ul>
+````
+
+A nested loose list inside a quote in a tight item keeps its own p tags (pin).
+````
+-
+  > - x
+  >
+  > - y
+.
+<ul>
+<li>
+<blockquote>
+<ul>
+<li>
+<p>x</p>
+</li>
+<li>
+<p>y</p>
+</li>
+</ul>
+</blockquote>
+</li>
+</ul>
+````
+
+A loose item's block quote keeps its p tags (pin).
+````
+- a
+
+  > q
+- b
+.
+<ul>
+<li>
+<p>a</p>
+<blockquote>
+<p>q</p>
+</blockquote>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
