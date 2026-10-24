@@ -5504,3 +5504,56 @@ A backslash ending a heading renders `<br>`.
 </h1>
 </section>
 ````
+
+A bare checkbox opens no paragraph: the next unindented line is a new paragraph.
+```` ap
+- [ ]
+foo
+.
+doc
+  task_list (1:1:0-2:1:6)
+    task_list_item (1:1:0-2:0:5) checked=false
+  para (2:1:6-3:0:9)
+    str (2:1:6-2:3:8) text="foo"
+````
+
+A bare checkbox with trailing spaces opens no paragraph either.
+```` ap
+- [ ]  
+foo
+.
+doc
+  task_list (1:1:0-2:1:8)
+    task_list_item (1:1:0-2:0:7) checked=false
+  para (2:1:8-3:0:11)
+    str (2:1:8-2:3:10) text="foo"
+````
+
+An empty caption marker line followed by text: the caption starts on the marker's newline and holds the text.
+```` ap
+| a |
+|---|
+^ 
+more
+.
+doc
+  table (1:1:0-4:0:14)
+    caption (4:0:14-5:0:19)
+      str (4:1:15-4:4:18) text="more"
+    row (1:1:0-2:0:5) head=true
+      cell (1:1:0-1:5:4) head=true align="default"
+        str (1:3:2-1:3:2) text="a"
+````
+
+A bare checkbox followed by a line of text renders an empty task item and a paragraph.
+````
+- [ ]
+foo
+.
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox"/>
+</li>
+</ul>
+<p>foo</p>
+````

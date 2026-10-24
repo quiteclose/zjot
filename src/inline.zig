@@ -84,7 +84,10 @@ const Scanner = struct {
     fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) bool {
         if (last.tag != .str or last.text.ptr + last.text.len != slice.ptr) return false;
         if (last.id != null or last.classes != null or last.attrs.len > 0) return false;
-        sc.setText(last, last.text.ptr[0 .. last.text.len + slice.len]);
+        last.text = last.text.ptr[0 .. last.text.len + slice.len];
+        if (sc.map) |m| if (sc.within(last.text)) {
+            last.end_pos = m.resolve(@intCast(@intFromPtr(last.text.ptr) - @intFromPtr(sc.src.ptr) + last.text.len - 1));
+        };
         return true;
     }
 
@@ -291,7 +294,7 @@ const Scanner = struct {
                 },
                 ':' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (sc.handleSymbol(&pos)) {
+                    if (try sc.handleSymbol(&pos)) {
                         text_start = pos;
                     } else {
                         pos += 1;
@@ -589,7 +592,7 @@ const Scanner = struct {
         pos.* = p + 1;
     }
 
-    fn handleSymbol(sc: *Scanner, pos: *usize) bool {
+    fn handleSymbol(sc: *Scanner, pos: *usize) !bool {
         const src = sc.src;
         const p = pos.*;
         const start = p + 1;
@@ -600,7 +603,7 @@ const Scanner = struct {
         for (name) |ch| {
             if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '+') return false;
         }
-        sc.emit(.{ .tag = .symb, .text = name }, p, end) catch return false;
+        try sc.emit(.{ .tag = .symb, .text = name }, p, end);
         pos.* = end + 1;
         return true;
     }

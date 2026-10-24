@@ -609,7 +609,9 @@ const ItemContent = struct {
     block_col_offsets: std.ArrayList(u32),
 };
 
-fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, first_rest: []const u8) !ItemContent {
+/// Collects an item's lines: `first_rest` is the first line's content, starting at
+/// column `first_col`; `content_col` is where continuation lines must start.
+fn collectItemContent(self: *Parser, content_col: usize, first_col: usize, list_indent: usize, first_rest: []const u8) !ItemContent {
     var content = ItemContent{
         .para_lines = .empty,
         .block_lines = .empty,
@@ -623,7 +625,7 @@ fn collectItemContent(self: *Parser, content_col: usize, list_indent: usize, fir
     try content.para_lines.append(self.a, first_rest);
     try content.para_orig_lines.append(self.a, self.pos);
     // A bare marker's line is shorter than its content column.
-    try content.para_col_offsets.append(self.a, @intCast(@min(content_col, self.lines[self.pos].len)));
+    try content.para_col_offsets.append(self.a, @intCast(@min(first_col, self.lines[self.pos].len)));
     self.pos += 1;
     var para_open = first_rest.len > 0;
 
@@ -836,16 +838,17 @@ fn tryBulletList(self: *Parser) !?Node {
         saw_blank_between = false;
 
         const item_start_line = self.pos;
-        var content = try self.collectItemContent(cur_li.content_col, list_indent, cur_li.rest);
-
-        var task_checked = false;
+        // A task item's content starts after the checkbox and the space that follows
+        // it, as djot.js; a bare checkbox opens no paragraph.
+        var first_rest = cur_li.rest;
+        var first_col = cur_li.content_col;
         if (is_task) {
-            task_checked = cur_li.rest[1] != ' ';
-            // The item's paragraph starts after the checkbox and its space, as djot.js.
-            const after_box = @min(4, cur_li.rest.len);
-            content.para_lines.items[0] = cur_li.rest[after_box..];
-            content.para_col_offsets.items[0] += @intCast(after_box);
+            const after_box = std.mem.trimStart(u8, cur_li.rest[@min(4, cur_li.rest.len)..], " \t");
+            first_col += cur_li.rest.len - after_box.len;
+            first_rest = after_box;
         }
+        const task_checked = is_task and cur_li.rest[1] != ' ';
+        const content = try self.collectItemContent(cur_li.content_col, first_col, list_indent, first_rest);
 
         const inner_blocks = try self.parseItemContent(&content);
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
@@ -933,7 +936,7 @@ fn tryOrderedList(self: *Parser) !?Node {
         saw_blank_between = false;
 
         const item_start_line = self.pos;
-        const content = try self.collectItemContent(cur_ol.content_col, list_indent, cur_ol.rest);
+        const content = try self.collectItemContent(cur_ol.content_col, cur_ol.content_col, list_indent, cur_ol.rest);
         const inner_blocks = try self.parseItemContent(&content);
 
         const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
@@ -1152,11 +1155,14 @@ fn tryTable(self: *Parser) !?Node {
         } else break;
     }
 
-    // djot.js gives every table a caption, empty when there is none.
-    var caption = Node{ .tag = .caption, .children = try self.parseInlinesAt(cap_lines.items, cap_line) };
+    // djot.js gives every table a caption, empty when there is none; a caption whose
+    // marker line is empty starts on that line's newline and holds the lines after it.
+    const bare_marker = cap_lines.items.len > 0 and cap_lines.items[0].len == 0;
+    const cap_slices = if (bare_marker) cap_lines.items[1..] else cap_lines.items;
+    var caption = Node{ .tag = .caption, .children = try self.parseInlinesAt(cap_slices, if (bare_marker) cap_line + 1 else cap_line) };
     if (self.track_pos and cap_lines.items.len > 0) {
         caption.start_pos = self.captionStart(cap_line);
-        caption.end_pos = if (cap_lines.items[0].len == 0) caption.start_pos else self.afterContent(self.pos - 1);
+        caption.end_pos = if (cap_slices.len == 0) caption.start_pos else self.afterContent(self.pos - 1);
     }
     var table = Node{ .tag = .table };
     if (self.track_pos) {
