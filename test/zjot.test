@@ -2,7 +2,11 @@ zjot's own cases, in the format of the vendored djot.js files (see test_runner.z
 
 Every expected output in this file was produced by djot.js 0.3.2 on 2026-10-23:
 
-    npx -y @djot/djot@0.3.2 input.dj
+    npx -y @djot/djot@0.3.2 input.dj                 (HTML cases)
+    npx -y @djot/djot@0.3.2 -t ast -p input.dj       (`ap` cases, JSON rendered to this
+                                                      file's AST text form by a converter
+                                                      checked against every vendored
+                                                      `a`/`ap` case)
 
 Expectations are never written by hand. A case goes in only when zjot and djot.js
 agree on it; where zjot deliberately differs from djot.js, the difference is written
@@ -2508,5 +2512,158 @@ A loose item's block quote keeps its p tags (pin).
 <p>b</p>
 </li>
 </ul>
+````
+
+A list item's lazy paragraph line and the item's end carry their source positions.
+```` ap
+- a
+
+  b
+.
+doc
+  bullet_list (1:1:0-4:0:8) tight=false style="-"
+    list_item (1:1:0-4:0:8)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      para (3:3:7-4:0:8)
+        str (3:3:7-3:3:7) text="b"
+````
+
+A bare marker's item: offsets count the marker line's single byte.
+```` ap
+-
+  content
+- b
+.
+doc
+  bullet_list (1:1:0-4:0:15) tight=true style="-"
+    list_item (1:1:0-3:0:11)
+      para (2:3:4-3:0:11)
+        str (2:3:4-2:9:10) text="content"
+    list_item (3:1:12-4:0:15)
+      para (3:3:14-4:0:15)
+        str (3:3:14-3:3:14) text="b"
+````
+
+An indented list: items end in the marker column of the next line.
+```` ap
+ - a
+ - b
+.
+doc
+  bullet_list (1:2:1-3:0:9) tight=true style="-"
+    list_item (1:2:1-2:1:5)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+    list_item (2:2:6-3:0:9)
+      para (2:4:8-3:0:9)
+        str (2:4:8-2:4:8) text="b"
+````
+
+A list ends where the next block's content starts.
+```` ap
+- a
+
+para
+.
+doc
+  bullet_list (1:1:0-3:1:5) tight=true style="-"
+    list_item (1:1:0-3:0:4)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+  para (3:1:5-4:0:9)
+    str (3:1:5-3:4:8) text="para"
+````
+
+A nested list ends where the item's next block starts; its item ends in the marker column.
+```` ap
+- a
+
+  - b
+
+  para
+.
+doc
+  bullet_list (1:1:0-6:0:18) tight=true style="-"
+    list_item (1:1:0-6:0:18)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-5:3:14) tight=true style="-"
+        list_item (3:3:7-5:2:13)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+      para (5:3:14-6:0:18)
+        str (5:3:14-5:6:17) text="para"
+````
+
+A block quote followed by a blank line ends with that line.
+```` ap
+> q
+
+> r
+.
+doc
+  block_quote (1:1:0-3:0:4)
+    para (1:3:2-2:0:3)
+      str (1:3:2-1:3:2) text="q"
+  block_quote (3:1:5-4:0:8)
+    para (3:3:7-4:0:8)
+      str (3:3:7-3:3:7) text="r"
+````
+
+A block quote followed directly by a list ends where the list starts.
+```` ap
+> q
+- a
+.
+doc
+  block_quote (1:1:0-2:1:4)
+    para (1:3:2-2:0:3)
+      str (1:3:2-1:3:2) text="q"
+  bullet_list (2:1:4-3:0:7) tight=true style="-"
+    list_item (2:1:4-3:0:7)
+      para (2:3:6-3:0:7)
+        str (2:3:6-2:3:6) text="a"
+````
+
+Block quotes inside a list item carry positions; a blank line ends the first.
+```` ap
+- a
+
+  > q
+
+  para
+.
+doc
+  bullet_list (1:1:0-6:0:18) tight=false style="-"
+    list_item (1:1:0-6:0:18)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      block_quote (3:3:7-5:0:11)
+        para (3:5:9-4:0:10)
+          str (3:5:9-3:5:9) text="q"
+      para (5:3:14-6:0:18)
+        str (5:3:14-5:6:17) text="para"
+````
+
+A sublist followed directly by a block quote: both positioned.
+```` ap
+- a
+
+  - b
+  > q
+.
+doc
+  bullet_list (1:1:0-5:0:16) tight=true style="-"
+    list_item (1:1:0-5:0:16)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-4:3:13) tight=true style="-"
+        list_item (3:3:7-4:2:12)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+      block_quote (4:3:13-5:0:16)
+        para (4:5:15-5:0:16)
+          str (4:5:15-4:5:15) text="q"
 ````
 
