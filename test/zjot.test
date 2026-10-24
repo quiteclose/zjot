@@ -26,6 +26,23 @@ Deliberate differences from djot.js 0.3.2:
    djot.js 0.3.2 reports the reverse (the outer ends on the fence, the inner at the end
    of the input); the HTML is the same. Checked 2026-10-24.
 
+AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
+converter renders it, so no `ap` case can pin it:
+
+3. Offsets and columns count bytes; djot.js counts UTF-16 code units (`é _é_` gives
+   `emph (1:3:2-…)` there and `(1:4:3-…)` here).
+4. Generated ids are printed on headings and sections; djot.js prints explicit ones only.
+5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
+   nodes where djot.js prints `smart_punctuation`.
+6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
+7. Reference links print the resolved `destination`; djot.js prints the `reference` only.
+   Footnote references print the number and `fnref` id, not the label, and the endnotes
+   follow as a `footnote` block.
+8. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
+   rendered by the converter.
+9. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `); zjot
+   keeps it, so only an image at the start of a paragraph is pinned.
+
 
 Heading ids: generated ids follow document order wherever the heading sits.
 ````
@@ -2814,4 +2831,661 @@ doc
     thematic_break (1:3:2-2:0:5)
     para (2:3:8-3:0:9)
       str (2:3:8-2:3:8) text="p"
+````
+
+Emphasis spans its delimiters; text ends on its last character.
+```` ap
+a _em_ b
+.
+doc
+  para (1:1:0-2:0:8)
+    str (1:1:0-1:2:1) text="a "
+    emph (1:3:2-1:6:5)
+      str (1:4:3-1:5:4) text="em"
+    str (1:7:6-1:8:7) text=" b"
+````
+
+Strong emphasis spans its delimiters.
+```` ap
+a *st* b
+.
+doc
+  para (1:1:0-2:0:8)
+    str (1:1:0-1:2:1) text="a "
+    strong (1:3:2-1:6:5)
+      str (1:4:3-1:5:4) text="st"
+    str (1:7:6-1:8:7) text=" b"
+````
+
+Nested emphasis.
+```` ap
+_a *b* c_
+.
+doc
+  para (1:1:0-2:0:9)
+    emph (1:1:0-1:9:8)
+      str (1:2:1-1:3:2) text="a "
+      strong (1:4:3-1:6:5)
+        str (1:5:4-1:5:4) text="b"
+      str (1:7:6-1:8:7) text=" c"
+````
+
+Strong around emphasis.
+```` ap
+*_x_*
+.
+doc
+  para (1:1:0-2:0:5)
+    strong (1:1:0-1:5:4)
+      emph (1:2:1-1:4:3)
+        str (1:3:2-1:3:2) text="x"
+````
+
+Marked emphasis `{_x_}` spans its braces.
+```` ap
+a {_x_} b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    emph (1:3:2-1:7:6)
+      str (1:5:4-1:5:4) text="x"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+Marked strong emphasis spans its braces.
+```` ap
+{*x*}
+.
+doc
+  para (1:1:0-2:0:5)
+    strong (1:1:0-1:5:4)
+      str (1:3:2-1:3:2) text="x"
+````
+
+An unclosed delimiter is text, in one `str` with what follows.
+```` ap
+_a b
+.
+doc
+  para (1:1:0-2:0:4)
+    str (1:1:0-1:4:3) text="_a b"
+````
+
+Two delimiters with nothing between them are text.
+```` ap
+__
+.
+doc
+  para (1:1:0-2:0:2)
+    str (1:1:0-1:2:1) text="__"
+````
+
+A delimiter that can neither open nor close is text.
+```` ap
+a * b
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:5:4) text="a * b"
+````
+
+A link spans from its bracket to its closing parenthesis.
+```` ap
+a [t](u) b
+.
+doc
+  para (1:1:0-2:0:10)
+    str (1:1:0-1:2:1) text="a "
+    link (1:3:2-1:8:7) destination="u"
+      str (1:4:3-1:4:3) text="t"
+    str (1:9:8-1:10:9) text=" b"
+````
+
+Attributes after a link do not extend it.
+```` ap
+[t](u){.c}
+.
+doc
+  para (1:1:0-2:0:10)
+    link (1:1:0-1:6:5) destination="u" class="c"
+      str (1:2:1-1:2:1) text="t"
+````
+
+A link whose text crosses a line; the soft break sits on the newline.
+```` ap
+[a
+b](u)
+.
+doc
+  para (1:1:0-3:0:8)
+    link (1:1:0-2:5:7) destination="u"
+      str (1:2:1-1:2:1) text="a"
+      soft_break (2:0:2-2:0:2)
+      str (2:1:3-2:1:3) text="b"
+````
+
+A link whose destination crosses a line ends on the closing parenthesis.
+```` ap
+[t](u
+  v)
+.
+doc
+  para (1:1:0-3:0:10)
+    link (1:1:0-2:4:9) destination="uv"
+      str (1:2:1-1:2:1) text="t"
+````
+
+A bracket without a closing one is text, merged with what follows.
+```` ap
+[a](b
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:5:4) text="[a](b"
+````
+
+An image starts on its bracket, as djot.js (the `!` is left out).
+```` ap
+![alt](u) b
+.
+doc
+  para (1:1:0-2:0:11)
+    image (1:2:1-1:9:8) destination="u"
+      str (1:3:2-1:5:4) text="alt"
+    str (1:10:9-1:11:10) text=" b"
+````
+
+A bracketed span with attributes ends on its closing bracket.
+```` ap
+a [s]{.c} b
+.
+doc
+  para (1:1:0-2:0:11)
+    str (1:1:0-1:2:1) text="a "
+    span (1:3:2-1:5:4) class="c"
+      str (1:4:3-1:4:3) text="s"
+    str (1:10:9-1:11:10) text=" b"
+````
+
+A span alone in a paragraph.
+```` ap
+[s]{#i}
+.
+doc
+  para (1:1:0-2:0:7)
+    span (1:1:0-1:3:2) id="i"
+      str (1:2:1-1:2:1) text="s"
+````
+
+An autolink spans its angle brackets.
+```` ap
+a <http://x.y> b
+.
+doc
+  para (1:1:0-2:0:16)
+    str (1:1:0-1:2:1) text="a "
+    url (1:3:2-1:14:13)
+    str (1:15:14-1:16:15) text=" b"
+````
+
+An email autolink spans its angle brackets.
+```` ap
+a <a@b.c> b
+.
+doc
+  para (1:1:0-2:0:11)
+    str (1:1:0-1:2:1) text="a "
+    email (1:3:2-1:9:8)
+    str (1:10:9-1:11:10) text=" b"
+````
+
+Angle brackets that are not an autolink are text.
+```` ap
+<a
+b>
+.
+doc
+  para (1:1:0-3:0:5)
+    str (1:1:0-1:2:1) text="<a"
+    soft_break (2:0:2-2:0:2)
+    str (2:1:3-2:2:4) text="b>"
+````
+
+Verbatim spans its backticks.
+```` ap
+a `v` b
+.
+doc
+  para (1:1:0-2:0:7)
+    str (1:1:0-1:2:1) text="a "
+    verbatim (1:3:2-1:5:4) text="v"
+    str (1:6:5-1:7:6) text=" b"
+````
+
+Verbatim with a longer fence and padding spaces.
+```` ap
+a `` x`y `` b
+.
+doc
+  para (1:1:0-2:0:13)
+    str (1:1:0-1:2:1) text="a "
+    verbatim (1:3:2-1:11:10) text=" x`y "
+    str (1:12:11-1:13:12) text=" b"
+````
+
+Unclosed verbatim runs to the end of the paragraph.
+```` ap
+a `v b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:2:1) text="a "
+    verbatim (1:3:2-1:6:5) text="v b"
+````
+
+Inline math spans from the dollar to the closing backtick.
+```` ap
+a $`m` b
+.
+doc
+  para (1:1:0-2:0:8)
+    str (1:1:0-1:2:1) text="a "
+    inline_math (1:3:2-1:6:5)
+    str (1:7:6-1:8:7) text=" b"
+````
+
+Display math spans from the dollars to the closing backtick.
+```` ap
+a $$`m` b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    display_math (1:3:2-1:7:6)
+    str (1:8:7-1:9:8) text=" b"
+````
+
+A dollar without a backtick is text.
+```` ap
+a $ b $$ c
+.
+doc
+  para (1:1:0-2:0:10)
+    str (1:1:0-1:10:9) text="a $ b $$ c"
+````
+
+Mark spans its braces.
+```` ap
+a {=m=} b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    mark (1:3:2-1:7:6)
+      str (1:5:4-1:5:4) text="m"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+Insert spans its braces.
+```` ap
+a {+i+} b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    insert (1:3:2-1:7:6)
+      str (1:5:4-1:5:4) text="i"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+Delete spans its braces.
+```` ap
+a {-d-} b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    delete (1:3:2-1:7:6)
+      str (1:5:4-1:5:4) text="d"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+A closing brace pair with no opener is text.
+```` ap
+a -} b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:6:5) text="a -} b"
+````
+
+Superscript spans its carets.
+```` ap
+a ^s^ b
+.
+doc
+  para (1:1:0-2:0:7)
+    str (1:1:0-1:2:1) text="a "
+    superscript (1:3:2-1:5:4)
+      str (1:4:3-1:4:3) text="s"
+    str (1:6:5-1:7:6) text=" b"
+````
+
+Braced superscript spans its braces.
+```` ap
+a {^s^} b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    superscript (1:3:2-1:7:6)
+      str (1:5:4-1:5:4) text="s"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+Subscript spans its tildes.
+```` ap
+a ~s~ b
+.
+doc
+  para (1:1:0-2:0:7)
+    str (1:1:0-1:2:1) text="a "
+    subscript (1:3:2-1:5:4)
+      str (1:4:3-1:4:3) text="s"
+    str (1:6:5-1:7:6) text=" b"
+````
+
+Double quotes span the quote characters.
+```` ap
+a "q" b
+.
+doc
+  para (1:1:0-2:0:7)
+    str (1:1:0-1:2:1) text="a "
+    double_quoted (1:3:2-1:5:4)
+      str (1:4:3-1:4:3) text="q"
+    str (1:6:5-1:7:6) text=" b"
+````
+
+Single quotes span the quote characters.
+```` ap
+a 'q' b
+.
+doc
+  para (1:1:0-2:0:7)
+    str (1:1:0-1:2:1) text="a "
+    single_quoted (1:3:2-1:5:4)
+      str (1:4:3-1:4:3) text="q"
+    str (1:6:5-1:7:6) text=" b"
+````
+
+Single quotes nested in double quotes.
+```` ap
+"a 'b' c"
+.
+doc
+  para (1:1:0-2:0:9)
+    double_quoted (1:1:0-1:9:8)
+      str (1:2:1-1:3:2) text="a "
+      single_quoted (1:4:3-1:6:5)
+        str (1:5:4-1:5:4) text="b"
+      str (1:7:6-1:8:7) text=" c"
+````
+
+Marked quotes `{"q"}` span their braces.
+```` ap
+{"q"}
+.
+doc
+  para (1:1:0-2:0:5)
+    double_quoted (1:1:0-1:5:4)
+      str (1:3:2-1:3:2) text="q"
+````
+
+A symbol spans its colons.
+```` ap
+a :sym: b
+.
+doc
+  para (1:1:0-2:0:9)
+    str (1:1:0-1:2:1) text="a "
+    symb (1:3:2-1:7:6) alias="sym"
+    str (1:8:7-1:9:8) text=" b"
+````
+
+A hard break sits on the newline it replaces; the text before it is trimmed.
+```` ap
+a\
+b
+.
+doc
+  para (1:1:0-3:0:4)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (2:0:2-2:0:2)
+    str (2:1:3-2:1:3) text="b"
+````
+
+A hard break after trailing spaces sits on the newline.
+```` ap
+a  \
+b
+.
+doc
+  para (1:1:0-3:0:6)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (2:0:4-2:0:4)
+    str (2:1:5-2:1:5) text="b"
+````
+
+A soft break sits on the newline it replaces.
+```` ap
+a
+b
+.
+doc
+  para (1:1:0-3:0:3)
+    str (1:1:0-1:1:0) text="a"
+    soft_break (2:0:1-2:0:1)
+    str (2:1:2-2:1:2) text="b"
+````
+
+Positions across three lines, with emphasis crossing a line.
+```` ap
+one
+two _e
+m_ three
+.
+doc
+  para (1:1:0-4:0:19)
+    str (1:1:0-1:3:2) text="one"
+    soft_break (2:0:3-2:0:3)
+    str (2:1:4-2:4:7) text="two "
+    emph (2:5:8-3:2:12)
+      str (2:6:9-2:6:9) text="e"
+      soft_break (3:0:10-3:0:10)
+      str (3:1:11-3:1:11) text="m"
+    str (3:3:13-3:8:18) text=" three"
+````
+
+An escaped character starts the text after the backslash.
+```` ap
+a \* b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:2:1) text="a "
+    str (1:4:3-1:6:5) text="* b"
+````
+
+An escaped backslash.
+```` ap
+a \\ b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:2:1) text="a "
+    str (1:4:3-1:6:5) text="\\ b"
+````
+
+A backslash before a tab is text.
+```` ap
+a\	b
+.
+doc
+  para (1:1:0-2:0:4)
+    str (1:1:0-1:4:3) text="a\\\tb"
+````
+
+A non-breaking space sits on the escaped space.
+```` ap
+a\ b
+.
+doc
+  para (1:1:0-2:0:4)
+    str (1:1:0-1:1:0) text="a"
+    non_breaking_space (1:3:2-1:3:2)
+    str (1:4:3-1:4:3) text="b"
+````
+
+Attributes on emphasis do not extend its span.
+```` ap
+_em_{.c} after
+.
+doc
+  para (1:1:0-2:0:14)
+    emph (1:1:0-1:4:3) class="c"
+      str (1:2:1-1:3:2) text="em"
+    str (1:9:8-1:14:13) text=" after"
+````
+
+An unmatched opening bracket is text, in one `str`.
+```` ap
+a [ b
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:5:4) text="a [ b"
+````
+
+An unmatched `![` is text.
+```` ap
+a ![ b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:6:5) text="a ![ b"
+````
+
+An unmatched closing bracket is text.
+```` ap
+a ] b
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:5:4) text="a ] b"
+````
+
+A brace that opens no attribute is text.
+```` ap
+a { b
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:5:4) text="a { b"
+````
+
+An unclosed attribute is text.
+```` ap
+a{.c b
+.
+doc
+  para (1:1:0-2:0:6)
+    str (1:1:0-1:6:5) text="a{.c b"
+````
+
+A paragraph starts at its first non-space character.
+```` ap
+  a
+.
+doc
+  para (1:3:2-2:0:3)
+    str (1:3:2-1:3:2) text="a"
+````
+
+A paragraph ends one past its last non-blank character when whitespace trails it.
+```` ap
+a   b  
+.
+doc
+  para (1:1:0-1:6:5)
+    str (1:1:0-1:5:4) text="a   b"
+````
+
+Trailing spaces on a continuation line stay in the text; the paragraph ends one past its content.
+```` ap
+a  
+b  
+.
+doc
+  para (1:1:0-2:2:5)
+    str (1:1:0-1:3:2) text="a  "
+    soft_break (2:0:3-2:0:3)
+    str (2:1:4-2:1:4) text="b"
+````
+
+A list item's paragraph ends one past its content when whitespace trails it; the list ends at the input's end.
+```` ap
+- a  
+.
+doc
+  bullet_list (1:1:0-2:0:5) tight=true style="-"
+    list_item (1:1:0-2:0:5)
+      para (1:3:2-1:4:3)
+        str (1:3:2-1:3:2) text="a"
+````
+
+A block quote's paragraph ends one past its content when whitespace trails it.
+```` ap
+> q  
+.
+doc
+  block_quote (1:1:0-2:0:5)
+    para (1:3:2-1:4:3)
+      str (1:3:2-1:3:2) text="q"
+````
+
+An indented continuation line with trailing spaces.
+```` ap
+a
+  b  
+.
+doc
+  para (1:1:0-2:4:5)
+    str (1:1:0-1:1:0) text="a"
+    soft_break (2:0:1-2:0:1)
+    str (2:3:4-2:3:4) text="b"
+````
+
+An unclosed code block runs to the end of the input, blank lines included.
+```` ap
+```
+x
+
+.
+doc
+  code_block (1:1:0-4:0:6) text="x\n\n"
+````
+
+A list followed by blank lines ends at the end of the input.
+```` ap
+- a
+
+
+.
+doc
+  bullet_list (1:1:0-4:0:5) tight=true style="-"
+    list_item (1:1:0-4:0:5)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
 ````
