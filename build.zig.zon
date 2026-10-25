@@ -1,6 +1,6 @@
 .{
     .name = .zjot,
-    .version = "1.2.0",
+    .version = "1.2.1",
     .fingerprint = 0xd58b135f66d86efc, // Changing this has security and trust implications.
     .minimum_zig_version = "0.16.0",
     .dependencies = .{},
