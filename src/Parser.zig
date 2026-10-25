@@ -397,7 +397,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 .bullet => |ch| m.style == .bullet and m.style.bullet == ch,
                 .task => m.style == .task,
                 .definition => m.style == .definition,
-                .ordered => |*o| m.style == .ordered and m.style.ordered.delim == o.delim and o.styles.accept(m.ordered.?, false),
+                .ordered => |o| m.style == .ordered and m.style.ordered.delim == o.delim and o.styles.matches(m.ordered.?),
             };
         },
         .list_item => |it| return cur.atEol() or cur.indent > it.indent,
@@ -478,6 +478,11 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     if (matched > 0 and self.stack.items[matched - 1].content() == .items) {
         const m = listMarker(r).?; // the list opened on, or continued by, this marker
         try self.closeFrom(matched, stand);
+        // An item joining an ordered list narrows the styles it may still be (djot.js).
+        switch (self.tip().data.list.style) {
+            .ordered => |*o| _ = o.styles.accept(m.ordered.?, false),
+            else => {},
+        }
         try self.push(.{ .list_item = .{ .indent = cur.indent, .checked = m.checked } }, cur.pos());
         cur.i += m.advance;
         return true;
@@ -769,7 +774,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
     var c = self.stack.pop().?;
     defer {
         c.children.clearRetainingCapacity();
-        self.spare_lists.append(self.gpa, c.children) catch {}; // a spare list is only a saving
+        self.spare_lists.append(self.gpa, c.children) catch c.children.deinit(self.gpa); // a spare list is only a saving
     }
     const a = self.nodeAllocator();
     const pos = self.track_pos;
@@ -844,19 +849,21 @@ fn close(self: *Parser, stand: Stand) Error!void {
             };
         },
         .footnote => |f| {
-            // Recorded for the document, where its content was allocated; the block
-            // attributes before it are dropped.
+            // Recorded for the document, where its content was allocated, with the block
+            // attributes waiting before it (djot.js puts them on the footnote).
             self.footnote_depth -= 1;
             const da = self.defs.a;
+            const slot = self.attrsSlot();
             const stored = try da.create(FootnoteDef);
             stored.* = .{
                 .blocks = try da.dupe(Node, c.children.items),
+                .attrs = if (slot.*) |ba| try ba.dupe(da) else null,
                 .start_pos = if (pos) c.start else null,
                 .end_pos = if (pos) stand.pos else null,
             };
-            try self.defs.footnote_defs.put(da, f.label, stored);
-            try self.defs.footnote_log.append(da, .{ .label = f.label, .def = stored, .headings_before = f.headings_before });
-            self.attrsSlot().* = null;
+            slot.* = null;
+            try self.defs.footnote_defs.put(self.defs.gpa, f.label, stored);
+            try self.defs.footnote_log.append(self.defs.gpa, .{ .label = f.label, .def = stored, .headings_before = f.headings_before });
             return;
         },
         .div => |dv| .{
@@ -921,7 +928,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const url = try std.mem.concat(da, u8, self.leaf_slices.items);
             self.dropLeaf();
             const slot = self.attrsSlot();
-            try self.defs.ref_defs.put(da, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
+            try self.defs.ref_defs.put(self.defs.gpa, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
             slot.* = null;
             return;
         },
