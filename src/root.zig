@@ -3,6 +3,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Parser = @import("Parser.zig");
+const leaf = @import("leaf.zig");
 const document = @import("document.zig");
 const html = @import("html.zig");
 const ast = @import("ast.zig");
@@ -33,7 +34,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     const ba = block_arena.allocator();
 
     const index = try Parser.indexLines(da, input);
-    var defs = Parser.Definitions{ .a = da };
+    var defs = document.Definitions{ .a = da };
     var survey = document.Survey{ .a = da };
     // Where djot.js ends the sections still open at the end: at its last block event,
     // which is the last top-level block's end, except that trailing blank lines and a
@@ -55,7 +56,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
             _ = block_arena.reset(.retain_capacity);
         }
         try survey.visitFootnotes(&defs);
-        const last_line_blank = index.lines.len > 0 and Parser.isBlank(index.lines[index.lines.len - 1]);
+        const last_line_blank = index.lines.len > 0 and leaf.isBlank(index.lines[index.lines.len - 1]);
         if (opts.sourcepos and (sections_end == null or last_is_div or last_line_blank)) sections_end = parser.doc_end;
         survey.endOpenSections(sections_end);
     }
@@ -133,7 +134,7 @@ const Emitter = struct {
     /// The label of the `n`-th footnote to write after the document, if there is one: in
     /// HTML the `n`-th referenced (writing an endnote may reference more), in the AST the
     /// `n`-th defined, since the AST prints every definition, as djot.js's JSON holds them.
-    fn footnoteLabel(self: *Emitter, defs: *const Parser.Definitions, n: usize) ?[]const u8 {
+    fn footnoteLabel(self: *Emitter, defs: *const document.Definitions, n: usize) ?[]const u8 {
         const labels = switch (self.mode) {
             .html => self.footnotes.order.keys(),
             .ast => defs.footnote_defs.keys(),
