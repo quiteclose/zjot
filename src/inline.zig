@@ -1013,27 +1013,24 @@ pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
     return buf;
 }
 
+/// A reference link's attributes with its definition's, as djot.js: the definition's that
+/// the link does not set come first, then the link's own in their order; nothing joins.
 pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) Node {
     var result = node;
     if (result.id == null) result.id = ref_attrs.id;
-    if (ref_attrs.attrs.len > 0) {
-        if (result.attrs.len == 0) {
-            result.attrs = ref_attrs.attrs;
-        } else {
-            var merged: std.ArrayList(@import("node.zig").Attr) = .empty;
-            for (ref_attrs.attrs) |ra| {
-                var overridden = false;
-                for (result.attrs) |na| {
-                    if (std.mem.eql(u8, ra.key, na.key)) {
-                        overridden = true;
-                        break;
-                    }
-                }
-                if (!overridden) merged.append(a, ra) catch {};
-            }
-            for (result.attrs) |na| merged.append(a, na) catch {};
-            result.attrs = merged.toOwnedSlice(a) catch result.attrs;
-        }
+    if (ref_attrs.attrs.len == 0) return result;
+    if (result.attrs.len == 0) {
+        result.attrs = ref_attrs.attrs;
+        return result;
     }
+    var merged: std.ArrayList(@import("node.zig").Attr) = .empty;
+    for (ref_attrs.attrs) |ra| {
+        const overridden = for (result.attrs) |na| {
+            if (std.mem.eql(u8, ra.key, na.key)) break true;
+        } else false;
+        if (!overridden) merged.append(a, ra) catch return result;
+    }
+    for (result.attrs) |na| merged.append(a, na) catch return result;
+    result.attrs = merged.toOwnedSlice(a) catch return result;
     return result;
 }

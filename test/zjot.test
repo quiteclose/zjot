@@ -35,9 +35,6 @@ Deliberate differences from djot.js 0.3.2:
    0.3.2 prints the `:alias:` text and drops the attributes. The AST agrees (`symb` with
    its attributes). Decided 2026-10-24.
 
-HTML, pending (not deliberate): zjot writes an element's `id` before its other attributes;
-djot.js keeps the source order (`{k=v .a #i}` gives `k="v" class="a" id="i"`). Deferred.
-
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -6805,4 +6802,95 @@ doc
       div (5:3:28-6:1:32)
   para (6:1:32-7:0:36)
     str (6:1:32-6:4:35) text="lazy"
+````
+
+
+Attributes render in source order, the id where it was written; merged block attributes keep a key's first position and last value.
+
+An id after other attributes on a link renders after them.
+````
+[l](u){k=v .a #i}
+
+{k=v .c}
+> q
+.
+<p><a href="u" k="v" class="a" id="i">l</a></p>
+<blockquote k="v" class="c">
+<p>q</p>
+</blockquote>
+````
+
+An id after a key in a block attribute: the section and the block quote keep the order.
+````
+{k=v #i}
+# H
+.
+<section k="v" id="i">
+<h1>H</h1>
+</section>
+````
+
+A block quote with key, id and class in that order.
+````
+{k=v #i .c}
+> q
+.
+<blockquote k="v" id="i" class="c">
+<p>q</p>
+</blockquote>
+````
+
+A link with key, id and class in that order.
+````
+[t](u){k=v #i .c}
+.
+<p><a href="u" k="v" id="i" class="c">t</a></p>
+````
+
+A reference definition's id and class come before the link's own key.
+````
+[t][r]{k=v}
+
+{#i .c}
+[r]: /u
+.
+<p><a href="/u" id="i" class="c" k="v">t</a></p>
+````
+
+Consecutive block attributes: first position, last value; a second id keeps the first's place.
+````
+{.x}
+{#i}
+para
+
+{k=1}
+{j=2 k=3}
+q
+
+{.a}
+{#i .b k=v}
+{#j}
+> r
+.
+<p class="x" id="i">para</p>
+<p k="3" j="2">q</p>
+<blockquote class="a b" id="j" k="v">
+<p>r</p>
+</blockquote>
+````
+
+Two ids in one attribute block: the first's place, the last's value.
+````
+{#a #b}
+para
+
+{k=v}
+{#i}
+q
+
+[x]{#i k=v #j .c}
+.
+<p id="b">para</p>
+<p k="v" id="i">q</p>
+<p><span id="j" k="v" class="c">x</span></p>
 ````

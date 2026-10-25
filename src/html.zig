@@ -429,39 +429,41 @@ fn nodeClass(node: Node) ?[]const u8 {
 }
 
 pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
-    if (node.id) |id| {
-        try out.appendSlice(a, " id=\"");
-        try appendAttrEscaped(a, out, id);
-        try out.appendSlice(a, "\"");
-    }
-    try renderAttrsExceptId(a, out, node);
+    try renderFilteredAttrs(a, out, node, false);
 }
 
 /// The attributes of a node whose id the tag has already written (a footnote reference's).
 fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     for (node.attrs) |attr| {
-        try out.append(a, ' ');
-        try out.appendSlice(a, attr.key);
-        try out.appendSlice(a, "=\"");
-        try appendAttrEscaped(a, out, attr.value);
-        try out.appendSlice(a, "\"");
+        if (std.mem.eql(u8, attr.key, "id")) continue;
+        try renderAttr(a, out, attr.key, attr.value);
     }
 }
 
+/// The attributes in source order, as djot.js: the node's id where an `id` was written, or
+/// first when the document gave it (a generated heading id); `skip_class` leaves the class
+/// to a tag that writes its own.
 fn renderFilteredAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node, skip_class: bool) !void {
-    if (node.id) |id| {
-        try out.appendSlice(a, " id=\"");
-        try appendAttrEscaped(a, out, id);
-        try out.appendSlice(a, "\"");
-    }
+    const id_written = for (node.attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "id")) break true;
+    } else false;
+    if (node.id != null and !id_written) try renderAttr(a, out, "id", node.id.?);
     for (node.attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "id")) {
+            if (node.id) |id| try renderAttr(a, out, "id", id);
+            continue;
+        }
         if (skip_class and std.mem.eql(u8, attr.key, "class")) continue;
-        try out.append(a, ' ');
-        try out.appendSlice(a, attr.key);
-        try out.appendSlice(a, "=\"");
-        try appendAttrEscaped(a, out, attr.value);
-        try out.appendSlice(a, "\"");
+        try renderAttr(a, out, attr.key, attr.value);
     }
+}
+
+fn renderAttr(a: Allocator, out: *std.ArrayList(u8), key: []const u8, value: []const u8) !void {
+    try out.append(a, ' ');
+    try out.appendSlice(a, key);
+    try out.appendSlice(a, "=\"");
+    try appendAttrEscaped(a, out, value);
+    try out.appendSlice(a, "\"");
 }
 
 pub fn appendEscaped(a: Allocator, out: *std.ArrayList(u8), text: []const u8) !void {

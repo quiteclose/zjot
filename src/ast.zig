@@ -100,7 +100,7 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         }
     }
     for (node.attrs) |attr| {
-        if (std.mem.eql(u8, attr.key, "class")) continue;
+        if (std.mem.eql(u8, attr.key, "class") or std.mem.eql(u8, attr.key, "id")) continue;
         try out.append(a, ' ');
         try out.appendSlice(a, attr.key);
         try out.append(a, '=');
