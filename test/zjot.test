@@ -6721,3 +6721,88 @@ _e_} f
 <p>x <sup>b</sup> y</p>
 <p>_e_} f</p>
 ````
+
+
+Div fences inside items: the paragraph tracker closes divs as the parser does, and a closing fence counts as a blank line for tightness.
+
+A lazy line continues the paragraph after a fence that closed two divs.
+````
+- ::: a
+  ::: b
+  x
+  :::
+  y
+  :::
+lazy
+.
+<ul>
+<li>
+<div class="a">
+<div class="b">
+<p>x</p>
+</div>
+</div>
+<p>y
+:::
+lazy</p>
+</li>
+</ul>
+````
+
+A paragraph after a closed div in an item makes the list loose, as djot.js.
+````
+- ::: a
+  x
+  :::
+  y
+.
+<ul>
+<li>
+<div class="a">
+<p>x</p>
+</div>
+<p>y</p>
+</li>
+</ul>
+````
+
+A div last in an item leaves the list tight; the line after is not lazy.
+````
+- ::: a
+  ::: b
+  x
+  :::
+lazy
+.
+<ul>
+<li>
+<div class="a">
+<div class="b">
+x
+</div>
+</div>
+</li>
+</ul>
+<p>lazy</p>
+````
+
+An empty div after a closed one in an item: loose, the fence counting as a blank line.
+```` ap
+- ::: a
+  ::: b
+  x
+  :::
+  :::
+lazy
+.
+doc
+  bullet_list (1:1:0-6:1:32) tight=false style="-"
+    list_item (1:1:0-6:0:31)
+      div (1:3:2-4:5:24) class="a"
+        div (2:3:10-5:0:25) class="b"
+          para (3:3:18-4:0:19)
+            str (3:3:18-3:3:18) text="x"
+      div (5:3:28-6:1:32)
+  para (6:1:32-7:0:36)
+    str (6:1:32-6:4:35) text="lazy"
+````
