@@ -265,11 +265,11 @@ const Scanner = struct {
                 '^', '~' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 < src.len and src[pos + 1] == '}') {
-                        if (try sc.handleBracedClose(c, pos)) {
-                            pos += 2;
-                            text_start = pos;
-                            continue;
-                        }
+                        // `^}` closes a marked opener or is text; it never closes a bare `^`.
+                        if (!try sc.handleBracedClose(c, pos)) try sc.text(src[pos .. pos + 2]);
+                        pos += 2;
+                        text_start = pos;
+                        continue;
                     }
                     try sc.handleSuperSubscript(&pos, c, if (c == '^') .superscript else .subscript);
                     text_start = pos;
@@ -381,30 +381,40 @@ const Scanner = struct {
         }
     }
 
-    /// `X}` closing the marked opener `{X`; the node spans both braces.
-    fn handleBracedClose(sc: *Scanner, char: u8, p: usize) !bool {
+    /// The innermost marked opener `{X` for `char`, when something follows it: an empty
+    /// one closes nothing and ends the search, as djot.js (`{_a {__} b_}` keeps the first
+    /// `{_` open and makes the inner `_}` text).
+    fn markedOpener(sc: *const Scanner, char: u8) ?usize {
         var i = sc.openers.items.len;
         while (i > 0) {
             i -= 1;
             const op = sc.openers.items[i];
-            if (op.char == char and op.marked) {
-                if (op.item_idx + 1 < sc.items.items.len) {
-                    const tag: Tag = switch (char) {
-                        '-' => .delete,
-                        '+' => .insert,
-                        '=' => .mark,
-                        '~' => .subscript,
-                        '^' => .superscript,
-                        else => .span,
-                    };
-                    const children = try sc.collectChildren(op.item_idx);
-                    try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p + 1);
-                    sc.openers.items.len = i;
-                    return true;
-                }
-            }
+            if (op.char == char and op.marked) return if (op.item_idx + 1 < sc.items.items.len) i else null;
         }
-        return false;
+        return null;
+    }
+
+    /// Closes the marked opener `{X` with `X}` at `p` as a node of `tag` spanning both
+    /// braces; false when no opener with content is there to close.
+    fn closeMarked(sc: *Scanner, char: u8, tag: Tag, p: usize) !bool {
+        const i = sc.markedOpener(char) orelse return false;
+        const op = sc.openers.items[i];
+        const children = try sc.collectChildren(op.item_idx);
+        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p + 1);
+        sc.openers.items.len = i;
+        return true;
+    }
+
+    fn handleBracedClose(sc: *Scanner, char: u8, p: usize) !bool {
+        const tag: Tag = switch (char) {
+            '-' => .delete,
+            '+' => .insert,
+            '=' => .mark,
+            '~' => .subscript,
+            '^' => .superscript,
+            else => .span,
+        };
+        return sc.closeMarked(char, tag, p);
     }
 
     fn applyInlineAttrs(sc: *Scanner, ba: BlockAttrs) !void {
@@ -417,22 +427,7 @@ const Scanner = struct {
         const p = pos.*;
 
         if (!marked and p + 1 < src.len and src[p + 1] == '}') {
-            var i = sc.openers.items.len;
-            while (i > 0) {
-                i -= 1;
-                const op = sc.openers.items[i];
-                if (op.char == char and op.marked) {
-                    if (op.item_idx + 1 < sc.items.items.len) {
-                        const tag: Tag = if (char == '*') .strong else .emph;
-                        const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p + 1);
-                        sc.openers.items.len = i;
-                        pos.* = p + 2;
-                        return;
-                    }
-                }
-            }
-            try sc.text(src[p .. p + 2]);
+            if (!try sc.closeMarked(char, if (char == '*') .strong else .emph, p)) try sc.text(src[p .. p + 2]);
             pos.* = p + 2;
             return;
         }
@@ -648,24 +643,10 @@ const Scanner = struct {
         const p = pos.*;
 
         if (!marked and p + 1 < src.len and src[p + 1] == '}') {
-            var i = sc.openers.items.len;
-            while (i > 0) {
-                i -= 1;
-                const op = sc.openers.items[i];
-                if (op.char == char and op.marked) {
-                    if (op.item_idx + 1 < sc.items.items.len) {
-                        const tag: Tag = if (char == '"') .double_quoted else .single_quoted;
-                        const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p + 1);
-                        sc.openers.items.len = i;
-                        pos.* = p + 2;
-                        return;
-                    }
-                    break;
-                }
+            if (!try sc.closeMarked(char, if (char == '"') .double_quoted else .single_quoted, p)) {
+                const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201d}";
+                try sc.emit(.{ .tag = .str, .text = curly }, p, p + 1);
             }
-            const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201d}";
-            try sc.emit(.{ .tag = .str, .text = curly }, p, p + 1);
             pos.* = p + 2;
             return;
         }
