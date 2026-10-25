@@ -25,6 +25,12 @@ Deliberate differences from djot.js 0.3.2:
    `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
    0.3.2 itself produces `Introduction1`. zjot follows the suite. Checked 2026-10-24.
 
+3. A symbol renders as `<span class="symbol">alias</span>`, its attributes on the span
+   (the class joined to `symbol`, the id and the rest after, as for math:
+   `:sym:{.a #i k=v}` gives `<span class="symbol a" id="i" k="v">sym</span>`); djot.js
+   0.3.2 prints the `:alias:` text and drops the attributes. The AST agrees (`symb` with
+   its attributes). Decided 2026-10-24.
+
 HTML, pending (not deliberate): zjot writes an element's `id` before its other attributes;
 djot.js keeps the source order (`{k=v .a #i}` gives `k="v" class="a" id="i"`). Deferred.
 
@@ -34,6 +40,11 @@ converter renders it, so no `ap` case can pin it:
 3. Offsets and columns count bytes; djot.js counts UTF-16 code units (`é _é_` gives
    `emph (1:3:2-…)` there and `(1:4:3-…)` here).
 4. Generated ids are printed on headings and sections; djot.js prints explicit ones only.
+   CRLF input is indexed without the `\r`, which stays in the byte offsets: `para\r\nmore\r\n`
+   gives `soft_break (2:0:5-2:0:5)` and the paragraph ends at `3:0:11`; djot.js keeps the
+   `\r` in the line, `soft_break (1:5:4-2:0:5)`, paragraph end `2:5:10`, and a document ends
+   on its last `\r`. The `.test` format cannot carry CRLF, so this is documented, not
+   pinned; the HTML is the same. Decided 2026-10-24.
 5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
    nodes where djot.js prints `smart_punctuation`.
 6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
@@ -6466,4 +6477,18 @@ doc
       str (2:3:7-2:3:7) text="H"
     para (4:1:10-5:0:14)
       str (4:1:10-4:4:13) text="para"
+````
+
+
+Symbols take attributes.
+
+An attribute after a symbol belongs to it.
+```` ap
+a :sym:{.a #i k=v} b
+.
+doc
+  para (1:1:0-2:0:20)
+    str (1:1:0-1:2:1) text="a "
+    symb (1:3:2-1:7:6) alias="sym" id="i" class="a" k="v"
+    str (1:19:18-1:20:19) text=" b"
 ````

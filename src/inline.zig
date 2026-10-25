@@ -840,6 +840,7 @@ const Scanner = struct {
             .inline_math,
             .display_math,
             .footnote_reference,
+            .symb,
             => {
                 nodes.items[nodes.items.len - 1] = try applyBlockAttrsToNode(sc.a, last.*, ba);
             },
