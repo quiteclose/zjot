@@ -89,7 +89,7 @@ const ListStyle = union(enum) {
     bullet: u8,
     task,
     definition,
-    ordered: struct { styles: leaf.OrderedStyles, delim: leaf.Delim },
+    ordered: struct { styles: leaf.OrderedStyles, delim: node_mod.Delim },
 };
 
 const Container = struct {
@@ -811,6 +811,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                     const style = o.styles.possible[0] orelse .decimal;
                     break :ordered .{ .ordered_list = .{
                         .style = style,
+                        .delim = o.delim,
                         .start = leaf.getListStart(l.marker[0..l.marker_len], style),
                         .tight = l.tight,
                         .children = children,

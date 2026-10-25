@@ -10,7 +10,7 @@ doc
         list_item
           para
             str text="nested"
-  ordered_list tight=true
+  ordered_list tight=true style="1."
     list_item
       para
         str text="first"

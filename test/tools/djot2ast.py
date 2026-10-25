@@ -16,7 +16,9 @@ def render(n, indent, root):
     elif t=='bullet_list':
         out += ' tight=true' if n.get('tight') else ' tight=false'
         if n.get('style'): out += ' style='+jstr(n['style'])
-    elif t=='ordered_list': out += ' tight=true' if n.get('tight') else ' tight=false'
+    elif t=='ordered_list':
+        out += ' tight=true' if n.get('tight') else ' tight=false'
+        if n.get('style'): out += ' style='+jstr(n['style'])
     elif t=='task_list_item':
         if 'checkbox' in n: out += ' checked=true' if n['checkbox']=='checked' else ' checked=false'
     elif t in ('link','image','url','email'):

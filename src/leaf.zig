@@ -8,6 +8,7 @@ const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
 const CellAlign = node_mod.CellAlign;
 const ListStyle = node_mod.ListStyle;
+const Delim = node_mod.Delim;
 
 fn isBlank(line: []const u8) bool {
     for (line) |c| {
@@ -287,9 +288,6 @@ pub const Marker = struct {
     n_styles: u2 = 0,
     delim: Delim = .period,
 };
-
-/// How an ordered marker is written: `1.`, `1)` or `(1)`; a list keeps one, as djot.js.
-pub const Delim = enum { period, paren, parens };
 
 fn delimKind(paren_open: bool, delim: u8) Delim {
     return if (paren_open) .parens else if (delim == ')') .paren else .period;
