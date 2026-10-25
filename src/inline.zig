@@ -29,7 +29,7 @@ const OpenerInfo = struct {
 /// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
 /// the document position of the source it came from; without, none does. No inline
 /// attribute is read before `attrs_from` (the text of a failed block attribute).
-pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize) anyerror![]const Node {
+pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize) Allocator.Error![]const Node {
     var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from };
     try sc.run();
     return sc.resolveItems(sc.items.items);
@@ -213,7 +213,7 @@ const Scanner = struct {
                         }
                     }
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (if (pos >= sc.attrs_from) attrs.parseInlineAttrs(sc.a, src, pos) else null) |parsed| {
+                    if (if (pos >= sc.attrs_from) try attrs.parseInlineAttrs(sc.a, src, pos) else null) |parsed| {
                         try sc.applyInlineAttrs(parsed.attrs);
                         pos = parsed.end;
                     } else {
@@ -507,7 +507,7 @@ const Scanner = struct {
                         return;
                     }
                 } else if (pos.* < src.len and src[pos.*] == '{') {
-                    if (attrs.parseInlineAttrs(sc.a, src, pos.*)) |parsed| {
+                    if (try attrs.parseInlineAttrs(sc.a, src, pos.*)) |parsed| {
                         const span_node = try applyBlockAttrsToNode(sc.a, .{ .tag = .span, .children = children }, parsed.attrs);
                         try sc.emit(span_node, start, p);
                         pos.* = parsed.end;

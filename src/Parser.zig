@@ -14,6 +14,10 @@ const LineMap = @import("LineMap.zig");
 
 const Parser = @This();
 
+/// What parsing can fail with: only allocation. Named so the recursive functions can
+/// state it; `root.render` adds the writer's error.
+pub const Error = Allocator.Error;
+
 /// What block-level syntax defines for the whole document: reference link definitions
 /// and footnote definitions. A block anywhere may use a definition from anywhere, so
 /// they outlive any one block: everything stored here is allocated from `a`, which the
@@ -207,7 +211,7 @@ fn enclosingEnd(self: *const Parser) SourcePos {
     return if (self.enclosing) |p| p.containerEnd() else self.doc_end;
 }
 
-fn parseBlocks(self: *Parser) anyerror![]const Node {
+fn parseBlocks(self: *Parser) Error![]const Node {
     var children: std.ArrayList(Node) = .empty;
     while (try self.nextBlock()) |n| try children.append(self.a, n);
     return children.toOwnedSlice(self.a);
@@ -216,7 +220,7 @@ fn parseBlocks(self: *Parser) anyerror![]const Node {
 /// The next block, or null at the end of the window. Definitions are recorded in `defs`
 /// as they are met and never returned, so a caller may drop each block before asking for
 /// the next.
-pub fn nextBlock(self: *Parser) anyerror!?Node {
+pub fn nextBlock(self: *Parser) Error!?Node {
     var pending_attrs: ?BlockAttrs = null;
     const after_fence = self.fence_closed;
     self.fence_closed = false;
@@ -238,7 +242,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
         }
         // A block attribute that opened but could not close is text, read without
         // attributes, as djot.js reparses it.
-        const failed_attr = attrs_mod.opensAttr(self.a, line);
+        const failed_attr = try attrs_mod.opensAttr(self.a, line);
 
         var node: Node = undefined;
 
@@ -291,7 +295,7 @@ fn blockAttrAt(self: *Parser, pos: usize) !?struct { attrs: BlockAttrs, lines: u
     if (trimmed.len < 1 or trimmed[0] != '{') return null;
 
     if (trimmed[trimmed.len - 1] == '}') {
-        if (attrs_mod.parseAttrsFromStr(self.a, trimmed)) |ba| return .{ .attrs = ba, .lines = 1 };
+        if (try attrs_mod.parseAttrsFromStr(self.a, trimmed)) |ba| return .{ .attrs = ba, .lines = 1 };
     }
 
     const indent = indentOf(line);
@@ -308,7 +312,7 @@ fn blockAttrAt(self: *Parser, pos: usize) !?struct { attrs: BlockAttrs, lines: u
         try full_text.appendSlice(self.a, std.mem.trim(u8, next, " \t"));
         lines_consumed += 1;
 
-        if (attrs_mod.parseAttrsFromStr(self.a, full_text.items)) |ba| {
+        if (try attrs_mod.parseAttrsFromStr(self.a, full_text.items)) |ba| {
             return .{ .attrs = ba, .lines = lines_consumed };
         }
     }
@@ -435,7 +439,7 @@ fn tryHeading(self: *Parser) !?Node {
             startsBlockQuote(next) or isFencedDivStart(next) != null)
             break;
         if (parseBulletMarker(next) != null or parseOrderedMarker(next) != null) break;
-        if (attrs_mod.tryParseBlockAttr(self.a, next) != null or definitionLabel(next) != null) break;
+        if (try attrs_mod.tryParseBlockAttr(self.a, next) != null or definitionLabel(next) != null) break;
         const next_trimmed = std.mem.trimStart(u8, next, " ");
         const next_hashes = countLeadingChar(next_trimmed, '#');
         if (next_hashes == hashes and next_hashes < next_trimmed.len and
@@ -505,8 +509,8 @@ fn tryCodeBlock(self: *Parser) !?Node {
     }
     if (self.track_pos) {
         node.start_pos = self.makePos(open_line, @intCast(fence_info.indent + 1));
-        // A fenced block ends on its closing fence; unclosed, at the end of the input.
-        node.end_pos = if (closed_at) |l| self.fenceEnd(l) else self.makePos(self.pos, 0);
+        // A fenced block ends on its closing fence; unclosed, where its container does.
+        node.end_pos = if (closed_at) |l| self.fenceEnd(l) else self.containerEnd();
     }
     return node;
 }
@@ -915,7 +919,7 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
         if (m.indent != list_indent) break;
         switch (kind) {
             .bullet => if (m.bullet != first.bullet or isTaskItem(m.rest) != list_is_task) break,
-            .ordered => if (!styles.accept(m, items.items.len == 0)) break,
+            .ordered => if (m.delim != first.delim or !styles.accept(m, items.items.len == 0)) break,
         }
 
         const item_start_line = self.pos;
@@ -1227,13 +1231,13 @@ pub fn isBlank(line: []const u8) bool {
 /// lazy paragraph continuation stops there. The set is djot.js's: every block start,
 /// definitions and attribute blocks included.
 fn isBlockStartAt(self: *Parser, pos: usize) !bool {
-    if (isBlockStartLine(self.a, self.lines[pos])) return true;
+    if (try isBlockStartLine(self.a, self.lines[pos])) return true;
     return (try self.blockAttrAt(pos)) != null;
 }
 
 /// `isBlockStartAt` for a line on its own: everything but an attribute block that
 /// continues over the following lines.
-fn isBlockStartLine(a: Allocator, line: []const u8) bool {
+fn isBlockStartLine(a: Allocator, line: []const u8) !bool {
     const trimmed = std.mem.trimStart(u8, line, " \t");
     if (trimmed.len == 0) return false;
     if (headingLevel(trimmed) != null) return true;
@@ -1246,7 +1250,7 @@ fn isBlockStartLine(a: Allocator, line: []const u8) bool {
     if (definitionLabel(line) != null) return true;
     if (isTableRow(line)) return true;
     if (isFencedDivStart(line) != null) return true;
-    return attrs_mod.tryParseBlockAttr(a, line) != null;
+    return try attrs_mod.tryParseBlockAttr(a, line) != null;
 }
 
 /// Visual indent width. Tabs count as 4 spaces per the djot spec.
@@ -1263,9 +1267,10 @@ fn indentOf(line: []const u8) usize {
     return n;
 }
 
+/// Leading spaces and tabs, one column each, as djot.js's `skipSpace`.
 fn countIndent(line: []const u8) usize {
     var n: usize = 0;
-    while (n < line.len and line[n] == ' ') : (n += 1) {}
+    while (n < line.len and (line[n] == ' ' or line[n] == '\t')) : (n += 1) {}
     return n;
 }
 
@@ -1329,7 +1334,7 @@ const OpenParagraph = struct {
                 self.open = q.open;
                 return;
             }
-            if (q.open and !isBlockStartLine(a, line)) {
+            if (q.open and !try isBlockStartLine(a, line)) {
                 try q.feed(a, line);
                 self.open = q.open;
                 return;
@@ -1347,7 +1352,7 @@ const OpenParagraph = struct {
             self.heading = false;
             return;
         }
-        if (self.open and !(self.heading and endsHeading(a, line))) {
+        if (self.open and !(self.heading and try endsHeading(a, line))) {
             // A closing fence ends the paragraph with its div; an opener is text here.
             if (isFencedDivStart(line)) |div| if (div.class == null) {
                 if (self.closingDiv(div.fence.len)) |depth| {
@@ -1387,7 +1392,7 @@ const OpenParagraph = struct {
             self.open = def.is_footnote and def.rest.len > 0;
             return;
         }
-        if (isThematicBreak(line) or isTableRow(line) or attrs_mod.tryParseBlockAttr(a, line) != null) return;
+        if (isThematicBreak(line) or isTableRow(line) or try attrs_mod.tryParseBlockAttr(a, line) != null) return;
         self.open = true;
         self.heading = headingLevel(std.mem.trimStart(u8, line, " \t")) != null;
     }
@@ -1402,10 +1407,10 @@ const OpenParagraph = struct {
     }
 
     /// What `tryHeading` stops at.
-    fn endsHeading(a: Allocator, line: []const u8) bool {
+    fn endsHeading(a: Allocator, line: []const u8) !bool {
         return isThematicBreak(line) or isCodeFence(line) != null or startsBlockQuote(line) or
             isFencedDivStart(line) != null or parseBulletMarker(line) != null or
-            parseOrderedMarker(line) != null or attrs_mod.tryParseBlockAttr(a, line) != null or
+            parseOrderedMarker(line) != null or try attrs_mod.tryParseBlockAttr(a, line) != null or
             definitionLabel(line) != null;
     }
 };
@@ -1492,7 +1497,15 @@ const Marker = struct {
     marker_text: []const u8 = "",
     styles: [2]?ListStyle = .{ null, null },
     n_styles: u2 = 0,
+    delim: Delim = .period,
 };
+
+/// How an ordered marker is written: `1.`, `1)` or `(1)`; a list keeps one, as djot.js.
+const Delim = enum { period, paren, parens };
+
+fn delimKind(paren_open: bool, delim: u8) Delim {
+    return if (paren_open) .parens else if (delim == ')') .paren else .period;
+}
 
 /// Whether an item's first line opens with a checkbox: `[ ]`, `[x]` or `[X]` followed by
 /// whitespace or nothing.
@@ -1503,8 +1516,7 @@ fn isTaskItem(rest: []const u8) bool {
 }
 
 fn parseBulletMarker(line: []const u8) ?Marker {
-    var indent: usize = 0;
-    while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
+    const indent = countIndent(line);
     const trimmed = line[indent..];
     if (trimmed.len < 1) return null;
     if (trimmed[0] != '-' and trimmed[0] != '+' and trimmed[0] != '*') return null;
@@ -1518,8 +1530,7 @@ fn parseBulletMarker(line: []const u8) ?Marker {
 }
 
 fn parseOrderedMarker(line: []const u8) ?Marker {
-    var indent: usize = 0;
-    while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
+    const indent = countIndent(line);
     const trimmed = line[indent..];
     if (trimmed.len < 2) return null;
 
@@ -1538,7 +1549,7 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
         const delim = after_paren[i];
         if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
             const marker_len = start + i + 1;
-            return finishMarker(trimmed, indent, marker_len, .decimal, .decimal, after_paren[0..i]);
+            return finishMarker(trimmed, indent, marker_len, .decimal, .decimal, after_paren[0..i], delimKind(paren_open, delim));
         }
     }
 
@@ -1549,9 +1560,9 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanLower(c)) {
-                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, .lower_alpha, .lower_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_alpha, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 }
             }
         }
@@ -1560,9 +1571,9 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanUpper(c)) {
-                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, .upper_alpha, .upper_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_alpha, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 }
             }
         }
@@ -1573,7 +1584,7 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_roman, after_paren[0..j]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_roman, after_paren[0..j], delimKind(paren_open, delim));
                 }
             }
         }
@@ -1584,7 +1595,7 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_roman, after_paren[0..j]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_roman, after_paren[0..j], delimKind(paren_open, delim));
                 }
             }
         }
@@ -1593,7 +1604,7 @@ fn parseOrderedMarker(line: []const u8) ?Marker {
     return null;
 }
 
-fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8) ?Marker {
+fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8, delim: Delim) ?Marker {
     if (marker_len < trimmed.len and trimmed[marker_len] != ' ' and trimmed[marker_len] != '\t') return null;
     return .{
         .rest = if (marker_len < trimmed.len) trimmed[marker_len + 1 ..] else "",
@@ -1602,6 +1613,7 @@ fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: L
         .marker_text = marker_text,
         .styles = .{ style1, if (style1 != style2) style2 else null },
         .n_styles = if (style1 != style2) 2 else 1,
+        .delim = delim,
     };
 }
 

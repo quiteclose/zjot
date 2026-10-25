@@ -27,6 +27,10 @@ pub const Survey = struct {
     ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
     /// Generated heading ids in visiting order; `Resolver` hands them out by ordinal.
     heading_ids: std.ArrayList([]const u8) = .empty,
+    /// Where each top-level heading's section ends, by heading ordinal (`openSection`).
+    section_ends: std.ArrayList(?SourcePos) = .empty,
+    open_sections: [6]struct { idx: usize, level: u8 } = undefined,
+    open_depth: usize = 0,
     /// The same for each footnote's headings, by label; handed out as its endnote is written.
     footnote_heading_ids: std.StringArrayHashMapUnmanaged(std.ArrayList([]const u8)) = .{},
     visited_footnotes: usize = 0,
@@ -39,7 +43,26 @@ pub const Survey = struct {
     scratch: std.ArrayList(u8) = .empty,
 
     pub fn visit(self: *Survey, block: Node) !void {
+        if (block.tag == .heading) try self.openSection(block);
         try self.visitNode(block, null);
+    }
+
+    /// Sections end where the heading that closes them ends, as djot.js (`parse.js` pops
+    /// them at the `-heading` event); `endOpenSections` ends the rest at the document's
+    /// last block event. `section_ends` is indexed by heading, in document order.
+    fn openSection(self: *Survey, heading: Node) !void {
+        while (self.open_depth > 0 and self.open_sections[self.open_depth - 1].level >= heading.level) {
+            self.open_depth -= 1;
+            self.section_ends.items[self.open_sections[self.open_depth].idx] = heading.end_pos;
+        }
+        self.open_sections[self.open_depth] = .{ .idx = self.section_ends.items.len, .level = heading.level };
+        self.open_depth += 1;
+        try self.section_ends.append(self.a, null);
+    }
+
+    pub fn endOpenSections(self: *Survey, end: ?SourcePos) void {
+        for (self.open_sections[0..self.open_depth]) |open| self.section_ends.items[open.idx] = end;
+        self.open_depth = 0;
     }
 
     /// Visits the footnote definitions recorded since the last call, in the order they
@@ -191,9 +214,10 @@ pub const Sections = struct {
     levels: [6]u8 = undefined,
     depth: usize = 0,
     events: [8]Event = undefined,
-    /// Where every section ends when positions are wanted: djot.js closes them all at
-    /// its last block event, whatever heading or input end closed them (`root.render`).
-    doc_end: ?SourcePos = null,
+    /// Where each section ends when positions are wanted, by heading ordinal
+    /// (`Survey.section_ends`); empty when positions are not tracked.
+    ends: []const ?SourcePos = &.{},
+    next: usize = 0,
 
     pub const Event = union(enum) {
         /// A section node without children; its id and attributes came from the heading that follows.
@@ -225,8 +249,9 @@ pub const Sections = struct {
             .id = block.id,
             .attrs = block.attrs,
             .start_pos = block.start_pos,
-            .end_pos = self.doc_end,
+            .end_pos = if (self.next < self.ends.len) self.ends[self.next] else null,
         } };
+        self.next += 1;
         self.events[n + 1] = .{ .block = heading };
         return self.events[0 .. n + 2];
     }
