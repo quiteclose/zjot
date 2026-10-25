@@ -28,6 +28,7 @@ src/
   html.zig           HTML renderer
   ast.zig            AST renderer (indented text format matching djot.js)
   LineMap.zig         Source position mapping for inline content
+  Lines.zig          The line source: lines with positions from a slice or a std.Io.Reader
   test_runner.zig    Test harness for .test files
 test/
   *.test             Vendored djot.js test files (26 files; 25 run, 261 test cases)
@@ -46,6 +47,7 @@ test/
 - **attributes.zig** -- Attribute parsing. `AttrParser` state machine for `{#id .class key=value}` syntax. `BlockAttrs` struct. Block and inline attribute parsing entry points.
 - **html.zig** -- HTML rendering. `Renderer` walks one block's `Node` tree; `Footnotes` numbers footnotes by first reference across blocks, as djot.js's renderer does, and `renderEndnote` writes each endnote from the definition's resolved blocks.
 - **ast.zig** -- AST rendering. Walks the `Node` tree and produces indented text format matching djot.js test expectations; every footnote definition follows the document as a `footnote` block (see the `zjot.test` header).
+- **Lines.zig** -- The line source: `Lines.next` yields one line at a time (newline and carriage return stripped) with its position, from a resident slice (zero-copy, lines stable for the document) or from a `std.Io.Reader` (a line is valid until the next call; one longer than the reader's buffer spills into a growing buffer); `end` is where the input ended, as djot.js reports it. Not yet called by the parser: it is the source the stack parser (`-Dparser=stack`, in progress) reads from.
 - **LineMap.zig** -- Maps byte offsets in joined inline text back to source positions: one segment per content line, built by `Parser.buildInlineLineMap`; the newline joining two lines resolves to col 0 of the line after it.
 - **test_runner.zig** -- Parses `.test` files (backtick-fenced input/output pairs) and runs them against the parser.
 

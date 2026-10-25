@@ -338,6 +338,7 @@ test "a block is written as it arrives unless a reference-style link holds it" {
 
 test {
     _ = @import("test_runner.zig");
+    _ = @import("Lines.zig");
     _ = Parser;
     _ = document;
 }
