@@ -114,7 +114,7 @@ const Container = struct {
         /// makes it loose.
         list: struct { style: ListStyle, indent: usize, marker: [32]u8, marker_len: u8, blanklines: bool = false, tight: bool = true },
         list_item: struct { indent: usize, checked: ?bool },
-        footnote: struct { label: []const u8, indent: usize, headings_before: usize },
+        footnote: struct { label: []const u8, indent: usize, headings_before: usize, ids_before: usize },
         /// `end`: the closing fence's last colon, once met.
         div: struct { fence_len: usize, class: ?[]const u8, end: ?SourcePos = null },
         /// `indent`: the fence's column, which content lines lose (deeper indentation
@@ -518,6 +518,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
                 .label = try self.defs.a.dupe(u8, def.label[1..]),
                 .indent = cur.indent,
                 .headings_before = self.defs.headings_parsed,
+                .ids_before = self.defs.ids_parsed,
             } }, cur.pos());
             self.footnote_depth += 1;
             cur.i += def.rest_col;
@@ -662,8 +663,25 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
         .children = self.spare_lists.pop() orelse .empty,
         .data = data,
     };
-    if (self.stack.items.len == 0 and c.makesNode()) self.flush();
+    if (c.makesNode()) {
+        // An explicit id waiting for this block counts before its content, where
+        // djot.js registers it (`Definitions.ids_parsed`).
+        if (self.attrsSlot().*) |ba| {
+            if (ba.id != null) self.defs.ids_parsed += 1;
+        }
+        if (self.stack.items.len == 0) self.flush();
+    }
     try self.stack.append(self.gpa, c);
+}
+
+/// The explicit ids among `nodes` and their descendants.
+fn countIds(nodes: []const Node) usize {
+    var n: usize = 0;
+    for (nodes) |node| {
+        if (node.id != null) n += 1;
+        n += countIds(node.children());
+    }
+    return n;
 }
 
 /// The innermost list a tightness event reaches: the tip, or the list the tip's item is
@@ -740,7 +758,9 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize) Error![]const Nod
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
     if (src.len == 0) return &.{};
     const map: ?LineMap = if (self.track_pos) try self.leafLineMap(a) else null;
-    return inline_mod.parseInlineContent(a, src, map, attrs_from);
+    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from);
+    self.defs.ids_parsed += countIds(nodes);
+    return nodes;
 }
 
 fn dropLeaf(self: *Parser) void {
@@ -797,7 +817,11 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 self.dropLeaf();
                 return;
             }
-            // Never completed: its lines are a paragraph (djot.js reparses them).
+            // Never completed: its lines are a paragraph (djot.js reparses them), which
+            // takes the attributes waiting before it without having been pushed.
+            if (self.attrsSlot().*) |ba| {
+                if (ba.id != null) self.defs.ids_parsed += 1;
+            }
             const attrs_from = try self.failedAttrsFrom();
             return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, 0, attrs_from, stand), stand);
         },
@@ -863,7 +887,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             };
             slot.* = null;
             try self.defs.footnote_defs.put(self.defs.gpa, f.label, stored);
-            try self.defs.footnote_log.append(self.defs.gpa, .{ .label = f.label, .def = stored, .headings_before = f.headings_before });
+            try self.defs.footnote_log.append(self.defs.gpa, .{ .label = f.label, .def = stored, .headings_before = f.headings_before, .ids_before = f.ids_before });
             return;
         },
         .div => |dv| .{
@@ -913,7 +937,10 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // At the top the attributes were parsed into the next block's arena, which the
             // waiting table outlives, so they are copied into the table's.
             const slot = self.attrsSlot();
-            if (slot.*) |ba| n = try inline_mod.applyBlockAttrsToNode(ta, n, if (self.stack.items.len == 0) try ba.dupe(ta) else ba);
+            if (slot.*) |ba| {
+                if (ba.id != null) self.defs.ids_parsed += 1;
+                n = try inline_mod.applyBlockAttrsToNode(ta, n, if (self.stack.items.len == 0) try ba.dupe(ta) else ba);
+            }
             slot.* = null;
             @constCast(t.data.table)[0] = n; // the placeholder, made with the table
             if (self.stack.items.len == 0) {

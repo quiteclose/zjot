@@ -48,6 +48,11 @@ Deliberate differences from djot.js 0.3.2:
    head row, as djot.js's own README writes its tables. djot.js 0.3.2 matches a separator
    cell only right after its pipe, so there it is an ordinary row of em dashes; its test
    suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
+8. An explicit id counts where it lands on a node: an `{#id}` written before a footnote
+   or reference definition (kept for the footnote or the link) or overridden by a later
+   attribute line on the same block (`{#a}` then `{#b}`) is not registered, so a later
+   heading with that text keeps the bare id; djot.js registers every `{#id}` as it reads
+   it, whether it lands or not, and gives the heading `a-1`. Decided 2026-10-25.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -7823,6 +7828,122 @@ A footnote reference in an image's alt text does not shift the numbering of the 
 <ol>
 <li id="fn1">
 <p>note m<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An explicit id in a list item, then a footnote definition in the same item: the definition's heading comes second, as djot.js claims ids in source order.
+````
+- [x]{#Foo}[^n]
+
+  [^n]: # Foo
+.
+<ul>
+<li>
+<p><span id="Foo">x</span><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</li>
+</ul>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition in a list item, then an explicit id in the same item: the definition's heading comes first, as djot.js.
+````
+- [^n]: # Foo
+
+  [x]{#Foo}[^n]
+.
+<ul>
+<li>
+<span id="Foo">x</span><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a>
+</li>
+</ul>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A block quote's own id is claimed before a footnote definition inside it, where djot.js registers a block attribute.
+````
+{#Foo}
+> [^n]: # Foo
+
+use[^n]
+.
+<blockquote id="Foo">
+</blockquote>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An id on a span in a table cell is claimed before a footnote definition after the table in the same quote, as djot.js.
+````
+> | [x]{#Foo} |
+> |---|
+>
+> [^n]: # Foo
+
+use[^n]
+.
+<blockquote>
+<table>
+<tr>
+<th><span id="Foo">x</span></th>
+</tr>
+</table>
+</blockquote>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition inside another's content takes its ids where it stands among the outer content's explicit ids, as djot.js.
+````
+[^a]: [^b]: # Foo
+
+    [x]{#Foo}
+
+  # Foo
+
+use[^a]
+.
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><span id="Foo">x</span></p>
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
 </li>
 </ol>
 </section>

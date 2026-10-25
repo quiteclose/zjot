@@ -32,6 +32,10 @@ pub const Definitions = struct {
     /// Headings parsed so far, footnote content included: where a footnote stands among
     /// them (`LoggedFootnote.headings_before`).
     headings_parsed: usize = 0,
+    /// Explicit ids parsed so far, on blocks (counted before the block's content, where
+    /// djot.js registers a block attribute) and on inline nodes (as a leaf closes),
+    /// footnote content included: the ids `Ids` claims, in its order.
+    ids_parsed: usize = 0,
 
     pub fn deinit(self: *Definitions) void {
         self.ref_defs.deinit(self.gpa);
@@ -49,10 +53,10 @@ pub const FootnoteDef = struct {
     end_pos: ?SourcePos = null,
 };
 
-/// `headings_before`: the headings parsed before the definition started, so `Ids` assigns
-/// its headings after those and before the next, as djot.js's event order has it;
-/// `assigned` once it has.
-pub const LoggedFootnote = struct { label: []const u8, def: *FootnoteDef, headings_before: usize, assigned: bool = false };
+/// `headings_before` and `ids_before`: the headings and explicit ids parsed before the
+/// definition started, so `Ids` assigns its headings after those and before the next, as
+/// djot.js's event order has it; `assigned` once it has.
+pub const LoggedFootnote = struct { label: []const u8, def: *FootnoteDef, headings_before: usize, ids_before: usize, assigned: bool = false };
 
 pub const RefDef = struct {
     url: []const u8,
@@ -84,6 +88,8 @@ pub const Ids = struct {
     empty_ids: usize = 0,
     /// Headings assigned so far, in the parser's count (`Definitions.headings_parsed`).
     assigned_headings: usize = 0,
+    /// Explicit ids claimed so far, in the parser's count (`Definitions.ids_parsed`).
+    assigned_ids: usize = 0,
     /// The log's first entry not yet assigned.
     first_unassigned: usize = 0,
 
@@ -95,10 +101,11 @@ pub const Ids = struct {
     }
 
     /// Assigns the footnote definitions logged but not yet assigned that stand before the
-    /// next heading: those no more headings were parsed before than have been assigned.
-    /// Called before each block and each heading, and after the last block, so what a
-    /// definition's headings claim comes before what a later block claims, as djot.js
-    /// assigns in source order, and nothing is left. The log holds a footnote defined inside another's
+    /// next heading and the next explicit id: those no more headings and explicit ids were
+    /// parsed before than have been assigned. Called before each block, each heading and
+    /// each explicit id, and after the last block, so a definition's headings claim their
+    /// ids where the definition stands, as djot.js assigns in source order, and nothing is
+    /// left. The log holds a footnote defined inside another's
     /// content before the one around it (it closed first), so every unassigned entry is
     /// looked at, and one assigned may make another due.
     pub fn assignFootnotes(self: *Ids) Allocator.Error!void {
@@ -108,7 +115,7 @@ pub const Ids = struct {
             progress = false;
             while (self.first_unassigned < log.len and log[self.first_unassigned].assigned) self.first_unassigned += 1;
             for (log[self.first_unassigned..]) |*entry| {
-                if (entry.assigned or entry.headings_before > self.assigned_headings) continue;
+                if (entry.assigned or entry.headings_before > self.assigned_headings or entry.ids_before > self.assigned_ids) continue;
                 entry.assigned = true;
                 progress = true;
                 // The parser built these blocks for the definition alone.
@@ -130,6 +137,9 @@ pub const Ids = struct {
 
     fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
         if (n.id) |id| {
+            // The definitions before this id in the source claim theirs first.
+            try self.assignFootnotes();
+            self.assigned_ids += 1;
             const seen = try self.ids_used.getOrPut(self.gpa, id);
             if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
         }
