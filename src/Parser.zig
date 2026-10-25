@@ -31,8 +31,9 @@ const Parser = @This();
 pub const Error = Allocator.Error || error{ReadFailed};
 
 /// A top-level block and the arena its nodes live in, which the consumer gives back
-/// through `recycle` once the block is written.
-pub const Block = struct { node: Node, arena: *std.heap.ArenaAllocator };
+/// through `recycle` once the block is written. `last` is where the block's last event
+/// stands, as djot.js counts them: its end, or its caption's.
+pub const Block = struct { node: Node, arena: *std.heap.ArenaAllocator, last: ?SourcePos };
 
 /// The block arenas come from here.
 gpa: Allocator,
@@ -66,9 +67,11 @@ footnote_depth: usize = 0,
 finished_line: bool = false,
 /// The block `nextBlock` returns once the current line is parsed.
 done: ?Block = null,
-/// The last closed top-level block, kept until a block follows it or the input ends: a
-/// caption before that joins it when it is a table, as djot.js attaches a caption to the
-/// previous node, blank lines, definitions and attributes between notwithstanding.
+/// A closed top-level table, kept until a block follows it or the input ends: a caption
+/// before that joins it, as djot.js attaches a caption to the previous node, blank lines,
+/// definitions and attributes between notwithstanding. Also the second of two blocks
+/// closed on one line (a block attribute that failed and became a paragraph, after a
+/// table), returned by the next call.
 pending: ?Block = null,
 /// Lines consumed, and the line the last top-level block ended on.
 line_count: u32 = 0,
@@ -268,7 +271,7 @@ pub fn nextBlock(self: *Parser) Error!?Block {
 }
 
 /// The pending block's wait is over: it is the block to return, once the one already
-/// due (closed earlier on this line) has been.
+/// due has been.
 fn flush(self: *Parser) void {
     if (self.done != null) return;
     if (self.pending) |p| {
@@ -368,11 +371,9 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 cur.i = cur.line.bytes.len;
                 return true;
             }
-            // It never parsed: its lines are a paragraph, the first read without inline
-            // attributes when it opened one, and this line continues it or not as a
-            // paragraph's would.
-            const first = self.leaf_slices.items[0];
-            c.data = .{ .para = .{ .attrs_from = if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0 } };
+            // It never parsed: its lines are a paragraph, and this line continues it or
+            // not as a paragraph's would.
+            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom() } };
             return !cur.atEol();
         },
         .block_quote => {
@@ -545,10 +546,12 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     if (r[0] == '{') {
         try self.closeFrom(matched, stand);
         try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
-        const text = std.mem.trimEnd(u8, r, " \t");
-        try self.addLeafSlice(text, cur.pos(), cur.line);
+        try self.addLeafSlice(std.mem.trimEnd(u8, r, " \t"), cur.pos(), cur.line);
         self.tip().leaf_end = afterContent(cur.line);
-        // Complete on one line, or kept open for the indented lines that may follow.
+        // Complete on one line, or kept open for the indented lines that may follow. The
+        // attributes keep slices of the text they are parsed from, so that is the leaf's
+        // copy, which outlives the line.
+        const text = self.leaf_slices.items[0];
         if (text[text.len - 1] == '}') self.tip().data.attributes.attrs = try attrs_mod.parseAttrsFromStr(self.nodeAllocator(), text);
         cur.i = cur.line.bytes.len;
         return true;
@@ -674,7 +677,20 @@ fn listEvent(self: *Parser, is_list: bool, is_item: bool) void {
 /// survive one (see the `zjot.test` header).
 fn blankLine(self: *Parser) void {
     if (self.listNode()) |ln| ln.data.list.blanklines = true;
-    if (self.stack.items.len > 0) self.tip().pending_attrs = null else self.pending_attrs = null;
+    self.attrsSlot().* = null;
+}
+
+/// Where block attributes wait: with the innermost open container, or with the parser
+/// for the next top-level block.
+fn attrsSlot(self: *Parser) *?BlockAttrs {
+    return if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
+}
+
+/// A block attribute that never parsed is a paragraph: its first line is read without
+/// inline attributes when it opened one, as djot.js reparses it.
+fn failedAttrsFrom(self: *Parser) Error!usize {
+    const first = self.leaf_slices.items[0];
+    return if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0;
 }
 
 /// The rest of the line at `cur` as the open leaf's next line.
@@ -766,14 +782,13 @@ fn close(self: *Parser, stand: Stand) Error!void {
         .attributes => |at| {
             if (at.attrs) |attrs| {
                 // Waits for the next block in the container it was written in.
-                const slot = if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
+                const slot = self.attrsSlot();
                 slot.* = if (slot.*) |existing| try existing.merge(attrs, self.nodeAllocator()) else attrs;
                 self.dropLeaf();
                 return;
             }
             // Never completed: its lines are a paragraph (djot.js reparses them).
-            const first = self.leaf_slices.items[0];
-            const attrs_from: usize = if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0;
+            const attrs_from = try self.failedAttrsFrom();
             return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, attrs_from, stand), stand);
         },
         .block_quote => .{
@@ -841,7 +856,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             };
             try self.defs.footnote_defs.put(da, f.label, stored);
             try self.defs.footnote_log.append(da, .{ .label = f.label, .def = stored, .headings_before = f.headings_before });
-            if (self.stack.items.len > 0) self.tip().pending_attrs = null else self.pending_attrs = null;
+            self.attrsSlot().* = null;
             return;
         },
         .div => |dv| .{
@@ -876,8 +891,9 @@ fn close(self: *Parser, stand: Stand) Error!void {
             };
         },
         .caption => {
-            // Joins the table before it, if that is what stands before it; else it is
-            // dropped, as djot.js. Its nodes live where the table's do.
+            // Joins the table before it, if that is what stands before it, with the block
+            // attributes waiting; else it is dropped, as djot.js. Its nodes live where the
+            // table's do.
             const table: ?*Node = if (self.stack.items.len > 0) blk: {
                 const siblings = self.tip().children.items;
                 break :blk if (siblings.len > 0 and siblings[siblings.len - 1].tag == .table) &siblings[siblings.len - 1] else null;
@@ -890,8 +906,14 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, stand);
             if (!has_text) n.end_pos = n.start_pos;
+            const slot = self.attrsSlot();
+            if (slot.*) |ba| n = try inline_mod.applyBlockAttrsToNode(ta, n, ba);
+            slot.* = null;
             @constCast(t.children)[0] = n; // the placeholder, made with the table
-            if (self.stack.items.len == 0) self.last_block_line = if (stand.eof) self.line_count else self.line_count - 1;
+            if (self.stack.items.len == 0) {
+                self.pending.?.last = n.end_pos;
+                self.last_block_line = if (stand.eof) self.line_count else self.line_count - 1;
+            }
             return;
         },
         .reference_definition => |rd| {
@@ -899,7 +921,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const da = self.defs.a;
             const url = try std.mem.concat(da, u8, self.leaf_slices.items);
             self.dropLeaf();
-            const slot = if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
+            const slot = self.attrsSlot();
             try self.defs.ref_defs.put(da, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
             slot.* = null;
             return;
@@ -944,11 +966,13 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         const n = if (self.pending_attrs) |ba| try inline_mod.applyBlockAttrsToNode(self.a, node, ba) else node;
         self.pending_attrs = null;
         // A block attribute that failed and became a paragraph never flushed the block
-        // before it when it opened; it does so now.
+        // before it when it opened; it does so now. A table waits for a caption; any
+        // other block is returned at once, or next if one is already due.
         self.flush();
         std.debug.assert(self.pending == null);
+        const block = Block{ .node = n, .arena = self.arena, .last = n.end_pos };
+        if (n.tag == .table or self.done != null) self.pending = block else self.done = block;
         // The block takes its arena with it; what opens from here on is the next block's.
-        self.pending = .{ .node = n, .arena = self.arena };
         self.arena = self.spare orelse try newArena(self.gpa);
         self.spare = null;
         self.a = self.arena.allocator();
