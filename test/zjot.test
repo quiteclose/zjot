@@ -4,9 +4,9 @@ Every expected output in this file was produced by djot.js 0.3.2 on 2026-10-23:
 
     npx -y @djot/djot@0.3.2 input.dj                 (HTML cases)
     npx -y @djot/djot@0.3.2 -t ast -p input.dj       (`ap` cases, JSON rendered to this
-                                                      file's AST text form by a converter
-                                                      checked against every vendored
-                                                      `a`/`ap` case)
+                                                      file's AST text form by
+                                                      test/tools/djot2ast.py, checked
+                                                      against every vendored `a`/`ap` case)
 
 Expectations are never written by hand. A case goes in only when zjot and djot.js
 agree on it; where zjot deliberately differs from djot.js, the difference is written
