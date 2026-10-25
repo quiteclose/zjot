@@ -1,6 +1,7 @@
 //! The line source: the input one line at a time with each line's position, from a
 //! resident slice or from a `std.Io.Reader`. A line is its bytes without the newline and
-//! without a carriage return before it; its position is where it starts. The newline
+//! without the one carriage return a CRLF ending puts before it; its position is where it
+//! starts. The newline
 //! after the last line yields no empty line, so line counts match the visible content,
 //! and `end` says where the input ended, as djot.js reports it: on its final newline, or
 //! one past the last character when there is none.
@@ -38,7 +39,7 @@ pub const Lines = union(enum) {
         newline: bool = true,
 
         fn take(self: *Count, raw: []const u8, newline: bool) Line {
-            const bytes = std.mem.trimEnd(u8, raw, "\r");
+            const bytes = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
             self.line += 1;
             const pos: SourcePos = .{ .line = self.line, .col = 1, .offset = self.offset };
             self.offset += @intCast(raw.len + @intFromBool(newline));
@@ -57,8 +58,10 @@ pub const Lines = union(enum) {
         return .{ .slice = .{ .rest = input } };
     }
 
-    /// `a` holds the spill buffer; `deinit` frees it.
+    /// `a` holds the spill buffer; `deinit` frees it. The reader needs a buffer: a line is
+    /// read through it (`takeDelimiterInclusive`), and `streamDelimiter` asserts one.
     pub fn fromReader(a: Allocator, r: *std.Io.Reader) Lines {
+        std.debug.assert(r.buffer.len > 0);
         return .{ .reader = .{ .r = r, .spill = .init(a) } };
     }
 
@@ -162,6 +165,7 @@ test "lines, positions and the end: CRLF, no final newline, empty input, both ba
         .{ .input = "a\nbc", .lines = &.{ "a", "bc" }, .offsets = &.{ 0, 2 }, .end = .{ .line = 2, .col = 3, .offset = 4 } },
         .{ .input = "-\r\n- b\r\n", .lines = &.{ "-", "- b" }, .offsets = &.{ 0, 3 }, .end = .{ .line = 3, .col = 0, .offset = 7 } },
         .{ .input = "a\r", .lines = &.{"a"}, .offsets = &.{0}, .end = .{ .line = 1, .col = 2, .offset = 2 } },
+        .{ .input = "a\r\r\nb", .lines = &.{ "a\r", "b" }, .offsets = &.{ 0, 4 }, .end = .{ .line = 2, .col = 2, .offset = 5 } },
         .{ .input = "\n\nx", .lines = &.{ "", "", "x" }, .offsets = &.{ 0, 1, 2 }, .end = .{ .line = 3, .col = 2, .offset = 3 } },
     };
     var buffer: [16]u8 = undefined;
@@ -224,7 +228,8 @@ test "both backends agree over the corpus, and the end is djot.js's" {
             for (from_slice.lines) |line| {
                 try std.testing.expectEqual(offset, line.pos.offset);
                 const nl = std.mem.indexOfScalarPos(u8, input, offset, '\n') orelse input.len;
-                try std.testing.expectEqualStrings(std.mem.trimEnd(u8, input[offset..nl], "\r"), line.bytes);
+                const raw = input[offset..nl];
+                try std.testing.expectEqualStrings(if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw, line.bytes);
                 offset = line.eol.offset + 1;
             }
             const n: u32 = @intCast(from_slice.lines.len);

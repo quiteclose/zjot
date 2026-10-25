@@ -117,8 +117,8 @@ pub fn closesDiv(line: []const u8, fence_len: usize) bool {
 pub const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_col: u32, is_footnote: bool };
 
 /// `[label]:` or `[^label]:` opening a reference or footnote definition: space
-/// indentation only, a label of at least one character (as written, `^` included), and
-/// what follows the colon.
+/// indentation only, the label as written (`^` included; a reference's may be empty, as
+/// djot.js), and what follows the colon.
 pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const trimmed = std.mem.trimStart(u8, line, " ");
     if (trimmed.len < 4 or trimmed[0] != '[') return null;

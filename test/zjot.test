@@ -7401,3 +7401,87 @@ makes the line a paragraph, as djot.js.
 <p>[r]: /u</p>
 <p>[r]</p>
 ````
+
+Footnotes are numbered in document order when the block before holds a reference-style
+link and waits for its definition.
+````
+a[^x] [y][r]
+
+b[^z]
+
+[r]: /u
+
+[^x]: X
+
+[^z]: Z
+.
+<p>a<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a href="/u">y</a></p>
+<p>b<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>X<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>Z<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Sections open and close in order around a block that waits for its definition.
+````
+# S
+
+a [y][r]
+
+## T
+
+b
+
+[r]: /u
+.
+<section id="S">
+<h1>S</h1>
+<p>a <a href="/u">y</a></p>
+<section id="T">
+<h2>T</h2>
+<p>b</p>
+</section>
+</section>
+````
+
+A caption takes the block attributes waiting before it, as djot.js.
+````
+| a |
+{.x}
+^ cap
+.
+<table>
+<caption class="x">cap</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+````
+
+A section whose last block is a captioned table ends where the caption does.
+```` ap
+{#h}
+# H
+
+| a |
+^ cap
+.
+doc
+  section (2:1:5-6:0:21) id="h"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="H"
+    table (4:1:10-5:3:18)
+      caption (5:3:18-6:0:21)
+        str (5:3:18-5:5:20) text="cap"
+      row (4:1:10-5:0:15) head=false
+        cell (4:1:10-4:5:14) head=false align="default"
+          str (4:3:12-4:3:12) text="a"
+````

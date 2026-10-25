@@ -7,7 +7,8 @@ const document = @import("document.zig");
 const html = @import("html.zig");
 const ast = @import("ast.zig");
 const Lines = @import("Lines.zig").Lines;
-const Node = @import("node.zig").Node;
+const node_mod = @import("node.zig");
+const Node = node_mod.Node;
 const SourcePos = @import("node.zig").SourcePos;
 
 pub const Mode = enum { html, ast };
@@ -23,11 +24,25 @@ pub const RenderOpts = struct {
 /// in it can still change: a block holding a reference-style link waits for the input's
 /// end, since a later definition replaces an earlier one (djot.js), and under `--ast
 /// --sourcepos` a section waits for the heading that closes it, which gives its end. The
-/// blocks behind a waiting one wait with it, so the output after the first reference-style
-/// link is buffered to the end. What lives for the whole call is the definitions
-/// (footnote content included), the ids, and the blocks waiting. Output already written
-/// stays written if a later block fails.
+/// blocks behind a waiting one are rendered as they arrive and their text waits with it,
+/// so the output after the first reference-style link is buffered to the end. What lives
+/// for the whole call is the definitions (footnote content included), the ids, the trees
+/// of the blocks waiting and the text of those behind them. Output already written stays
+/// written if a later block fails.
 pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOpts) !void {
+    return renderLines(a, Lines.fromSlice(input), w, opts);
+}
+
+/// As `render`, over what `r` yields: the input need not be resident. A line is read into
+/// the reader's buffer, which must not be empty (one longer than it spills into a buffer
+/// of its own), and only what the parser keeps of it outlives the next line, so memory
+/// follows the blocks, not the document. A read failure is `error.ReadFailed`; the reader
+/// says why.
+pub fn renderReader(a: Allocator, r: *std.Io.Reader, w: *std.Io.Writer, opts: RenderOpts) !void {
+    return renderLines(a, Lines.fromReader(a, r), w, opts);
+}
+
+fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) !void {
     var doc_arena = std.heap.ArenaAllocator.init(a);
     defer doc_arena.deinit();
     const da = doc_arena.allocator();
@@ -35,7 +50,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     var defs = document.Definitions{ .a = da };
     var ids = document.Ids{ .a = da, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
     defer ids.scratch.deinit();
-    var parser = try Parser.init(a, da, Lines.fromSlice(input), &defs);
+    var parser = try Parser.init(a, da, lines, &defs);
     defer parser.deinit();
     parser.track_pos = opts.sourcepos;
     var out = Output{
@@ -54,10 +69,13 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 
     var last_end: ?SourcePos = null;
     while (try parser.nextBlock()) |block| {
+        var queued = false;
+        errdefer if (!queued) parser.recycle(block.arena);
         var node = block.node;
         const by_reference = try ids.assign(&node);
         try out.block(node, block.arena, by_reference);
-        last_end = node.end_pos;
+        queued = true;
+        last_end = block.last;
     }
     try ids.assignFootnotes();
     // Where djot.js ends the sections still open at the end: at its last block event,
@@ -70,8 +88,12 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 
 /// Writes the section events as output in order, each block rendered on its own: at once
 /// when nothing in it can still change, else from a queue that drains from the front as
-/// its entries become ready. A block's nodes live in the arena the parser built it in,
-/// which the queue keeps until the block is written and then gives back.
+/// its entries become ready. An entry that waits for nothing itself but stands behind one
+/// that does is rendered as it arrives and keeps only its text, so what a wait costs is
+/// the waiting block's tree and the output behind it. A block holding a link by reference
+/// waits in the arena the parser built it in, given back once it is rendered; a section
+/// open waiting for its end keeps copies of what it borrowed from its heading. In HTML,
+/// footnotes are numbered in document order whatever waits.
 const Output = struct {
     a: Allocator,
     w: *std.Io.Writer,
@@ -85,26 +107,52 @@ const Output = struct {
     queue: std.ArrayList(Pending) = .empty,
     /// The entries before `head` have been written.
     head: usize = 0,
+    /// How many entries from `head` on wait for something; while any does, the entries
+    /// added behind them are rendered on arrival.
+    waiting: usize = 0,
     /// Queue indices of the section opens awaiting their end (`hold_sections`), innermost
     /// last. Valid because a held entry keeps the queue from being emptied and compacted.
     open_sections: std.ArrayList(usize) = .empty,
-    /// For rendering what has no block arena: the root, the section opens, the footnotes.
+    /// For rendering what has no arena of its own: the root, section opens, footnotes.
     scratch: std.heap.ArenaAllocator,
-    /// AST output: the current nesting.
+    /// AST output: the nesting at the queue's tail, which each entry records as it is
+    /// added, since it may be rendered before or after its neighbours.
     indent: usize = 0,
 
     const Pending = struct {
-        event: document.Sections.Event,
-        /// A block's arena; section opens and closes have none.
-        arena: ?*std.heap.ArenaAllocator,
         wait: enum { none, references, section_end },
+        indent: usize,
+        what: union(enum) {
+            /// Rendered already; owned.
+            text: []u8,
+            /// A section open awaiting its end, with its own copies of id and attributes.
+            section: *HeldSection,
+            /// A block in its arena: holding a link by reference, or about to be written.
+            block: struct { node: *Node, arena: *std.heap.ArenaAllocator },
+            close,
+        },
     };
 
+    /// A section open's node with its own copies of the id and attributes it borrows from
+    /// its heading, which outlive the heading's arena: `bytes` holds the text, `attrs`
+    /// the pairs.
+    const HeldSection = struct { node: Node, bytes: []u8, attrs: []node_mod.Attr };
+
     fn deinit(self: *Output) void {
-        for (self.queue.items[self.head..]) |p| if (p.arena) |arena| self.parser.recycle(arena);
+        for (self.queue.items[self.head..]) |p| self.drop(p);
         self.queue.deinit(self.a);
         self.open_sections.deinit(self.a);
         self.scratch.deinit();
+    }
+
+    /// Frees what a written or abandoned entry owns.
+    fn drop(self: *Output, p: Pending) void {
+        switch (p.what) {
+            .text => |text| self.a.free(text),
+            .section => |section| self.freeSection(section),
+            .block => |b| self.parser.recycle(b.arena),
+            .close => {},
+        }
     }
 
     fn root(self: *Output) !void {
@@ -120,32 +168,101 @@ const Output = struct {
     /// Takes `node`, built in `arena`, with its section events; `by_reference` says it
     /// holds a link by reference, which waits for the definitions.
     fn block(self: *Output, node: Node, arena: *std.heap.ArenaAllocator, by_reference: bool) !void {
+        // The arena is the queue's once its block is in; until then a failure returns it.
+        var owned = false;
+        errdefer if (!owned) self.parser.recycle(arena);
         const events = self.sections.feed(node);
         try self.queue.ensureUnusedCapacity(self.a, events.len);
         if (self.hold_sections) try self.open_sections.ensureUnusedCapacity(self.a, 1);
-        for (events) |event| switch (event) {
-            .close => {
-                self.queue.appendAssumeCapacity(.{ .event = event, .arena = null, .wait = .none });
-                // The heading closing a section gives its end.
-                if (self.hold_sections) self.endSection(node.end_pos);
-            },
-            .open => {
-                if (self.hold_sections) self.open_sections.appendAssumeCapacity(self.queue.items.len);
-                self.queue.appendAssumeCapacity(.{ .event = event, .arena = null, .wait = if (self.hold_sections) .section_end else .none });
-            },
-            .block => self.queue.appendAssumeCapacity(.{
-                .event = event,
-                .arena = arena,
-                .wait = if (by_reference) .references else .none,
-            }),
-        };
+        for (events) |event| {
+            var pending = Pending{ .wait = .none, .indent = self.indent, .what = .close };
+            switch (event) {
+                .close => {
+                    if (self.mode == .ast) self.indent -= 2;
+                    // The heading closing a section gives its end.
+                    if (self.hold_sections) self.endSection(node.end_pos);
+                },
+                .open => |section| {
+                    if (self.hold_sections) {
+                        self.open_sections.appendAssumeCapacity(self.queue.items.len);
+                        pending.wait = .section_end;
+                        pending.what = .{ .section = try self.ownSection(section) };
+                    } else {
+                        var open = HeldSection{ .node = section, .bytes = &.{}, .attrs = &.{} };
+                        const text = try self.renderText(.{ .section = &open }, pending.indent);
+                        pending.what = .{ .text = text };
+                    }
+                    if (self.mode == .ast) self.indent += 2;
+                },
+                .block => |b| {
+                    const copy = try arena.allocator().create(Node);
+                    copy.* = b;
+                    pending.what = .{ .block = .{ .node = copy, .arena = arena } };
+                    if (by_reference) {
+                        pending.wait = .references;
+                        // Its footnotes take their numbers now, in document order.
+                        if (self.mode == .html) try self.numberFootnotes(b);
+                    } else if (self.waiting > 0) {
+                        // Behind a waiting entry: rendered now, so its tree can go. (The
+                        // text is made before the union is reassigned: the result
+                        // location would otherwise alias what is being read.)
+                        const text = try self.renderText(pending.what, pending.indent);
+                        pending.what = .{ .text = text };
+                        self.parser.recycle(arena);
+                    }
+                    owned = true;
+                },
+            }
+            self.queue.appendAssumeCapacity(pending);
+            if (pending.wait != .none) self.waiting += 1;
+        }
         try self.drain(false);
     }
 
     fn endSection(self: *Output, end: ?SourcePos) void {
         const pending = &self.queue.items[self.open_sections.pop().?];
-        pending.event.open.end_pos = end;
+        pending.what.section.node.end_pos = end;
         pending.wait = .none;
+        self.waiting -= 1;
+    }
+
+    fn numberFootnotes(self: *Output, node: Node) !void {
+        if (node.tag == .footnote_reference) _ = try self.footnotes.number(node.text);
+        for (node.children) |child| try self.numberFootnotes(child);
+    }
+
+    /// `section` with its own copies of its id and attributes; `freeSection` takes them back.
+    fn ownSection(self: *Output, section: Node) !*HeldSection {
+        const held = try self.a.create(HeldSection);
+        errdefer self.a.destroy(held);
+        var total: usize = if (section.id) |id| id.len else 0;
+        for (section.attrs) |attr| total += attr.key.len + attr.value.len;
+        const bytes = try self.a.alloc(u8, total);
+        errdefer self.a.free(bytes);
+        const attrs = try self.a.alloc(node_mod.Attr, section.attrs.len);
+        held.* = .{ .node = section, .bytes = bytes, .attrs = attrs };
+        var p: usize = 0;
+        if (section.id) |id| {
+            @memcpy(bytes[p..][0..id.len], id);
+            held.node.id = bytes[p..][0..id.len];
+            p += id.len;
+        }
+        for (section.attrs, attrs) |attr, *copy| {
+            @memcpy(bytes[p..][0..attr.key.len], attr.key);
+            copy.key = bytes[p..][0..attr.key.len];
+            p += attr.key.len;
+            @memcpy(bytes[p..][0..attr.value.len], attr.value);
+            copy.value = bytes[p..][0..attr.value.len];
+            p += attr.value.len;
+        }
+        held.node.attrs = attrs;
+        return held;
+    }
+
+    fn freeSection(self: *Output, held: *HeldSection) void {
+        self.a.free(held.bytes);
+        self.a.free(held.attrs);
+        self.a.destroy(held);
     }
 
     /// Writes the entries at the front of the queue that are ready: those waiting for
@@ -155,11 +272,18 @@ const Output = struct {
             const pending = self.queue.items[self.head];
             switch (pending.wait) {
                 .none => {},
-                .references => if (!final) break,
+                .references => {
+                    if (!final) break;
+                    self.waiting -= 1;
+                },
                 .section_end => break,
             }
-            try self.emit(pending);
-            if (pending.arena) |arena| self.parser.recycle(arena);
+            switch (pending.what) {
+                .text => |text| try self.w.writeAll(text),
+                .close => if (self.mode == .html) try self.w.writeAll(html.section_close),
+                .section, .block => try self.w.writeAll(try self.render(pending.what, pending.indent, pending.wait == .references)),
+            }
+            self.drop(pending);
         }
         if (self.head == self.queue.items.len) {
             self.queue.clearRetainingCapacity();
@@ -167,43 +291,41 @@ const Output = struct {
         }
     }
 
-    fn emit(self: *Output, pending: Pending) !void {
-        switch (pending.event) {
-            .open => |section| {
-                defer _ = self.scratch.reset(.retain_capacity);
-                const sa = self.scratch.allocator();
-                var buf: std.ArrayList(u8) = .empty;
-                switch (self.mode) {
-                    .html => try html.renderSectionOpen(sa, &buf, section),
-                    .ast => {
-                        try ast.renderAstNode(sa, &buf, section, self.indent, false);
-                        self.indent += 2;
-                    },
-                }
-                try self.w.writeAll(buf.items);
-            },
-            .close => switch (self.mode) {
-                .html => try self.w.writeAll(html.section_close),
-                .ast => self.indent -= 2,
-            },
-            .block => |b| {
-                const ba = pending.arena.?.allocator();
-                const node = if (pending.wait == .references) try self.resolver.resolve(ba, b) else b;
-                try self.write(ba, node);
-            },
-        }
+    /// `what` rendered, as text owned by the caller.
+    fn renderText(self: *Output, what: @FieldType(Pending, "what"), indent: usize) ![]u8 {
+        return switch (what) {
+            .text => |text| text,
+            .close => try self.a.dupe(u8, if (self.mode == .html) html.section_close else ""),
+            else => try self.a.dupe(u8, try self.render(what, indent, false)),
+        };
     }
 
-    fn write(self: *Output, a: Allocator, node: Node) !void {
+    /// A section open rendered into scratch, or a block into its own arena (resolved
+    /// first when it waited for the definitions); valid until the next call or the
+    /// arena's return.
+    fn render(self: *Output, what: @FieldType(Pending, "what"), indent: usize, resolve: bool) ![]const u8 {
+        _ = self.scratch.reset(.retain_capacity);
+        const sa = self.scratch.allocator();
         var buf: std.ArrayList(u8) = .empty;
-        switch (self.mode) {
-            .html => {
-                var renderer = html.Renderer{ .a = a, .out = &buf, .footnotes = &self.footnotes };
-                try renderer.render(node);
+        switch (what) {
+            .section => |held| switch (self.mode) {
+                .html => try html.renderSectionOpen(sa, &buf, held.node),
+                .ast => try ast.renderAstNode(sa, &buf, held.node, indent, false),
             },
-            .ast => try ast.renderAstNode(a, &buf, node, self.indent, false),
+            .block => |b| {
+                const ba = b.arena.allocator();
+                const node = if (resolve) try self.resolver.resolve(ba, b.node.*) else b.node.*;
+                switch (self.mode) {
+                    .html => {
+                        var renderer = html.Renderer{ .a = ba, .out = &buf, .footnotes = &self.footnotes };
+                        try renderer.render(node);
+                    },
+                    .ast => try ast.renderAstNode(ba, &buf, node, indent, false),
+                }
+            },
+            .text, .close => unreachable,
         }
-        try self.w.writeAll(buf.items);
+        return buf.items;
     }
 
     /// Closes the sections still open, ending at `sections_end`, writes what waited for
@@ -211,8 +333,9 @@ const Output = struct {
     fn finish(self: *Output, sections_end: ?SourcePos) !void {
         const events = self.sections.finish();
         try self.queue.ensureUnusedCapacity(self.a, events.len);
-        for (events) |event| {
-            self.queue.appendAssumeCapacity(.{ .event = event, .arena = null, .wait = .none });
+        for (events) |_| {
+            self.queue.appendAssumeCapacity(.{ .wait = .none, .indent = self.indent, .what = .close });
+            if (self.mode == .ast) self.indent -= 2;
             if (self.hold_sections) self.endSection(sections_end);
         }
         try self.drain(true);
@@ -311,6 +434,32 @@ test "a block is written as it arrives unless a reference-style link holds it" {
     const whole = try toHtml(a, input);
     defer a.free(whole);
     try std.testing.expectEqualStrings(whole, written.written());
+}
+
+test "renderReader with a 16-byte buffer matches render over every fixture, in both modes" {
+    const io = std.testing.io;
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    var buffer: [16]u8 = undefined;
+    for ([_][]const u8{ "test/cli", "test/tools/corpus" }) |dir_name| {
+        var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_name, .{ .iterate = true });
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (!std.mem.endsWith(u8, entry.name, ".dj")) continue;
+            const input = try dir.readFileAlloc(io, entry.name, a, .limited(1 << 20));
+            for ([_]RenderOpts{ .{}, .{ .mode = .ast, .sourcepos = true } }) |opts| {
+                var resident = std.Io.Writer.Allocating.init(a);
+                try render(a, input, &resident.writer, opts);
+                var fixed = std.Io.Reader.fixed(input);
+                var limited = fixed.limited(.unlimited, &buffer);
+                var streamed = std.Io.Writer.Allocating.init(a);
+                try renderReader(a, &limited.interface, &streamed.writer, opts);
+                try std.testing.expectEqualStrings(resident.written(), streamed.written());
+            }
+        }
+    }
 }
 
 test {

@@ -192,7 +192,9 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</table>\n");
             },
             .caption => if (node.children.len > 0) {
-                try out.appendSlice(a, "<caption>");
+                try out.appendSlice(a, "<caption");
+                try renderAttrs(a, out, node);
+                try out.appendSlice(a, ">");
                 for (node.children) |child| try self.render(child);
                 try out.appendSlice(a, "</caption>\n");
             },

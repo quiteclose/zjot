@@ -74,42 +74,41 @@ pub fn main(init: std.process.Init) !u8 {
     };
 
     const a = init.gpa;
-    const input = readInput(init.io, a, opts.file_path) catch |err| switch (err) {
+    const name = opts.file_path orelse "stdin";
+    const file = if (opts.file_path) |path| std.Io.Dir.cwd().openFile(init.io, path, .{}) catch |err| switch (err) {
         error.FileNotFound => {
-            try printErr(init.io, "zjot: file not found: {s}\n", .{opts.file_path.?});
-            return 1;
-        },
-        error.OutOfMemory => return err,
-        error.StdinClosed => {
-            try printErr(init.io, "zjot: stdin is closed\n", .{});
+            try printErr(init.io, "zjot: file not found: {s}\n", .{path});
             return 1;
         },
         else => |e| {
-            try printErr(init.io, "zjot: {s}: {t}\n", .{ opts.file_path orelse "stdin", e });
+            try printErr(init.io, "zjot: {s}: {t}\n", .{ path, e });
             return 1;
         },
+    } else blk: {
+        if (!stdinIsOpen()) {
+            try printErr(init.io, "zjot: stdin is closed\n", .{});
+            return 1;
+        }
+        break :blk std.Io.File.stdin();
     };
-    defer a.free(input);
+    defer if (opts.file_path != null) file.close(init.io);
 
-    // Rendered straight onto stdout, a block at a time, so the output is never held whole.
+    // The input is read a buffer at a time and rendered straight onto stdout a block at a
+    // time, so neither the document nor the output is held whole.
+    var in_buf: [64 * 1024]u8 = undefined;
+    var r = file.reader(init.io, &in_buf);
     var out_buf: [4096]u8 = undefined;
     var w = std.Io.File.stdout().writer(init.io, &out_buf);
-    zjot.render(a, input, &w.interface, .{ .mode = opts.mode, .sourcepos = opts.sourcepos }) catch |err| switch (err) {
+    zjot.renderReader(a, &r.interface, &w.interface, .{ .mode = opts.mode, .sourcepos = opts.sourcepos }) catch |err| switch (err) {
         error.WriteFailed => return writeFailed(init.io),
+        error.ReadFailed => {
+            try printErr(init.io, "zjot: {s}: {t}\n", .{ name, r.err orelse error.ReadFailed });
+            return 1;
+        },
         else => |e| return e,
     };
     w.interface.flush() catch return writeFailed(init.io);
     return 0;
-}
-
-fn readInput(io: std.Io, a: Allocator, file_path: ?[]const u8) ![]u8 {
-    if (file_path) |path| {
-        return std.Io.Dir.readFileAlloc(std.Io.Dir.cwd(), io, path, a, .unlimited);
-    }
-    if (!stdinIsOpen()) return error.StdinClosed;
-    var stdin_buf: [4096]u8 = undefined;
-    var r = std.Io.File.stdin().reader(io, &stdin_buf);
-    return r.interface.allocRemaining(a, .unlimited);
 }
 
 /// std treats a closed descriptor as a program bug and panics on the first read, so
