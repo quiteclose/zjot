@@ -6,7 +6,8 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Node = @import("node.zig").Node;
+const node_mod = @import("node.zig");
+const Node = node_mod.Node;
 const Tag = @import("node.zig").Tag;
 const attrs = @import("attributes.zig");
 const BlockAttrs = attrs.BlockAttrs;
@@ -67,14 +68,14 @@ const Scanner = struct {
     /// A text node over a slice of `src`, positioned by where the slice lies; a slice
     /// from elsewhere (a curly quote) gets no position.
     fn strNode(sc: *const Scanner, slice: []const u8) Node {
-        const node = Node{ .tag = .str, .text = slice };
+        const node = Node{ .data = .{ .str = slice } };
         if (slice.len == 0 or !sc.within(slice)) return node;
         const start = @intFromPtr(slice.ptr) - @intFromPtr(sc.src.ptr);
         return sc.positioned(node, start, start + slice.len - 1);
     }
 
     fn setText(sc: *const Scanner, node: *Node, slice: []const u8) void {
-        node.text = slice;
+        node.data.str = slice;
         if (!sc.within(slice)) return; // a curly quote keeps the position it was given
         const fresh = sc.strNode(slice);
         node.start_pos = fresh.start_pos;
@@ -84,11 +85,13 @@ const Scanner = struct {
     /// Extends the text node `last` by `slice` when the two are contiguous in `src` and
     /// `last` carries no attributes: djot.js reports such text as one `str`.
     fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) bool {
-        if (last.tag != .str or last.text.ptr + last.text.len != slice.ptr) return false;
+        if (last.data != .str) return false;
+        const sofar = last.data.str;
+        if (sofar.ptr + sofar.len != slice.ptr) return false;
         if (last.id != null or last.attrs.len > 0) return false;
-        last.text = last.text.ptr[0 .. last.text.len + slice.len];
-        if (sc.map) |m| if (sc.within(last.text)) {
-            last.end_pos = m.resolve(@intCast(@intFromPtr(last.text.ptr) - @intFromPtr(sc.src.ptr) + last.text.len - 1));
+        last.data.str = sofar.ptr[0 .. sofar.len + slice.len];
+        if (sc.map) |m| if (sc.within(last.data.str)) {
+            last.end_pos = m.resolve(@intCast(@intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1));
         };
         return true;
     }
@@ -120,23 +123,23 @@ const Scanner = struct {
                     if (pos + 1 >= src.len) {
                         // A backslash ending the block is a hard break on its newline, as djot.js.
                         sc.stripTrailingSpacesFromLastStr();
-                        try sc.emit(.{ .tag = .hard_break }, pos + 1, pos + 1);
+                        try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                         pos += 1;
                     } else {
                         const next = src[pos + 1];
                         if (next == '\n') {
                             sc.stripTrailingSpacesFromLastStr();
-                            try sc.emit(.{ .tag = .hard_break }, pos + 1, pos + 1);
+                            try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                             pos += 2;
                         } else if (next == ' ' or next == '\t') {
                             var skip = pos + 1;
                             while (skip < src.len and (src[skip] == ' ' or src[skip] == '\t')) skip += 1;
                             if (skip < src.len and src[skip] == '\n') {
                                 sc.stripTrailingSpacesFromLastStr();
-                                try sc.emit(.{ .tag = .hard_break }, skip, skip);
+                                try sc.emit(.{ .data = .hard_break }, skip, skip);
                                 pos = skip + 1;
                             } else if (next == ' ') {
-                                try sc.emit(.{ .tag = .non_breaking_space }, pos + 1, pos + 1);
+                                try sc.emit(.{ .data = .non_breaking_space }, pos + 1, pos + 1);
                                 pos += 2;
                             } else {
                                 try sc.text(src[pos .. pos + 1]);
@@ -159,13 +162,13 @@ const Scanner = struct {
                     if (findClosingTicks(src, after, tick_len)) |close_pos| {
                         const content = trimVerbatimContent(src[after..close_pos]);
                         const after_close = close_pos + tick_len;
-                        var node = Node{ .tag = .verbatim, .text = content };
+                        var node = Node{ .data = .{ .verbatim = content } };
                         var next_pos = after_close;
                         if (after_close + 1 < src.len and src[after_close] == '{' and src[after_close + 1] == '=') {
                             if (std.mem.indexOfScalarPos(u8, src, after_close, '}')) |fe| {
                                 const format = src[after_close + 2 .. fe];
                                 if (format.len > 0 and std.mem.indexOfScalar(u8, format, ' ') == null) {
-                                    node = .{ .tag = .raw_inline, .text = content, .lang = format };
+                                    node = .{ .data = .{ .raw_inline = .{ .format = format, .text = content } } };
                                     next_pos = fe + 1;
                                 }
                             }
@@ -174,14 +177,14 @@ const Scanner = struct {
                         try sc.emit(node, pos, after_close - 1);
                         pos = next_pos;
                     } else {
-                        try sc.emit(.{ .tag = .verbatim, .text = trimVerbatimContent(src[after..]) }, pos, src.len - 1);
+                        try sc.emit(.{ .data = .{ .verbatim = trimVerbatimContent(src[after..]) } }, pos, src.len - 1);
                         pos = src.len;
                     }
                     text_start = pos;
                 },
                 '\n' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    try sc.emit(.{ .tag = .soft_break }, pos, pos);
+                    try sc.emit(.{ .data = .soft_break }, pos, pos);
                     pos += 1;
                     text_start = pos;
                 },
@@ -226,7 +229,7 @@ const Scanner = struct {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 < src.len and src[pos + 1] == '^') {
                         if (findMatchingBracket(src, pos)) |close| {
-                            try sc.emit(.{ .tag = .footnote_reference, .text = src[pos + 2 .. close] }, pos, close);
+                            try sc.emit(.{ .data = .{ .footnote_reference = src[pos + 2 .. close] } }, pos, close);
                             pos = close + 1;
                             text_start = pos;
                             continue;
@@ -283,8 +286,8 @@ const Scanner = struct {
                         const tick_len = countRunAt(src, tick_start, '`');
                         const content_start = tick_start + tick_len;
                         if (findClosingTicks(src, content_start, tick_len)) |close_pos| {
-                            const tag: Tag = if (dollar_count == 2) .display_math else .inline_math;
-                            try sc.emit(.{ .tag = tag, .text = src[content_start..close_pos] }, pos, close_pos + tick_len - 1);
+                            const content = src[content_start..close_pos];
+                            try sc.emit(.{ .data = if (dollar_count == 2) .{ .display_math = content } else .{ .inline_math = content } }, pos, close_pos + tick_len - 1);
                             pos = close_pos + tick_len;
                             text_start = pos;
                             continue;
@@ -333,7 +336,7 @@ const Scanner = struct {
                 '.' => {
                     if (pos + 2 < src.len and src[pos + 1] == '.' and src[pos + 2] == '.') {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
-                        try sc.emit(.{ .tag = .ellipsis }, pos, pos + 2);
+                        try sc.emit(.{ .data = .ellipsis }, pos, pos + 2);
                         pos += 3;
                         text_start = pos;
                     } else {
@@ -354,9 +357,9 @@ const Scanner = struct {
         if (sc.items.items.len == 0) return;
         switch (sc.items.items[sc.items.items.len - 1]) {
             .node => |*n| {
-                if (n.tag == .str) {
-                    sc.setText(n, std.mem.trimEnd(u8, n.text, " \t"));
-                    if (n.text.len == 0) _ = sc.items.pop();
+                if (n.data == .str) {
+                    sc.setText(n, std.mem.trimEnd(u8, n.data.str, " \t"));
+                    if (n.data.str.len == 0) _ = sc.items.pop();
                 }
             },
             else => {},
@@ -367,9 +370,9 @@ const Scanner = struct {
         while (sc.items.items.len > 0) {
             switch (sc.items.items[sc.items.items.len - 1]) {
                 .node => |*n| {
-                    if (n.tag == .str) {
-                        sc.setText(n, std.mem.trimEnd(u8, n.text, " \t"));
-                        if (n.text.len == 0) {
+                    if (n.data == .str) {
+                        sc.setText(n, std.mem.trimEnd(u8, n.data.str, " \t"));
+                        if (n.data.str.len == 0) {
                             _ = sc.items.pop();
                             continue;
                         }
@@ -400,7 +403,7 @@ const Scanner = struct {
         const i = sc.markedOpener(char) orelse return false;
         const op = sc.openers.items[i];
         const children = try sc.collectChildren(op.item_idx);
-        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p + 1);
+        try sc.emit(inlineContainer(tag, children), op.src_pos, p + 1);
         sc.openers.items.len = i;
         return true;
     }
@@ -442,7 +445,7 @@ const Scanner = struct {
                     if (op.item_idx + 1 < sc.items.items.len) {
                         const tag: Tag = if (char == '*') .strong else .emph;
                         const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p);
+                        try sc.emit(inlineContainer(tag, children), op.src_pos, p);
                         sc.openers.items.len = i;
                         pos.* = p + 1;
                         return;
@@ -491,8 +494,7 @@ const Scanner = struct {
                     if (findMatchingParen(src, pos.*)) |close_paren| {
                         const raw_dest = src[pos.* + 1 .. close_paren];
                         const dest = processUrl(sc.a, raw_dest) catch raw_dest;
-                        const tag: Tag = if (is_image) .image else .link;
-                        try sc.emit(.{ .tag = tag, .children = children, .destination = dest }, start, close_paren);
+                        try sc.emit(linkNode(is_image, .{ .children = children, .destination = dest }), start, close_paren);
                         pos.* = close_paren + 1;
                         sc.openers.items.len = i;
                         return;
@@ -500,15 +502,14 @@ const Scanner = struct {
                 } else if (pos.* < src.len and src[pos.*] == '[') {
                     if (findMatchingBracket(src, pos.*)) |close_ref| {
                         const ref_label = src[pos.* + 1 .. close_ref];
-                        const tag: Tag = if (is_image) .image else .link;
-                        try sc.emit(.{ .tag = tag, .children = children, .reference = ref_label }, start, close_ref);
+                        try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
                         return;
                     }
                 } else if (pos.* < src.len and src[pos.*] == '{') {
                     if (try attrs.parseInlineAttrs(sc.a, src, pos.*)) |parsed| {
-                        const span_node = try applyBlockAttrsToNode(sc.a, .{ .tag = .span, .children = children }, parsed.attrs);
+                        const span_node = try applyBlockAttrsToNode(sc.a, .{ .data = .{ .span = children } }, parsed.attrs);
                         try sc.emit(span_node, start, p);
                         pos.* = parsed.end;
                         sc.openers.items.len = i;
@@ -544,7 +545,7 @@ const Scanner = struct {
             std.mem.startsWith(u8, content, "https://") or
             std.mem.startsWith(u8, content, "ftp://"))
         {
-            try sc.emit(.{ .tag = .url, .text = content }, p, end);
+            try sc.emit(.{ .data = .{ .url = content } }, p, end);
             pos.* = end + 1;
             return true;
         }
@@ -552,7 +553,7 @@ const Scanner = struct {
         if (std.mem.indexOfScalar(u8, content, '@') != null and
             std.mem.indexOfScalar(u8, content, ' ') == null)
         {
-            try sc.emit(.{ .tag = .email, .text = content }, p, end);
+            try sc.emit(.{ .data = .{ .email = content } }, p, end);
             pos.* = end + 1;
             return true;
         }
@@ -569,7 +570,7 @@ const Scanner = struct {
             if (op.char == char) {
                 if (op.item_idx + 1 < sc.items.items.len) {
                     const children = try sc.collectChildren(op.item_idx);
-                    try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p);
+                    try sc.emit(inlineContainer(tag, children), op.src_pos, p);
                     sc.openers.items.len = i;
                     pos.* = p + 1;
                     return;
@@ -600,7 +601,7 @@ const Scanner = struct {
         for (name) |ch| {
             if (!std.ascii.isAlphanumeric(ch) and ch != '-' and ch != '_' and ch != '+') return false;
         }
-        try sc.emit(.{ .tag = .symb, .text = name }, p, end);
+        try sc.emit(.{ .data = .{ .symb = name } }, p, end);
         pos.* = end + 1;
         return true;
     }
@@ -629,8 +630,8 @@ const Scanner = struct {
             else
                 1;
             switch (width) {
-                3 => try sc.emit(.{ .tag = .em_dash }, at, at + 2),
-                2 => try sc.emit(.{ .tag = .en_dash }, at, at + 1),
+                3 => try sc.emit(.{ .data = .em_dash }, at, at + 2),
+                2 => try sc.emit(.{ .data = .en_dash }, at, at + 1),
                 else => try sc.text(sc.src[at .. at + 1]),
             }
             remaining -= width;
@@ -645,7 +646,7 @@ const Scanner = struct {
         if (!marked and p + 1 < src.len and src[p + 1] == '}') {
             if (!try sc.closeMarked(char, if (char == '"') .double_quoted else .single_quoted, p)) {
                 const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201d}";
-                try sc.emit(.{ .tag = .str, .text = curly }, p, p + 1);
+                try sc.emit(.{ .data = .{ .str = curly } }, p, p + 1);
             }
             pos.* = p + 2;
             return;
@@ -670,7 +671,7 @@ const Scanner = struct {
                     if (op.item_idx + 1 < sc.items.items.len) {
                         const tag: Tag = if (char == '"') .double_quoted else .single_quoted;
                         const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(.{ .tag = tag, .children = children }, op.src_pos, p);
+                        try sc.emit(inlineContainer(tag, children), op.src_pos, p);
                         sc.openers.items.len = i;
                         pos.* = p + 1;
                         return;
@@ -689,7 +690,7 @@ const Scanner = struct {
             // Single quote becomes right curly (') for apostrophe contexts;
             // double quote becomes left curly (") as the more common standalone form.
             const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201c}";
-            try sc.emit(.{ .tag = .str, .text = curly }, p, p);
+            try sc.emit(.{ .data = .{ .str = curly } }, p, p);
         }
         pos.* = p + 1;
     }
@@ -715,7 +716,7 @@ const Scanner = struct {
                 (if (op.char == '\'') "\u{2018}" else "\u{201c}")
             else
                 (if (op.char == '\'') "\u{2019}" else "\u{201c}");
-            return sc.positioned(.{ .tag = .str, .text = curly }, op.src_pos, op.src_pos + @as(usize, if (op.marked) 1 else 0));
+            return sc.positioned(.{ .data = .{ .str = curly } }, op.src_pos, op.src_pos + @as(usize, if (op.marked) 1 else 0));
         }
         const len: usize = if (op.marked) 2 else 1;
         return sc.strNode(sc.src[op.src_pos .. op.src_pos + len]);
@@ -724,7 +725,7 @@ const Scanner = struct {
     /// Appends a node, joining text to the previous node when it can: an opener that did
     /// not close leaves text djot.js reports as one `str`.
     fn appendNode(sc: *const Scanner, nodes: *std.ArrayList(Node), node: Node) !void {
-        if (node.tag == .str and nodes.items.len > 0 and sc.extendStr(&nodes.items[nodes.items.len - 1], node.text)) return;
+        if (node.data == .str and nodes.items.len > 0 and sc.extendStr(&nodes.items[nodes.items.len - 1], node.data.str)) return;
         try nodes.append(sc.a, node);
     }
 
@@ -743,9 +744,8 @@ const Scanner = struct {
     fn applyAttrsToResolved(sc: *const Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
         if (nodes.items.len == 0) return;
         const last = &nodes.items[nodes.items.len - 1];
-        switch (last.tag) {
-            .str => {
-                const last_text = last.text;
+        switch (last.data) {
+            .str => |last_text| {
                 if (last_text.len == 0) return;
                 var word_start = last_text.len;
                 while (word_start > 0 and last_text[word_start - 1] != ' ' and
@@ -759,8 +759,8 @@ const Scanner = struct {
                 if (word_start == 0) {
                     while (gather_start > 0) {
                         const prev = nodes.items[gather_start - 1];
-                        if (prev.tag != .str) break;
-                        const pt = prev.text;
+                        if (prev.data != .str) break;
+                        const pt = prev.data.str;
                         if (pt.len == 0) break;
                         const last_ch = pt[pt.len - 1];
                         if (last_ch == ' ' or last_ch == '\t' or last_ch == '\n') break;
@@ -777,7 +777,7 @@ const Scanner = struct {
                 var span_children: std.ArrayList(Node) = .empty;
                 if (gather_start < nodes.items.len - 1 or word_start > 0) {
                     if (word_start > 0) {
-                        const first_text = nodes.items[gather_start].text;
+                        const first_text = nodes.items[gather_start].data.str;
                         try span_children.append(sc.a, sc.strNode(first_text[word_start..]));
                         for (nodes.items[gather_start + 1 ..]) |n| try span_children.append(sc.a, n);
                     } else {
@@ -788,11 +788,11 @@ const Scanner = struct {
                 }
 
                 const kids = try span_children.toOwnedSlice(sc.a);
-                var span_node = Node{ .tag = .span, .children = kids, .start_pos = kids[0].start_pos, .end_pos = kids[kids.len - 1].end_pos };
+                var span_node = Node{ .data = .{ .span = kids }, .start_pos = kids[0].start_pos, .end_pos = kids[kids.len - 1].end_pos };
                 span_node = try applyBlockAttrsToNode(sc.a, span_node, ba);
 
                 if (word_start > 0 and gather_start < nodes.items.len - 1) {
-                    sc.setText(&nodes.items[gather_start], nodes.items[gather_start].text[0..word_start]);
+                    sc.setText(&nodes.items[gather_start], nodes.items[gather_start].data.str[0..word_start]);
                     nodes.items.len = gather_start + 1;
                     try nodes.append(sc.a, span_node);
                 } else if (word_start > 0) {
@@ -982,25 +982,53 @@ pub fn getPlainText(a: Allocator, node: Node) ![]const u8 {
 }
 
 fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node) !void {
-    switch (node.tag) {
+    switch (node.data) {
         .symb, .footnote_reference => {},
         .soft_break, .hard_break => try buf.append(a, '\n'),
-        else => if (node.text.len > 0) {
-            try buf.appendSlice(a, node.text);
-        } else for (node.children) |child| {
+        else => if (node.text().len > 0) {
+            try buf.appendSlice(a, node.text());
+        } else for (node.children()) |child| {
             try addPlainText(a, buf, child);
         },
     }
 }
 
+/// A container inline of `tag` over `children`.
+fn inlineContainer(tag: Tag, children: []const Node) Node {
+    return .{ .data = switch (tag) {
+        .emph => .{ .emph = children },
+        .strong => .{ .strong = children },
+        .span => .{ .span = children },
+        .mark => .{ .mark = children },
+        .superscript => .{ .superscript = children },
+        .subscript => .{ .subscript = children },
+        .insert => .{ .insert = children },
+        .delete => .{ .delete = children },
+        .double_quoted => .{ .double_quoted = children },
+        .single_quoted => .{ .single_quoted = children },
+        else => unreachable,
+    } };
+}
+
+fn linkNode(is_image: bool, link: node_mod.Link) Node {
+    return .{ .data = if (is_image) .{ .image = link } else .{ .link = link } };
+}
+
+/// `lines` joined by newlines: a block's text for the inline parser.
 pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
+    return join(a, lines, false);
+}
+
+/// `lines` each followed by a newline: a code block's text.
+pub fn joinLinesTerminated(a: Allocator, lines: []const []const u8) ![]const u8 {
+    return join(a, lines, true);
+}
+
+fn join(a: Allocator, lines: []const []const u8, terminated: bool) ![]const u8 {
     if (lines.len == 0) return "";
-    var total: usize = 0;
-    for (lines, 0..) |line, idx| {
-        if (idx > 0) total += 1;
-        total += line.len;
-    }
-    var buf = try a.alloc(u8, total);
+    var total: usize = if (terminated) lines.len else lines.len - 1;
+    for (lines) |line| total += line.len;
+    const buf = try a.alloc(u8, total);
     var p: usize = 0;
     for (lines, 0..) |line, idx| {
         if (idx > 0) {
@@ -1010,6 +1038,7 @@ pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
         @memcpy(buf[p..][0..line.len], line);
         p += line.len;
     }
+    if (terminated) buf[p] = '\n';
     return buf;
 }
 
