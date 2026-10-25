@@ -4,6 +4,8 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const zjot = @import("root.zig");
+/// `-Dtally`: report pass counts per file instead of failing (the parser rewrite's progress).
+const tally = @import("build_options").tally;
 
 const TestCase = struct {
     input: []const u8,
@@ -117,7 +119,7 @@ fn runTestFile(a: Allocator, io: std.Io, dir: std.Io.Dir, filename: []const u8) 
             results.passed += 1;
         } else {
             results.failed += 1;
-            if (results.failed <= 100) {
+            if (!tally and results.failed <= 100) {
                 std.debug.print("    FAIL[{d}] at line {d}:\n", .{ ci, tc.line_number });
                 std.debug.print("---expected---\n{s}\n---got---\n{s}\n---end---\n", .{ tc.expected, output });
             }
@@ -178,16 +180,16 @@ test "djot test suite" {
 
         const dot = std.mem.lastIndexOfScalar(u8, filename, '.') orelse filename.len;
         const name = filename[0..dot];
-        if (results.failed > 0) {
+        if (tally or results.failed > 0) {
             std.debug.print("  {s}: {d}/{d} passed\n", .{ name, results.passed, results.total() });
         }
         total.add(results);
     }
 
-    if (total.failed > 0) {
+    if (tally or total.failed > 0) {
         std.debug.print("\n  Total: {d}/{d} passed\n\n", .{ total.passed, total.total() });
     }
 
     try std.testing.expect(total.total() > 0);
-    try std.testing.expectEqual(0, total.failed);
+    if (!tally) try std.testing.expectEqual(0, total.failed);
 }

@@ -2,8 +2,11 @@
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
-const Parser = @import("Parser.zig");
-const leaf = @import("leaf.zig");
+const build_options = @import("build_options");
+const Parser = switch (build_options.parser) {
+    .windows => @import("Parser.zig"),
+    .stack => @import("Block.zig"),
+};
 const document = @import("document.zig");
 const html = @import("html.zig");
 const ast = @import("ast.zig");
@@ -32,7 +35,6 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     defer doc_arena.deinit();
     const da = doc_arena.allocator();
 
-    const index = try Parser.indexLines(da, input);
     var defs = document.Definitions{ .a = da };
     var ids = document.Ids{ .a = da, .defs = &defs };
     var out = Output{
@@ -48,11 +50,10 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     defer out.deinit();
     try out.root();
 
-    var parser = Parser.initIndexed(try out.blockAllocator(), input, index, &defs);
+    var parser = try Parser.init(da, input, &defs);
     parser.track_pos = opts.sourcepos;
     var last_end: ?SourcePos = null;
     var last_is_div = false;
-    var after_last: usize = 0;
     while (true) {
         // Each block is parsed into the arena `Output` hands out and then owns.
         parser.a = try out.blockAllocator();
@@ -60,14 +61,13 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
         try out.block(try ids.assign(parser.a, block));
         last_end = block.end_pos;
         last_is_div = block.tag == .div;
-        after_last = parser.pos;
     }
     try ids.assignFootnotes();
     // Where djot.js ends the sections still open at the end: at its last block event,
     // which is the last top-level block's end, except that a div's closing fence and
     // whatever follows the last block (blank lines, definitions, attributes) emit events
     // to the input's end.
-    const sections_end = if (last_end == null or last_is_div or index.lines.len > after_last) parser.doc_end else last_end;
+    const sections_end = if (last_end == null or last_is_div or parser.trailing()) parser.endPos() else last_end;
     try out.finish(sections_end);
 }
 
@@ -314,12 +314,11 @@ test "a block is written as it arrives unless a reference-style link holds it" {
     defer written.deinit();
 
     const input = "one\n\ntwo [x][r]\n\nthree\n\n[r]: /u\n";
-    const index = try Parser.indexLines(da, input);
     var defs = document.Definitions{ .a = da };
     var ids = document.Ids{ .a = da, .defs = &defs };
     var out = Output{ .a = a, .w = &written.writer, .mode = .html, .hold_sections = false, .resolver = .{ .defs = &defs, .ids = &ids }, .footnotes = .{ .a = da }, .scratch = std.heap.ArenaAllocator.init(a) };
     defer out.deinit();
-    var parser = Parser.initIndexed(try out.blockAllocator(), input, index, &defs);
+    var parser = try Parser.init(da, input, &defs);
 
     const expect = [_][]const u8{
         "<p>one</p>\n", // written at once
@@ -339,6 +338,7 @@ test "a block is written as it arrives unless a reference-style link holds it" {
 test {
     _ = @import("test_runner.zig");
     _ = @import("Lines.zig");
+    _ = @import("Parser.zig");
     _ = Parser;
     _ = document;
 }

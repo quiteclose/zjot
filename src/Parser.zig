@@ -46,6 +46,8 @@ blank_before: bool = false,
 fence_closed: bool = false,
 /// Where the document ends (`inputEnd`).
 doc_end: SourcePos = .{ .line = 1, .col = 1, .offset = 0 },
+/// The root parser's position after the last block `nextBlock` returned (`trailing`).
+after_block: usize = 0,
 /// The parser whose container this one parses the content of, suspended at the line that
 /// stopped the container; null in the root. A block that ends with this parser's window
 /// ends where djot.js closes it, which depends on the lines after the window as the
@@ -93,6 +95,17 @@ pub fn inputEnd(index: LineIndex, input: []const u8) SourcePos {
 
 pub fn init(a: Allocator, input: []const u8, defs: *Definitions) !Parser {
     return initIndexed(a, input, try indexLines(a, input), defs);
+}
+
+/// Where the input ended.
+pub fn endPos(self: *const Parser) SourcePos {
+    return self.doc_end;
+}
+
+/// Whether lines followed the last block (blank lines, definitions, attributes), which
+/// carry djot.js's events to the input's end.
+pub fn trailing(self: *const Parser) bool {
+    return self.pos > self.after_block;
 }
 
 /// A parser over the whole document, whose index was built elsewhere so it can outlive
@@ -244,6 +257,7 @@ pub fn nextBlock(self: *Parser) Error!?Node {
 
         if (pending_attrs) |ba| node = try inline_mod.applyBlockAttrsToNode(self.a, node, ba);
         if (after_fence) self.blank_before = true;
+        self.after_block = self.pos;
         return node;
     }
 

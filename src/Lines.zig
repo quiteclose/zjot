@@ -9,7 +9,9 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SourcePos = @import("node.zig").SourcePos;
 
-pub const Line = struct { bytes: []const u8, pos: SourcePos };
+/// `eol`: the line's newline, as col 0 of the line after it (djot.js's position for a
+/// newline), or the input's end when the line has none.
+pub const Line = struct { bytes: []const u8, pos: SourcePos, eol: SourcePos };
 
 pub const Lines = union(enum) {
     slice: Slice,
@@ -42,7 +44,7 @@ pub const Lines = union(enum) {
             self.offset += @intCast(raw.len + @intFromBool(newline));
             self.last_len = @intCast(bytes.len);
             self.newline = newline;
-            return .{ .bytes = bytes, .pos = pos };
+            return .{ .bytes = bytes, .pos = pos, .eol = self.end() };
         }
 
         fn end(self: Count) SourcePos {
@@ -125,7 +127,7 @@ const Taken = struct { lines: []const Line, end: SourcePos };
 
 fn takeAll(a: Allocator, lines: *Lines) !Taken {
     var list: std.ArrayList(Line) = .empty;
-    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos });
+    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol });
     return .{ .lines = try list.toOwnedSlice(a), .end = lines.end() };
 }
 
@@ -143,6 +145,7 @@ fn expectSame(expected: Taken, actual: Taken) !void {
     for (expected.lines, actual.lines) |e, l| {
         try std.testing.expectEqualStrings(e.bytes, l.bytes);
         try std.testing.expectEqual(e.pos, l.pos);
+        try std.testing.expectEqual(e.eol, l.eol);
     }
     try std.testing.expectEqual(expected.end, actual.end);
 }
@@ -172,6 +175,13 @@ test "lines, positions and the end: CRLF, no final newline, empty input, both ba
             try std.testing.expectEqual(SourcePos{ .line = @intCast(n), .col = 1, .offset = offset }, line.pos);
         }
         try std.testing.expectEqual(c.end, from_slice.end);
+        // A line's eol is col 0 of the next line, and the last line's is the input's end.
+        for (from_slice.lines, 0..) |line, i| {
+            if (i + 1 < from_slice.lines.len) {
+                const next = from_slice.lines[i + 1];
+                try std.testing.expectEqual(SourcePos{ .line = next.pos.line, .col = 0, .offset = next.pos.offset - 1 }, line.eol);
+            } else try std.testing.expectEqual(c.end, line.eol);
+        }
         try expectSame(from_slice, try takeAllBuffered(a, c.input, &buffer));
     }
 }
