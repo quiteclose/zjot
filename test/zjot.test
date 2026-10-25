@@ -5900,7 +5900,7 @@ x[^n]{.a}
 ````
 
 
-Inline ids: pass one sees them wherever they sit, as djot.js.
+Inline ids claim their id wherever they sit, as djot.js.
 
 An inline id claims its id before a later heading.
 ````

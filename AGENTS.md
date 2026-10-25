@@ -54,7 +54,7 @@ test/
 
 ### Key design decisions
 
-1. **Definitions by pointer, with their own allocator** -- Child parsers (for list items, blockquotes, etc.) receive a `*Definitions` pointer instead of copying hash maps in and out, so a definition inside a container is visible to the parent. Everything stored there is duped into `Definitions.a`, so definitions outlive the block that produced them whatever allocator the blocks use.
+1. **Definitions for the document, blocks for themselves** -- A footnote or reference definition is recorded into `Definitions` the moment its container closes, wherever it sits, and everything kept there (a footnote's content included, which the parser allocates from `Definitions.a` while the footnote is open) outlives the block it came in. Every other node lives in its block's arena, which the parser hands over with the block and takes back once the block is written, so a document's memory is its definitions, its ids and whatever waits to be written.
 
 2. **The inline parser records spans; the block parser supplies the map** -- When content lines are joined for inline parsing, `Parser.leafLineMap` creates a `LineMap` from the lines' original positions and hands it to `parseInlineContent`. The `Scanner` makes every node through `emit` (a span of the joined text, both ends inclusive, as djot.js reports inline positions) or `text` (a slice of it), resolving the span through the map as the node is made, so no node is positioned after the fact and none is missed. Text contiguous in the source is one `str`, as djot.js; an open bracket stays its own item because its opener's index points at it.
 
