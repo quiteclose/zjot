@@ -5878,3 +5878,64 @@ x[^n]{.a}
 </ol>
 </section>
 ````
+
+
+Inline ids: pass one sees them wherever they sit, as djot.js.
+
+An inline id claims its id before a later heading.
+````
+[x]{#Foo}
+
+# Foo
+
+[Foo][]
+.
+<p><span id="Foo">x</span></p>
+<section id="Foo-1">
+<h1>Foo</h1>
+<p><a href="#Foo-1">Foo</a></p>
+</section>
+````
+
+An inline id in a table cell claims its id before a later heading.
+````
+| [x]{#Foo} |
+|---|
+
+# Foo
+.
+<table>
+<tr>
+<th><span id="Foo">x</span></th>
+</tr>
+</table>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+Inline ids inside a list item and a block quote claim their ids before later headings.
+````
+- [x]{#Foo}
+
+# Foo
+
+> [y]{#Bar}
+
+# Bar
+.
+<ul>
+<li>
+<span id="Foo">x</span>
+</li>
+</ul>
+<section id="Foo-1">
+<h1>Foo</h1>
+<blockquote>
+<p><span id="Bar">y</span></p>
+</blockquote>
+</section>
+<section id="Bar-1">
+<h1>Bar</h1>
+</section>
+````
