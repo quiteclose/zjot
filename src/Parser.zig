@@ -51,8 +51,8 @@ lines: []const []const u8 = &.{},
 start: []const u32 = &.{},
 pos: usize = 0,
 defs: *Definitions,
-end_marker: ?[]const u8 = null,
-/// The line of the closing fence that ended the last `nextBlock` call, when one did.
+/// While a child parses a div's content: the line of the div's closing fence, where this
+/// parser stands (`tryFencedDiv`); the child's blocks end past it or on it.
 closing_fence: ?usize = null,
 track_pos: bool = false,
 /// Pass one: parse only the inlines the survey reads. Heading text makes ids and implicit
@@ -200,24 +200,16 @@ fn enclosingEnd(self: *const Parser) SourcePos {
 }
 
 fn parseBlocks(self: *Parser) anyerror![]const Node {
-    return self.parseBlocksUntil(null);
-}
-
-fn parseBlocksUntil(self: *Parser, end_marker: ?[]const u8) anyerror![]const Node {
-    const prev_marker = self.end_marker;
-    self.end_marker = end_marker;
-    defer self.end_marker = prev_marker;
     var children: std.ArrayList(Node) = .empty;
     while (try self.nextBlock()) |n| try children.append(self.a, n);
     return children.toOwnedSlice(self.a);
 }
 
-/// The next block, or null at the end of the input or at the closing fence of the
-/// enclosing div. Definitions are recorded in `defs` as they are met and never
-/// returned, so a caller may drop each block before asking for the next.
+/// The next block, or null at the end of the window. Definitions are recorded in `defs`
+/// as they are met and never returned, so a caller may drop each block before asking for
+/// the next.
 pub fn nextBlock(self: *Parser) anyerror!?Node {
     var pending_attrs: ?BlockAttrs = null;
-    self.closing_fence = null;
 
     while (self.pos < self.lines.len) {
         const line = self.lines[self.pos];
@@ -226,12 +218,6 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
             self.pos += 1;
             pending_attrs = null;
             continue;
-        }
-
-        if (self.isClosingFence(line)) {
-            self.closing_fence = self.pos;
-            self.pos += 1;
-            return null;
         }
 
         if (try self.tryBlockAttr()) |ba| {
@@ -317,11 +303,6 @@ fn blockAttrAt(self: *Parser, pos: usize) !?struct { attrs: BlockAttrs, lines: u
     return null;
 }
 
-fn isClosingFence(self: *const Parser, line: []const u8) bool {
-    const marker = self.end_marker orelse return false;
-    return countLeadingChar(line, ':') >= marker.len and isBlank(std.mem.trimStart(u8, line, ":"));
-}
-
 /// `literal_first_line`: the first line was a failed block attribute; no inline attribute
 /// is read from it.
 fn parseParagraph(self: *Parser, literal_first_line: bool) !Node {
@@ -330,7 +311,6 @@ fn parseParagraph(self: *Parser, literal_first_line: bool) !Node {
     while (self.pos < self.lines.len) {
         const line = self.lines[self.pos];
         if (isBlank(line)) break;
-        if (self.isClosingFence(line)) break;
         try text_lines.append(self.a, std.mem.trimStart(u8, line, " \t"));
         self.pos += 1;
     }
@@ -533,9 +513,7 @@ fn tryBlockQuote(self: *Parser) !?Node {
             try w.addSlice(self, self.pos, l.len - inner.len, inner);
             try paragraph.feed(self.a, inner);
             self.pos += 1;
-        } else if (!isBlank(l) and paragraph.open and !self.isClosingFence(l) and
-            !try self.isBlockStartAt(self.pos))
-        {
+        } else if (!isBlank(l) and paragraph.open and !try self.isBlockStartAt(self.pos)) {
             try w.add(self, self.pos, 0);
             try paragraph.feed(self.a, l);
             self.pos += 1;
@@ -558,15 +536,45 @@ fn tryFencedDiv(self: *Parser) !?Node {
     const line = self.lines[self.pos];
     const div_info = isFencedDivStart(line) orelse return null;
     const open_line = self.pos;
-    self.pos += 1;
-    const blocks = try self.parseBlocksUntil(div_info.fence);
+    const close = try self.divClose(open_line, div_info.fence);
+    var w = Window{ .first = open_line + 1 };
+    for (open_line + 1..close orelse self.lines.len) |i| try w.add(self, i, 0);
+    // The child's blocks end at the fence; this parser stands on it meanwhile.
+    self.pos = close orelse self.lines.len;
+    self.closing_fence = close;
+    var inner_parser = self.child(self.a, w, self.survey_only);
+    const blocks = try inner_parser.parseBlocks();
+    self.closing_fence = null;
     var node = Node{ .tag = .div, .children = blocks };
     if (div_info.class) |cls| node.classes = cls;
     if (self.track_pos) {
         node.start_pos = self.makePos(open_line, self.contentCol(open_line));
-        node.end_pos = if (self.closing_fence) |l| self.fenceEnd(l) else self.makePos(self.pos, 0);
+        // Closed, a div ends on its fence; unclosed, where the enclosing container does.
+        node.end_pos = if (close) |l| self.fenceEnd(l) else self.containerEnd();
     }
+    if (close != null) self.pos += 1;
     return node;
+}
+
+/// The closing fence of the div opened with `fence` on `open_line`, or null when the div
+/// runs to the end of the window: as djot.js, the first line after it of at least as many
+/// colons and nothing else, indented or not, that no code block holds (an open paragraph
+/// makes a code fence text, so the paragraph tracker decides what a code block holds).
+/// Nested divs do not count: the first fitting fence closes the outermost div.
+fn divClose(self: *Parser, open_line: usize, fence: []const u8) !?usize {
+    var paragraph = OpenParagraph{};
+    var i = open_line + 1;
+    while (i < self.lines.len) : (i += 1) {
+        const line = self.lines[i];
+        if (paragraph.fence == null and closesDiv(line, fence)) return i;
+        try paragraph.feed(self.a, line);
+    }
+    return null;
+}
+
+fn closesDiv(line: []const u8, fence: []const u8) bool {
+    const trimmed = std.mem.trimStart(u8, line, " ");
+    return countLeadingChar(trimmed, ':') >= fence.len and isBlank(std.mem.trimStart(u8, trimmed, ":"));
 }
 
 /// `rest_col` is the number of bytes before `rest` on its line.
@@ -788,7 +796,7 @@ fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
 fn containerEnd(self: *const Parser) SourcePos {
     if (self.pos >= self.lines.len) return self.enclosingEnd();
     const line = self.lines[self.pos];
-    if (isBlank(line) or self.isClosingFence(line)) return self.makePos(self.pos + 1, 0);
+    if (isBlank(line) or self.closing_fence == self.pos) return self.makePos(self.pos + 1, 0);
     return self.makePos(self.pos, @intCast(countIndent(line) + 1));
 }
 
@@ -807,7 +815,7 @@ fn definitionEnd(self: *const Parser) SourcePos {
 fn stopBefore(self: *const Parser) SourcePos {
     if (self.pos >= self.lines.len) return if (self.enclosing) |p| p.stopBefore() else self.doc_end;
     const line = self.lines[self.pos];
-    if (self.isClosingFence(line)) return self.fenceEnd(self.pos);
+    if (self.closing_fence == self.pos) return self.fenceEnd(self.pos);
     if (isBlank(line)) return self.makePos(self.pos, 0);
     const stop = self.containerEnd();
     return .{ .line = stop.line, .col = stop.col - 1, .offset = stop.offset - 1 };
