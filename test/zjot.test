@@ -40,8 +40,6 @@ converter renders it, so no `ap` case can pin it:
    nodes where djot.js prints `smart_punctuation`.
 7. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
 8. Reference links print the resolved `destination`; djot.js prints the `reference` only.
-   Footnote references print the number and `fnref` id, not the label, and the endnotes
-   follow as a `footnote` block.
 9. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
    rendered by the converter.
 10. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `); zjot
@@ -49,6 +47,13 @@ converter renders it, so no `ap` case can pin it:
 11. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
+
+Footnotes in the AST text form: a reference prints its label, and every footnote
+definition follows the document as a `footnote` block with its `label` and span, in
+definition order. djot.js's own `-t ast` prints no footnotes; the converter renders its
+JSON `footnotes` map the same way, in that map's key order, which in JavaScript puts
+integer-like labels such as `1` first whatever the definition order (so `ap` cases use
+labels that are not numbers).
 
 
 Heading ids: generated ids follow document order wherever the heading sits.
@@ -5937,5 +5942,131 @@ Inline ids inside a list item and a block quote claim their ids before later hea
 </section>
 <section id="Bar-1">
 <h1>Bar</h1>
+</section>
+````
+
+
+Footnotes: references by label, definitions after the document, endnotes numbered by first use.
+
+A footnote referencing another footnote; each definition ends where the next block starts.
+```` ap
+a[^x]
+
+[^x]: see[^y]
+
+[^y]: y
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:1:0) text="a"
+    footnote_reference (1:2:1-1:5:4) text="x"
+  footnote (3:1:7-5:1:22) label="x"
+    para (3:7:13-4:0:20)
+      str (3:7:13-3:9:15) text="see"
+      footnote_reference (3:10:16-3:13:19) text="y"
+  footnote (5:1:22-6:0:29) label="y"
+    para (5:7:28-6:0:29)
+      str (5:7:28-5:7:28) text="y"
+````
+
+A reference to no definition, and a definition nothing references; two paragraphs after a blank.
+```` ap
+test[^nonexistent]
+
+[^unused]: note
+
+  more
+.
+doc
+  para (1:1:0-2:0:18)
+    str (1:1:0-1:4:3) text="test"
+    footnote_reference (1:5:4-1:18:17) text="nonexistent"
+  footnote (3:1:20-6:0:43) label="unused"
+    para (3:12:31-4:0:35)
+      str (3:12:31-3:15:34) text="note"
+    para (5:3:39-6:0:43)
+      str (5:3:39-5:6:42) text="more"
+````
+
+A definition with a lazy line, a sublist, a block quote and a second definition.
+```` ap
+See[^a] and[^b].
+
+[^a]: First para
+  lazy line
+
+  - item one
+  - item two
+
+  > quoted
+
+[^b]: Short
+.
+doc
+  para (1:1:0-2:0:16)
+    str (1:1:0-1:3:2) text="See"
+    footnote_reference (1:4:3-1:7:6) text="a"
+    str (1:8:7-1:11:10) text=" and"
+    footnote_reference (1:12:11-1:15:14) text="b"
+    str (1:16:15-1:16:15) text="."
+  footnote (3:1:18-11:1:87) label="a"
+    para (3:7:24-5:0:46)
+      str (3:7:24-3:16:33) text="First para"
+      soft_break (4:0:34-4:0:34)
+      str (4:3:37-4:11:45) text="lazy line"
+    bullet_list (6:3:50-9:3:77) tight=true style="-"
+      list_item (6:3:50-7:2:62)
+        para (6:5:52-7:0:60)
+          str (6:5:52-6:12:59) text="item one"
+      list_item (7:3:63-9:2:76)
+        para (7:5:65-8:0:73)
+          str (7:5:65-7:12:72) text="item two"
+    block_quote (9:3:77-11:0:86)
+      para (9:5:79-10:0:85)
+        str (9:5:79-9:10:84) text="quoted"
+  footnote (11:1:87-12:0:98) label="b"
+    para (11:7:93-12:0:98)
+      str (11:7:93-11:11:97) text="Short"
+````
+
+A definition inside a block quote ends with the quote.
+```` ap
+> a[^x]
+>
+> [^x]: in quote
+
+para
+.
+doc
+  block_quote (1:1:0-5:0:27)
+    para (1:3:2-2:0:7)
+      str (1:3:2-1:3:2) text="a"
+      footnote_reference (1:4:3-1:7:6) text="x"
+  para (5:1:28-6:0:32)
+    str (5:1:28-5:4:31) text="para"
+  footnote (3:3:12-5:0:27) label="x"
+    para (3:9:18-4:0:26)
+      str (3:9:18-3:16:25) text="in quote"
+````
+
+A footnote referenced only from another footnote is numbered when that endnote is written.
+````
+a[^x]
+
+[^x]: see[^y]
+
+[^y]: y
+.
+<p>a<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>see<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>y<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
 </section>
 ````

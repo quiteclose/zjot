@@ -11,6 +11,7 @@ def render(n, indent, root):
         if t=='symb':
             if n.get('alias'): out += ' alias='+jstr(n['alias'])
         elif n.get('text'): out += ' text='+jstr(n['text'])
+    elif t=='footnote': out += ' label='+jstr(n['label'])
     elif t=='heading': out += f" level={n['level']}"
     elif t=='bullet_list':
         out += ' tight=true' if n.get('tight') else ' tight=false'
@@ -38,7 +39,11 @@ def render(n, indent, root):
 def convert(djot_input, sourcepos):
     args=['npx','-y','@djot/djot@0.3.2','-t','ast']+(['-p'] if sourcepos else [])
     r=subprocess.run(args,input=djot_input.encode(),capture_output=True)
-    return render(json.loads(r.stdout), 0, True)+'\n'
+    doc=json.loads(r.stdout)
+    # zjot prints every footnote definition after the document; djot.js keeps them in a map
+    # (JavaScript lists integer-like labels such as "1" first, whatever the definition order).
+    out=[render(doc, 0, True)]+[render(f, 2, False) for f in doc.get('footnotes',{}).values()]
+    return '\n'.join(out)+'\n'
 if __name__=='__main__':
     sourcepos = '-p' in sys.argv[1:]
     sys.stdout.write(convert(sys.stdin.read(), sourcepos))

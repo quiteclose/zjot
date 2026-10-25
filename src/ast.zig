@@ -13,7 +13,8 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
 
     if (node.start_pos) |sp| {
         if (node.end_pos) |ep| {
-            try out.appendSlice(a, try std.fmt.allocPrint(a,
+            try out.appendSlice(a, try std.fmt.allocPrint(
+                a,
                 " ({d}:{d}:{d}-{d}:{d}:{d})",
                 .{ sp.line, sp.col, sp.offset, ep.line, ep.col, ep.offset },
             ));
@@ -34,6 +35,10 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         },
         .heading => {
             try out.appendSlice(a, try std.fmt.allocPrint(a, " level={d}", .{node.level}));
+        },
+        .footnote => {
+            try out.appendSlice(a, " label=");
+            try appendJsonStr(a, out, node.text);
         },
         .bullet_list => {
             try out.appendSlice(a, if (node.tight) " tight=true" else " tight=false");
