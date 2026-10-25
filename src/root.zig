@@ -35,10 +35,11 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     const index = try Parser.indexLines(da, input);
     var defs = Parser.Definitions{ .a = da };
     var survey = document.Survey{ .a = da };
-    // Where djot.js ends every section: at its last block event, which is the last
-    // top-level block's end, except that trailing blank lines and a div's closing fence
-    // emit events to the input's end. Pass one tracks positions to find it, and so that
-    // footnote content, stored then, carries them.
+    // Where djot.js ends the sections still open at the end: at its last block event,
+    // which is the last top-level block's end, except that trailing blank lines and a
+    // div's closing fence emit events to the input's end. Pass one tracks positions to
+    // find it (and the closing heading of every other section), and so that footnote
+    // content, stored then, carries them.
     var sections_end: ?SourcePos = null;
     {
         var parser = Parser.initIndexed(ba, input, index, &defs);
@@ -56,13 +57,14 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
         try survey.visitFootnotes(&defs);
         const last_line_blank = index.lines.len > 0 and Parser.isBlank(index.lines[index.lines.len - 1]);
         if (opts.sourcepos and (sections_end == null or last_is_div or last_line_blank)) sections_end = parser.doc_end;
+        survey.endOpenSections(sections_end);
     }
     defs.sealed = true;
 
     var resolver = document.Resolver{ .defs = &defs, .survey = &survey };
     var parser = Parser.initIndexed(ba, input, index, &defs);
     parser.track_pos = opts.sourcepos;
-    var sections = document.Sections{ .doc_end = sections_end };
+    var sections = document.Sections{ .ends = survey.section_ends.items };
     var out = Emitter{ .w = w, .mode = opts.mode, .footnotes = .{ .a = da } };
     try out.root(ba);
     while (try parser.nextBlock()) |block| {

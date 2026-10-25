@@ -28,13 +28,13 @@ pub const Renderer = struct {
     out: *std.ArrayList(u8),
     footnotes: *Footnotes,
 
-    pub fn render(self: *Renderer, n: Node) anyerror!void {
+    pub fn render(self: *Renderer, n: Node) Allocator.Error!void {
         try self.renderBlock(n, false);
     }
 
     /// Endnote `n` from a footnote's resolved blocks, as djot.js: the backlink ends the
     /// last paragraph or gets one of its own.
-    pub fn renderEndnote(self: *Renderer, n: usize, blocks: []const Node) anyerror!void {
+    pub fn renderEndnote(self: *Renderer, n: usize, blocks: []const Node) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
         try out.appendSlice(a, try std.fmt.allocPrint(a, "<li id=\"fn{d}\">\n", .{n}));
@@ -52,7 +52,7 @@ pub const Renderer = struct {
     }
 
     /// A paragraph, with `trailer` inside it after its content; without `<p>` when `tight`.
-    fn renderParagraph(self: *Renderer, n: Node, tight: bool, trailer: []const u8) anyerror!void {
+    fn renderParagraph(self: *Renderer, n: Node, tight: bool, trailer: []const u8) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
         if (tight) {
@@ -72,7 +72,7 @@ pub const Renderer = struct {
     /// `tight` is set inside a tight list item, where paragraphs render without `<p>`. As
     /// in djot.js it reaches through block quotes, divs and definition lists; a nested list
     /// sets its own.
-    fn renderBlock(self: *Renderer, node: Node, tight: bool) anyerror!void {
+    fn renderBlock(self: *Renderer, node: Node, tight: bool) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
         switch (node.tag) {
@@ -165,7 +165,9 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</ul>\n");
             },
             .definition_list => {
-                try out.appendSlice(a, "<dl>\n");
+                try out.appendSlice(a, "<dl");
+                try renderAttrs(a, out, node);
+                try out.appendSlice(a, ">\n");
                 for (node.children) |child| try self.renderBlock(child, tight);
                 try out.appendSlice(a, "</dl>\n");
             },
@@ -183,7 +185,9 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</dd>\n");
             },
             .table => {
-                try out.appendSlice(a, "<table>\n");
+                try out.appendSlice(a, "<table");
+                try renderAttrs(a, out, node);
+                try out.appendSlice(a, ">\n");
                 for (node.children) |child| try self.render(child);
                 try out.appendSlice(a, "</table>\n");
             },
@@ -381,7 +385,7 @@ pub const Renderer = struct {
 
     /// The string content of an image's children, as djot.js: every leaf's text (a
     /// footnote reference's label included), a break as a space, a symbol as nothing.
-    fn collectAltText(a: Allocator, out: *std.ArrayList(u8), children: []const Node) anyerror!void {
+    fn collectAltText(a: Allocator, out: *std.ArrayList(u8), children: []const Node) Allocator.Error!void {
         for (children) |child| switch (child.tag) {
             .soft_break, .hard_break => try out.append(a, ' '),
             .symb => {},
@@ -393,7 +397,7 @@ pub const Renderer = struct {
         };
     }
 
-    fn renderListItem(self: *Renderer, item: Node, tight: bool) anyerror!void {
+    fn renderListItem(self: *Renderer, item: Node, tight: bool) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
         if (item.tag == .task_list_item) {

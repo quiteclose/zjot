@@ -88,10 +88,10 @@ pub const AttrParser = struct {
         };
     }
 
-    pub fn feed(self: *AttrParser, startpos: usize, endpos: usize) struct { status: AttrParseStatus, position: usize } {
+    pub fn feed(self: *AttrParser, startpos: usize, endpos: usize) !struct { status: AttrParseStatus, position: usize } {
         var pos = startpos;
         while (pos <= endpos and pos < self.src.len) {
-            self.state = self.step(pos);
+            self.state = try self.step(pos);
             if (self.state == .done) return .{ .status = .done, .position = pos };
             if (self.state == .fail) return .{ .status = .fail, .position = pos };
             self.lastpos = pos;
@@ -100,25 +100,25 @@ pub const AttrParser = struct {
         return .{ .status = .@"continue", .position = if (endpos < self.src.len) endpos else self.src.len -| 1 };
     }
 
-    fn step(self: *AttrParser, pos: usize) AttrState {
+    fn step(self: *AttrParser, pos: usize) !AttrState {
         const c = self.src[pos];
         return switch (self.state) {
             .start => if (c == '{') .scanning else .fail,
-            .scanning => self.stepScanning(c, pos),
-            .scanning_id => self.stepScanningId(c, pos),
-            .scanning_class => self.stepScanningClass(c, pos),
-            .scanning_key => self.stepScanningKey(c, pos),
-            .scanning_value => self.stepScanningValue(c, pos),
-            .scanning_bare_value => self.stepScanningBareValue(c, pos),
-            .scanning_quoted_value => self.stepScanningQuotedValue(c, pos),
+            .scanning => try self.stepScanning(c, pos),
+            .scanning_id => try self.stepScanningId(c, pos),
+            .scanning_class => try self.stepScanningClass(c, pos),
+            .scanning_key => try self.stepScanningKey(c, pos),
+            .scanning_value => try self.stepScanningValue(c, pos),
+            .scanning_bare_value => try self.stepScanningBareValue(c, pos),
+            .scanning_quoted_value => try self.stepScanningQuotedValue(c, pos),
             .scanning_escaped => .scanning_quoted_value,
-            .scanning_comment => self.stepScanningComment(c),
+            .scanning_comment => try self.stepScanningComment(c),
             .done => .done,
             .fail => .fail,
         };
     }
 
-    fn stepScanning(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanning(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (c == '\n' or c == '\r' or c == ' ' or c == '\t') return .scanning;
         if (c == '}') return .done;
         if (c == '#') {
@@ -140,33 +140,33 @@ pub const AttrParser = struct {
         return .fail;
     }
 
-    fn stepScanningId(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningId(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (isIdChar(c)) return .scanning_id;
         if (c == '}') {
-            self.emitId(pos);
+            try self.emitId(pos);
             return .done;
         }
         if (isAttrWhitespace(c)) {
-            self.emitId(pos);
+            try self.emitId(pos);
             return .scanning;
         }
         return .fail;
     }
 
-    fn stepScanningClass(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningClass(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (isName(c)) return .scanning_class;
         if (c == '}') {
-            self.emitClass(pos);
+            try self.emitClass(pos);
             return .done;
         }
         if (isAttrWhitespace(c)) {
-            self.emitClass(pos);
+            try self.emitClass(pos);
             return .scanning;
         }
         return .fail;
     }
 
-    fn stepScanningKey(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningKey(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (c == '=' and self.begin != null) {
             self.current_key = self.src[self.begin.?..pos];
             self.begin = null;
@@ -176,7 +176,7 @@ pub const AttrParser = struct {
         return .fail;
     }
 
-    fn stepScanningValue(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningValue(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (c == '"') {
             self.begin = pos;
             self.value_buf.items.len = 0;
@@ -189,29 +189,29 @@ pub const AttrParser = struct {
         return .fail;
     }
 
-    fn stepScanningBareValue(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningBareValue(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (isName(c)) return .scanning_bare_value;
         if (c == '}') {
-            self.emitBareValue(pos);
+            try self.emitBareValue(pos);
             return .done;
         }
         if (isAttrWhitespace(c)) {
-            self.emitBareValue(pos);
+            try self.emitBareValue(pos);
             return .scanning;
         }
         return .fail;
     }
 
-    fn stepScanningQuotedValue(self: *AttrParser, c: u8, pos: usize) AttrState {
+    fn stepScanningQuotedValue(self: *AttrParser, c: u8, pos: usize) !AttrState {
         if (c == '"') {
-            self.emitQuotedValue(pos);
+            try self.emitQuotedValue(pos);
             return .scanning;
         }
         if (c == '\\') return .scanning_escaped;
         if (c == '\n') {
             if (self.begin) |b| {
-                self.value_buf.appendSlice(self.a, self.src[b + 1 .. pos]) catch {};
-                self.value_buf.appendSlice(self.a, " ") catch {};
+                try self.value_buf.appendSlice(self.a, self.src[b + 1 .. pos]);
+                try self.value_buf.appendSlice(self.a, " ");
                 self.begin = pos;
             }
             return .scanning_quoted_value;
@@ -219,7 +219,7 @@ pub const AttrParser = struct {
         return .scanning_quoted_value;
     }
 
-    fn stepScanningComment(self: *AttrParser, c: u8) AttrState {
+    fn stepScanningComment(self: *AttrParser, c: u8) !AttrState {
         _ = self;
         if (c == '%') return .scanning;
         if (c == '}') return .done;
@@ -228,7 +228,7 @@ pub const AttrParser = struct {
 
     /// The id is also an `id` attribute, so renderers write it where it was written; a
     /// second `#id` keeps the first's place with the last value, as djot.js's object does.
-    fn emitId(self: *AttrParser, pos: usize) void {
+    fn emitId(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
             if (lp >= b) {
@@ -238,69 +238,69 @@ pub const AttrParser = struct {
                         attr.value = self.result.id.?;
                         break;
                     }
-                } else self.attrs_list.append(self.a, .{ .key = "id", .value = self.result.id.? }) catch {};
+                } else try self.attrs_list.append(self.a, .{ .key = "id", .value = self.result.id.? });
             }
             self.begin = null;
         }
     }
 
-    fn emitClass(self: *AttrParser, pos: usize) void {
+    fn emitClass(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const cls = self.src[b + 1 .. pos];
-            self.attrs_list.append(self.a, .{ .key = "class", .value = cls }) catch {};
+            try self.attrs_list.append(self.a, .{ .key = "class", .value = cls });
             self.begin = null;
         }
     }
 
-    fn emitBareValue(self: *AttrParser, pos: usize) void {
+    fn emitBareValue(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const value = self.src[b..pos];
             if (self.current_key) |key| {
-                self.attrs_list.append(self.a, .{ .key = key, .value = value }) catch {};
+                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
                 self.current_key = null;
             }
             self.begin = null;
         }
     }
 
-    fn emitQuotedValue(self: *AttrParser, pos: usize) void {
+    fn emitQuotedValue(self: *AttrParser, pos: usize) !void {
         if (self.value_buf.items.len > 0) {
             if (self.begin) |b| {
-                self.value_buf.appendSlice(self.a, self.src[b + 1 .. pos]) catch {};
+                try self.value_buf.appendSlice(self.a, self.src[b + 1 .. pos]);
             }
             if (self.current_key) |key| {
-                const raw = self.value_buf.toOwnedSlice(self.a) catch &.{};
-                const value = self.processEscapes(raw);
-                self.attrs_list.append(self.a, .{ .key = key, .value = value }) catch {};
+                const raw = try self.value_buf.toOwnedSlice(self.a);
+                const value = try self.processEscapes(raw);
+                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
                 self.current_key = null;
             }
         } else if (self.begin) |b| {
-            const value = self.processEscapes(self.src[b + 1 .. pos]);
+            const value = try self.processEscapes(self.src[b + 1 .. pos]);
             if (self.current_key) |key| {
-                self.attrs_list.append(self.a, .{ .key = key, .value = value }) catch {};
+                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
                 self.current_key = null;
             }
         }
         self.begin = null;
     }
 
-    fn processEscapes(self: *AttrParser, raw: []const u8) []const u8 {
+    fn processEscapes(self: *AttrParser, raw: []const u8) ![]const u8 {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
         var buf: std.ArrayList(u8) = .empty;
         var i: usize = 0;
         while (i < raw.len) {
             if (raw[i] == '\\' and i + 1 < raw.len) {
-                buf.append(self.a, raw[i + 1]) catch {};
+                try buf.append(self.a, raw[i + 1]);
                 i += 2;
             } else {
-                buf.append(self.a, raw[i]) catch {};
+                try buf.append(self.a, raw[i]);
                 i += 1;
             }
         }
-        return buf.toOwnedSlice(self.a) catch raw;
+        return buf.toOwnedSlice(self.a);
     }
 
-    pub fn finish(self: *AttrParser) BlockAttrs {
+    pub fn finish(self: *AttrParser) !BlockAttrs {
         var result = self.result;
         if (self.attrs_list.items.len > 0) {
             var merged: std.ArrayList(Attr) = .empty;
@@ -308,18 +308,18 @@ pub const AttrParser = struct {
             var class_inserted = false;
             for (self.attrs_list.items) |attr| {
                 if (std.mem.eql(u8, attr.key, "class")) {
-                    if (class_buf.items.len > 0) class_buf.append(self.a, ' ') catch {};
-                    class_buf.appendSlice(self.a, attr.value) catch {};
+                    if (class_buf.items.len > 0) try class_buf.append(self.a, ' ');
+                    try class_buf.appendSlice(self.a, attr.value);
                     if (!class_inserted) {
-                        merged.append(self.a, .{ .key = "class", .value = "" }) catch {};
+                        try merged.append(self.a, .{ .key = "class", .value = "" });
                         class_inserted = true;
                     }
                 } else {
-                    merged.append(self.a, attr) catch {};
+                    try merged.append(self.a, attr);
                 }
             }
             if (class_buf.items.len > 0) {
-                const class_val = class_buf.toOwnedSlice(self.a) catch "";
+                const class_val = try class_buf.toOwnedSlice(self.a);
                 for (merged.items) |*m| {
                     if (std.mem.eql(u8, m.key, "class") and m.value.len == 0) {
                         m.value = class_val;
@@ -327,7 +327,7 @@ pub const AttrParser = struct {
                     }
                 }
             }
-            result.attrs = merged.toOwnedSlice(self.a) catch &.{};
+            result.attrs = try merged.toOwnedSlice(self.a);
         }
         return result;
     }
@@ -349,7 +349,7 @@ pub const AttrParser = struct {
     }
 };
 
-pub fn tryParseBlockAttr(a: Allocator, line: []const u8) ?BlockAttrs {
+pub fn tryParseBlockAttr(a: Allocator, line: []const u8) !?BlockAttrs {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 2) return null;
     if (trimmed[0] != '{') return null;
@@ -357,27 +357,27 @@ pub fn tryParseBlockAttr(a: Allocator, line: []const u8) ?BlockAttrs {
     return parseAttrsFromStr(a, trimmed);
 }
 
-pub fn parseAttrsFromStr(a: Allocator, src: []const u8) ?BlockAttrs {
+pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
     if (src.len < 2 or src[0] != '{') return null;
     var parser = AttrParser.init(a, src);
-    const result = parser.feed(0, src.len -| 1);
-    if (result.status == .done) return parser.finish();
+    const result = try parser.feed(0, src.len -| 1);
+    if (result.status == .done) return try parser.finish();
     return null;
 }
 
 /// Whether `line` opens a block attribute it does not close: `{` followed by attribute
 /// syntax that is still incomplete at the end of the line.
-pub fn opensAttr(a: Allocator, line: []const u8) bool {
+pub fn opensAttr(a: Allocator, line: []const u8) !bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 1 or trimmed[0] != '{') return false;
     var parser = AttrParser.init(a, trimmed);
-    return parser.feed(0, trimmed.len -| 1).status == .@"continue";
+    return (try parser.feed(0, trimmed.len -| 1)).status == .@"continue";
 }
 
-pub fn parseInlineAttrs(a: Allocator, src: []const u8, pos: usize) ?struct { attrs: BlockAttrs, end: usize } {
+pub fn parseInlineAttrs(a: Allocator, src: []const u8, pos: usize) !?struct { attrs: BlockAttrs, end: usize } {
     if (pos >= src.len or src[pos] != '{') return null;
     var parser = AttrParser.init(a, src);
-    const result = parser.feed(pos, src.len -| 1);
-    if (result.status == .done) return .{ .attrs = parser.finish(), .end = result.position + 1 };
+    const result = try parser.feed(pos, src.len -| 1);
+    if (result.status == .done) return .{ .attrs = try parser.finish(), .end = result.position + 1 };
     return null;
 }
