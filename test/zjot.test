@@ -7753,3 +7753,77 @@ doc
     para
       str text="note"
 ````
+
+A footnote definition's heading claims its id before a later block's explicit id, as djot.js assigns in source order.
+````
+[^n]: # Foo
+
+[x]{#Foo}[^n]
+.
+<p><span id="Foo">x</span><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition's heading claims its id before a later heading's explicit id, as djot.js.
+````
+[^n]: # Foo
+
+{#Foo}
+# Bar
+
+use[^n]
+.
+<section id="Foo">
+<h1>Bar</h1>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote reference in an image's alt text is plain text, so a block that waits for a reference does not number it, as djot.js.
+````
+![a[^n]][img]
+
+[^n]: note
+
+[img]: /i
+.
+<p><img alt="an" src="/i"></p>
+````
+
+A footnote reference in an image's alt text does not shift the numbering of the visible ones in a block that waits, as djot.js.
+````
+![a[^n]][img] and b[^m]
+
+[^n]: note n
+
+[^m]: note m
+
+[img]: /i
+.
+<p><img alt="an" src="/i"> and b<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note m<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````

@@ -228,7 +228,10 @@ const Output = struct {
         self.waiting -= 1;
     }
 
+    /// Numbers the footnote references the HTML renderer will write, in its order: an
+    /// image's children are its alt text, where a reference is plain text.
     fn numberFootnotes(self: *Output, node: Node) !void {
+        if (node.data == .image) return;
         if (node.data == .footnote_reference) _ = try self.footnotes.number(node.data.footnote_reference);
         for (node.children()) |child| try self.numberFootnotes(child);
     }
