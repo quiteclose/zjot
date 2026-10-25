@@ -111,7 +111,7 @@ pub const Renderer = struct {
             },
             .code_block => |c| {
                 try out.appendSlice(a, "<pre");
-                try renderFilteredAttrs(a, out, node, true);
+                try renderAttrs(a, out, node);
                 try out.appendSlice(a, "><code");
                 if (c.lang) |lang| {
                     try out.appendSlice(a, " class=\"language-");
@@ -158,8 +158,14 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</ol>\n");
             },
             .task_list => |l| {
-                try out.appendSlice(a, "<ul class=\"task-list\"");
-                try renderAttrs(a, out, node);
+                // The node's class joins the intrinsic one; its other attributes follow, as djot.js.
+                try out.appendSlice(a, "<ul class=\"task-list");
+                if (nodeClass(node)) |cls| {
+                    try out.append(a, ' ');
+                    try appendAttrEscaped(a, out, cls);
+                }
+                try out.appendSlice(a, "\"");
+                try renderFilteredAttrs(a, out, node, true);
                 try out.appendSlice(a, ">\n");
                 for (l.children) |child| try self.renderListItem(child, l.tight);
                 try out.appendSlice(a, "</ul>\n");
