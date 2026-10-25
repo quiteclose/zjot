@@ -49,7 +49,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 
     var resolver = document.Resolver{ .defs = &defs, .survey = &survey };
     var parser = blockParser(ba, input, index, &defs, opts);
-    var sections = document.Sections{ .doc_end = parser.input_end };
+    var sections = document.Sections{ .doc_end = if (opts.sourcepos) parser.doc_end else null };
     var out = Emitter{ .w = w, .mode = opts.mode, .footnotes = .{ .a = da } };
     try out.root(ba);
     while (try parser.nextBlock()) |block| {
@@ -72,7 +72,6 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 fn blockParser(ba: Allocator, input: []const u8, index: Parser.LineIndex, defs: *Parser.Definitions, opts: RenderOpts) Parser {
     var parser = Parser.initIndexed(ba, input, index, defs);
     parser.track_pos = opts.sourcepos;
-    if (opts.sourcepos) parser.input_end = Parser.inputEnd(index, input);
     return parser;
 }
 
