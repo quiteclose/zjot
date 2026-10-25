@@ -23,10 +23,10 @@ pub const Definitions = struct {
     a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
     footnote_defs: std.StringArrayHashMapUnmanaged(FootnoteDef) = .{},
-    /// Every footnote definition's label in document order, a label defined again
-    /// appearing again: the later definition replaces the earlier (djot.js), and the
-    /// survey visits it where it stands.
-    footnote_log: std.ArrayList([]const u8) = .empty,
+    /// Every footnote definition in document order, a label defined again appearing
+    /// again with its new blocks: the later definition replaces the earlier (djot.js), and
+    /// the survey visits each where it stands.
+    footnote_log: std.ArrayList(LoggedFootnote) = .empty,
     /// Set by a consumer that parses the input a second time: definitions are then
     /// consumed from the input but not recorded again.
     sealed: bool = false,
@@ -39,6 +39,8 @@ pub const FootnoteDef = struct {
     start_pos: ?SourcePos = null,
     end_pos: ?SourcePos = null,
 };
+
+pub const LoggedFootnote = struct { label: []const u8, def: FootnoteDef };
 
 pub const RefDef = struct {
     url: []const u8,
@@ -709,7 +711,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
     const da = self.defs.a;
     const key = try da.dupe(u8, label);
     try self.defs.footnote_defs.put(da, key, stored);
-    try self.defs.footnote_log.append(da, key);
+    try self.defs.footnote_log.append(da, .{ .label = key, .def = stored });
     return {};
 }
 
@@ -962,7 +964,7 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
         },
         .ordered => {
             list.list_style = styles.possible[0] orelse .decimal;
-            list.start = @intCast(getListStart(first.marker_text, list.list_style.?));
+            list.start = getListStart(first.marker_text, list.list_style.?);
         },
     }
     return list;
@@ -1603,11 +1605,12 @@ fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: L
     };
 }
 
-fn getListStart(marker_text: []const u8, style: ListStyle) usize {
+/// The number an ordered marker starts at; 64 bits on every target, as djot.js's number.
+fn getListStart(marker_text: []const u8, style: ListStyle) u64 {
     return switch (style) {
-        .decimal => std.fmt.parseInt(usize, marker_text, 10) catch 1,
-        .lower_alpha => if (marker_text.len == 1) @as(usize, marker_text[0] - 'a') + 1 else 1,
-        .upper_alpha => if (marker_text.len == 1) @as(usize, marker_text[0] - 'A') + 1 else 1,
+        .decimal => std.fmt.parseInt(u64, marker_text, 10) catch 1,
+        .lower_alpha => if (marker_text.len == 1) @as(u64, marker_text[0] - 'a') + 1 else 1,
+        .upper_alpha => if (marker_text.len == 1) @as(u64, marker_text[0] - 'A') + 1 else 1,
         .lower_roman => romanToNumber(marker_text),
         .upper_roman => romanToNumber(marker_text),
     };

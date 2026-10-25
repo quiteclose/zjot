@@ -1015,7 +1015,7 @@ pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
 
 /// A reference link's attributes with its definition's, as djot.js: the definition's that
 /// the link does not set come first, then the link's own in their order; nothing joins.
-pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) Node {
+pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) !Node {
     var result = node;
     if (result.id == null) result.id = ref_attrs.id;
     if (ref_attrs.attrs.len == 0) return result;
@@ -1028,9 +1028,9 @@ pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) Node {
         const overridden = for (result.attrs) |na| {
             if (std.mem.eql(u8, ra.key, na.key)) break true;
         } else false;
-        if (!overridden) merged.append(a, ra) catch return result;
+        if (!overridden) try merged.append(a, ra);
     }
-    for (result.attrs) |na| merged.append(a, na) catch return result;
-    result.attrs = merged.toOwnedSlice(a) catch return result;
+    for (result.attrs) |na| try merged.append(a, na);
+    result.attrs = try merged.toOwnedSlice(a);
     return result;
 }
