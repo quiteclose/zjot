@@ -1,17 +1,14 @@
 doc
   para (1:1:0-2:0:42)
     str (1:1:0-1:17:16) text="Text with a note."
-    footnote_reference (1:18:17-1:23:22) text="1" id="fnref1"
+    footnote_reference (1:18:17-1:23:22) text="one"
     str (1:24:23-1:36:35) text=" And another."
-    footnote_reference (1:37:36-1:42:41) text="2" id="fnref2"
-  footnote role="doc-endnotes"
-    list_item id="fn1"
-      para (3:9:52-4:0:63)
-        str (3:9:52-3:19:62) text="First note."
-        link destination="#fnref1" role="doc-backlink"
-    list_item id="fn2"
-      para (5:9:73-7:0:108)
-        str (5:9:73-5:20:84) text="Second note,"
-        soft_break (6:0:85-6:0:85)
-        str (6:3:88-6:22:107) text="with a continuation."
-        link destination="#fnref2" role="doc-backlink"
+    footnote_reference (1:37:36-1:42:41) text="two"
+  footnote (3:1:44-5:1:65) label="one"
+    para (3:9:52-4:0:63)
+      str (3:9:52-3:19:62) text="First note."
+  footnote (5:1:65-7:0:108) label="two"
+    para (5:9:73-7:0:108)
+      str (5:9:73-5:20:84) text="Second note,"
+      soft_break (6:0:85-6:0:85)
+      str (6:3:88-6:22:107) text="with a continuation."

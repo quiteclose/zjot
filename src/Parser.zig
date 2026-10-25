@@ -21,10 +21,18 @@ const Parser = @This();
 pub const Definitions = struct {
     a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
-    footnote_defs: std.StringArrayHashMapUnmanaged([]const Node) = .{},
+    footnote_defs: std.StringArrayHashMapUnmanaged(FootnoteDef) = .{},
     /// Set by a consumer that parses the input a second time: definitions are then
     /// consumed from the input but not recorded again.
     sealed: bool = false,
+};
+
+/// A footnote definition's blocks and, when positions are tracked, its span: from its
+/// label to where the next block starts, as djot.js.
+pub const FootnoteDef = struct {
+    blocks: []const Node,
+    start_pos: ?SourcePos = null,
+    end_pos: ?SourcePos = null,
 };
 
 pub const RefDef = struct {
@@ -579,6 +587,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
     if (!def.is_footnote) return null;
     const label = def.label;
     const rest = def.rest;
+    const def_line = self.pos;
     self.pos += 1;
 
     var content_lines: std.ArrayList([]const u8) = .empty;
@@ -636,8 +645,12 @@ fn tryFootnoteDef(self: *Parser) !?void {
     const inner_text = try inline_mod.joinLines(da, content_lines.items);
     var inner_parser = Parser.init(da, inner_text, self.defs);
     try self.positionSubParser(&inner_parser, orig_lines.items, col_offsets.items);
-    const inner_blocks = try inner_parser.parseBlocks();
-    try self.defs.footnote_defs.put(da, try da.dupe(u8, label), inner_blocks);
+    var stored = FootnoteDef{ .blocks = try inner_parser.parseBlocks() };
+    if (self.track_pos) {
+        stored.start_pos = self.makePos(def_line, self.contentCol(def_line));
+        stored.end_pos = self.definitionEnd();
+    }
+    try self.defs.footnote_defs.put(da, try da.dupe(u8, label), stored);
     return {};
 }
 
@@ -773,6 +786,15 @@ fn containerEnd(self: *Parser) SourcePos {
     const line = self.lines[self.pos];
     if (isBlank(line) or self.isClosingFence(line)) return self.makePos(self.pos + 1, 0);
     return self.makePos(self.pos, @intCast(countIndent(line) + 1));
+}
+
+/// Where a footnote definition ends, as djot.js: where the next block's content starts,
+/// blank lines skipped, or where this parser's input ends.
+fn definitionEnd(self: *Parser) SourcePos {
+    var next = self.pos;
+    while (next < self.lines.len and isBlank(self.lines[next])) : (next += 1) {}
+    if (next >= self.lines.len) return self.stop orelse self.input_end.?;
+    return self.makePos(next, @intCast(countIndent(self.lines[next]) + 1));
 }
 
 /// Where an item ends, as djot.js: one position before `containerEnd` (the character
@@ -1844,5 +1866,5 @@ test "definitions outlive the block that defined them" {
     try std.testing.expectEqualStrings("class", x.attrs.?.attrs[0].key);
     try std.testing.expectEqualStrings("c", x.attrs.?.attrs[0].value);
     const note = defs.footnote_defs.get("n").?;
-    try std.testing.expectEqualStrings("note", note[0].children[0].text);
+    try std.testing.expectEqualStrings("note", note.blocks[0].children[0].text);
 }

@@ -47,10 +47,10 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     }
     defs.sealed = true;
 
-    var resolver = document.Resolver{ .a = da, .defs = &defs, .survey = &survey };
+    var resolver = document.Resolver{ .defs = &defs, .survey = &survey };
     var parser = blockParser(ba, input, index, &defs, opts);
     var sections = document.Sections{ .doc_end = parser.input_end };
-    var out = Emitter{ .w = w, .mode = opts.mode };
+    var out = Emitter{ .w = w, .mode = opts.mode, .footnotes = .{ .a = da } };
     try out.root(ba);
     while (try parser.nextBlock()) |block| {
         const resolved = try resolver.resolve(ba, block);
@@ -58,7 +58,13 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
         _ = block_arena.reset(.retain_capacity);
     }
     for (sections.finish()) |event| try out.emit(ba, event);
-    if (try resolver.footnoteSection(ba)) |endnotes| try out.emit(ba, .{ .block = endnotes });
+    // The footnotes follow the document, each resolved and written in its own block arena.
+    var n: usize = 0;
+    while (out.footnoteLabel(&defs, n)) |label| : (n += 1) {
+        try out.footnote(ba, n + 1, try resolver.footnote(ba, label));
+        _ = block_arena.reset(.retain_capacity);
+    }
+    try out.finish();
 }
 
 /// A block parser over the whole input; both passes use one, because footnote content
@@ -75,6 +81,7 @@ fn blockParser(ba: Allocator, input: []const u8, index: Parser.LineIndex, defs: 
 const Emitter = struct {
     w: *std.Io.Writer,
     mode: Mode,
+    footnotes: html.Footnotes,
     indent: usize = 0,
 
     fn root(self: *Emitter, a: Allocator) !void {
@@ -108,10 +115,42 @@ const Emitter = struct {
     fn write(self: *Emitter, a: Allocator, node: Node, is_root: bool) !void {
         var buf: std.ArrayList(u8) = .empty;
         switch (self.mode) {
-            .html => try html.renderNode(a, &buf, node),
+            .html => {
+                var renderer = html.Renderer{ .a = a, .out = &buf, .footnotes = &self.footnotes };
+                try renderer.render(node);
+            },
             .ast => try ast.renderAstNode(a, &buf, node, self.indent, is_root),
         }
         try self.w.writeAll(buf.items);
+    }
+
+    /// The label of the `n`-th footnote to write after the document, if there is one: in
+    /// HTML the `n`-th referenced (writing an endnote may reference more), in the AST the
+    /// `n`-th defined, since the AST prints every definition, as djot.js's JSON holds them.
+    fn footnoteLabel(self: *Emitter, defs: *const Parser.Definitions, n: usize) ?[]const u8 {
+        const labels = switch (self.mode) {
+            .html => self.footnotes.order.items,
+            .ast => defs.footnote_defs.keys(),
+        };
+        return if (n < labels.len) labels[n] else null;
+    }
+
+    /// Footnote `n` (1-based), resolved: endnote `n` in HTML, a `footnote` block in the AST.
+    fn footnote(self: *Emitter, a: Allocator, n: usize, note: Node) !void {
+        var buf: std.ArrayList(u8) = .empty;
+        switch (self.mode) {
+            .html => {
+                if (n == 1) try buf.appendSlice(a, html.endnotes_open);
+                var renderer = html.Renderer{ .a = a, .out = &buf, .footnotes = &self.footnotes };
+                try renderer.renderEndnote(n, note.children);
+            },
+            .ast => try ast.renderAstNode(a, &buf, note, self.indent, false),
+        }
+        try self.w.writeAll(buf.items);
+    }
+
+    fn finish(self: *Emitter) !void {
+        if (self.mode == .html and self.footnotes.order.items.len > 0) try self.w.writeAll(html.endnotes_close);
     }
 };
 

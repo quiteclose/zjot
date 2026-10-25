@@ -51,7 +51,7 @@ pub const Survey = struct {
             if (!ids.found_existing) ids.value_ptr.* = .empty;
             self.current_footnote = label;
             defer self.current_footnote = null;
-            for (defs.footnote_defs.values()[self.visited_footnotes]) |block| try self.visitNode(block, .footnote);
+            for (defs.footnote_defs.values()[self.visited_footnotes].blocks) |block| try self.visitNode(block, .footnote);
         }
     }
 
@@ -125,13 +125,10 @@ pub const Survey = struct {
 };
 
 /// Resolves one block against the document: generated ids by ordinal, reference
-/// links by label, footnote numbers by first use. The resolved tree lives in the
-/// allocator passed per block; the footnote order lives in `a` until the endnotes.
+/// links by label. The resolved tree lives in the allocator passed per block.
 pub const Resolver = struct {
-    a: Allocator,
     defs: *const Definitions,
     survey: *Survey,
-    footnote_order: std.ArrayList([]const u8) = .empty,
     next_heading: usize = 0,
     /// While an endnote is written: its footnote's generated heading ids, in order.
     footnote_ids: ?[]const []const u8 = null,
@@ -164,12 +161,6 @@ pub const Resolver = struct {
                 }
             }
         }
-        if (n.tag == .footnote_reference) {
-            const num = try self.footnoteNumber(n.text);
-            n.text = try std.fmt.allocPrint(ba, "{d}", .{num});
-            n.id = try std.fmt.allocPrint(ba, "fnref{d}", .{num});
-            n.destination = try std.fmt.allocPrint(ba, "#fn{d}", .{num});
-        }
         if (n.children.len > 0) {
             const children = try ba.alloc(Node, n.children.len);
             for (n.children, children) |child, *out| out.* = try self.resolveNode(ba, child);
@@ -178,57 +169,16 @@ pub const Resolver = struct {
         return n;
     }
 
-    fn footnoteNumber(self: *Resolver, label: []const u8) !usize {
-        for (self.footnote_order.items, 1..) |existing, num| {
-            if (std.mem.eql(u8, existing, label)) return num;
-        }
-        try self.footnote_order.append(self.a, try self.a.dupe(u8, label));
-        return self.footnote_order.items.len;
-    }
-
-    /// The endnotes, or null when nothing referenced a footnote. Each footnote's
-    /// content is resolved here, so one that references another extends the list
-    /// while it is being walked.
-    pub fn footnoteSection(self: *Resolver, ba: Allocator) !?Node {
-        if (self.footnote_order.items.len == 0) return null;
+    /// The footnote definition `label`, resolved like any block (heading ids where the
+    /// definition stands, links by label); without blocks when nothing defines it.
+    pub fn footnote(self: *Resolver, ba: Allocator, label: []const u8) !Node {
+        const def = self.defs.footnote_defs.get(label) orelse return .{ .tag = .footnote, .text = label };
+        self.footnote_ids = if (self.survey.footnote_heading_ids.get(label)) |ids| ids.items else &.{};
         defer self.footnote_ids = null;
-        var items: std.ArrayList(Node) = .empty;
-        var fn_idx: usize = 0;
-        while (fn_idx < self.footnote_order.items.len) : (fn_idx += 1) {
-            const label = self.footnote_order.items[fn_idx];
-            const raw_content = self.defs.footnote_defs.get(label) orelse &.{};
-            self.footnote_ids = if (self.survey.footnote_heading_ids.get(label)) |ids| ids.items else &.{};
-            self.next_footnote_id = 0;
-            const content = try ba.alloc(Node, raw_content.len);
-            for (raw_content, content) |block, *out| out.* = try self.resolveNode(ba, block);
-            const idx = items.items.len + 1;
-            const fn_id = try std.fmt.allocPrint(ba, "fn{d}", .{idx});
-            const backref = try std.fmt.allocPrint(ba, "#fnref{d}", .{idx});
-            var fn_children: std.ArrayList(Node) = .empty;
-            const backlink = Node{
-                .tag = .link,
-                .destination = backref,
-                .text = "\u{21a9}\u{fe0e}",
-                .attrs = &.{.{ .key = "role", .value = "doc-backlink" }},
-            };
-            for (content, 0..) |block, bi| {
-                if (bi == content.len - 1 and block.tag == .para) {
-                    var new_kids: std.ArrayList(Node) = .empty;
-                    for (block.children) |child| try new_kids.append(ba, child);
-                    try new_kids.append(ba, backlink);
-                    var para = block; // keeps the paragraph's position and attributes
-                    para.children = try new_kids.toOwnedSlice(ba);
-                    try fn_children.append(ba, para);
-                } else {
-                    try fn_children.append(ba, block);
-                }
-            }
-            if (content.len == 0 or content[content.len - 1].tag != .para) {
-                try fn_children.append(ba, .{ .tag = .para, .children = try ba.dupe(Node, &.{backlink}) });
-            }
-            try items.append(ba, .{ .tag = .list_item, .id = fn_id, .children = try fn_children.toOwnedSlice(ba) });
-        }
-        return .{ .tag = .footnote, .children = try items.toOwnedSlice(ba), .attrs = &.{.{ .key = "role", .value = "doc-endnotes" }} };
+        self.next_footnote_id = 0;
+        const blocks = try ba.alloc(Node, def.blocks.len);
+        for (def.blocks, blocks) |block, *out| out.* = try self.resolveNode(ba, block);
+        return .{ .tag = .footnote, .text = label, .children = blocks, .start_pos = def.start_pos, .end_pos = def.end_pos };
     }
 };
 
