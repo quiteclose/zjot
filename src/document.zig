@@ -1,9 +1,9 @@
-//! Document-level concerns, kept apart from the block parser by lifetime: what one
-//! block needs from the rest of the document (`Survey`, `Resolver`) and the section
-//! structure that headings imply (`Sections`). A consumer walks the blocks once to
-//! survey and once to resolve and render, so the two walks need not hold the same
-//! nodes; everything that crosses from one walk to the other lives in the allocator
-//! the consumer keeps for the document.
+//! Document-level concerns, kept apart from the block parser by lifetime: what block
+//! syntax defines for the whole document (`Definitions`), what one block needs from the
+//! rest of it (`Survey`, `Resolver`) and the section structure that headings imply
+//! (`Sections`). A consumer walks the blocks once to survey and once to resolve and
+//! render, so the two walks need not hold the same nodes; everything that crosses from
+//! one walk to the other lives in the allocator the consumer keeps for the document.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -12,8 +12,40 @@ const Node = node_mod.Node;
 const Tag = node_mod.Tag;
 const SourcePos = node_mod.SourcePos;
 const inline_mod = @import("inline.zig");
-const Parser = @import("Parser.zig");
-const Definitions = Parser.Definitions;
+const BlockAttrs = @import("attributes.zig").BlockAttrs;
+
+/// What block-level syntax defines for the whole document: reference link definitions
+/// and footnote definitions. A block anywhere may use a definition from anywhere, so
+/// they outlive any one block: everything stored here is allocated from `a`, which the
+/// caller keeps for the document, whatever allocator the blocks themselves use.
+/// Shared by pointer with child parsers so a definition inside a container is seen.
+pub const Definitions = struct {
+    a: Allocator,
+    ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
+    footnote_defs: std.StringArrayHashMapUnmanaged(FootnoteDef) = .{},
+    /// Every footnote definition in document order, a label defined again appearing
+    /// again with its new blocks: the later definition replaces the earlier (djot.js), and
+    /// the survey visits each where it stands.
+    footnote_log: std.ArrayList(LoggedFootnote) = .empty,
+    /// Set by a consumer that parses the input a second time: definitions are then
+    /// consumed from the input but not recorded again.
+    sealed: bool = false,
+};
+
+/// A footnote definition's blocks and, when positions are tracked, its span: from its
+/// label to where the next block starts, as djot.js.
+pub const FootnoteDef = struct {
+    blocks: []const Node,
+    start_pos: ?SourcePos = null,
+    end_pos: ?SourcePos = null,
+};
+
+pub const LoggedFootnote = struct { label: []const u8, def: FootnoteDef };
+
+pub const RefDef = struct {
+    url: []const u8,
+    attrs: ?BlockAttrs = null,
+};
 
 /// What a block needs from the rest of the document: generated heading ids and the
 /// implicit link targets that top-level headings provide. Ids follow djot.js: every
