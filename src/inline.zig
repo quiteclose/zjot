@@ -85,7 +85,7 @@ const Scanner = struct {
     /// `last` carries no attributes: djot.js reports such text as one `str`.
     fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) bool {
         if (last.tag != .str or last.text.ptr + last.text.len != slice.ptr) return false;
-        if (last.id != null or last.classes != null or last.attrs.len > 0) return false;
+        if (last.id != null or last.attrs.len > 0) return false;
         last.text = last.text.ptr[0 .. last.text.len + slice.len];
         if (sc.map) |m| if (sc.within(last.text)) {
             last.end_pos = m.resolve(@intCast(@intFromPtr(last.text.ptr) - @intFromPtr(sc.src.ptr) + last.text.len - 1));
@@ -408,7 +408,7 @@ const Scanner = struct {
     }
 
     fn applyInlineAttrs(sc: *Scanner, ba: BlockAttrs) !void {
-        if (ba.id == null and ba.classes == null and ba.attrs.len == 0) return;
+        if (ba.id == null and ba.attrs.len == 0) return;
         try sc.items.append(sc.a, .{ .pending_attrs = ba });
     }
 
@@ -513,7 +513,7 @@ const Scanner = struct {
                     }
                 } else if (pos.* < src.len and src[pos.*] == '{') {
                     if (attrs.parseInlineAttrs(sc.a, src, pos.*)) |parsed| {
-                        const span_node = applyBlockAttrsToNode(.{ .tag = .span, .children = children }, parsed.attrs);
+                        const span_node = try applyBlockAttrsToNode(sc.a, .{ .tag = .span, .children = children }, parsed.attrs);
                         try sc.emit(span_node, start, p);
                         pos.* = parsed.end;
                         sc.openers.items.len = i;
@@ -808,7 +808,7 @@ const Scanner = struct {
 
                 const kids = try span_children.toOwnedSlice(sc.a);
                 var span_node = Node{ .tag = .span, .children = kids, .start_pos = kids[0].start_pos, .end_pos = kids[kids.len - 1].end_pos };
-                span_node = applyBlockAttrsToNode(span_node, ba);
+                span_node = try applyBlockAttrsToNode(sc.a, span_node, ba);
 
                 if (word_start > 0 and gather_start < nodes.items.len - 1) {
                     sc.setText(&nodes.items[gather_start], nodes.items[gather_start].text[0..word_start]);
@@ -841,18 +841,25 @@ const Scanner = struct {
             .display_math,
             .footnote_reference,
             => {
-                nodes.items[nodes.items.len - 1] = applyBlockAttrsToNode(last.*, ba);
+                nodes.items[nodes.items.len - 1] = try applyBlockAttrsToNode(sc.a, last.*, ba);
             },
             else => {},
         }
     }
 };
 
-pub fn applyBlockAttrsToNode(node: Node, ba: BlockAttrs) Node {
+/// A block attribute applied to the block after it. A block with attributes of its own
+/// (a div's class) keeps them after the block attribute's, classes joined, as djot.js:
+/// `{.x}` before `::: y` gives `class="x y"`.
+pub fn applyBlockAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
     var result = node;
+    if (node.attrs.len > 0 and ba.attrs.len > 0) {
+        const merged = try ba.merge(.{ .attrs = node.attrs }, a);
+        result.attrs = merged.attrs;
+    } else if (ba.attrs.len > 0) {
+        result.attrs = ba.attrs;
+    }
     if (ba.id) |id| result.id = id;
-    if (ba.classes) |cls| result.classes = cls;
-    if (ba.attrs.len > 0) result.attrs = ba.attrs;
     return result;
 }
 
@@ -1027,13 +1034,6 @@ pub fn joinLines(a: Allocator, lines: []const []const u8) ![]const u8 {
 pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) Node {
     var result = node;
     if (result.id == null) result.id = ref_attrs.id;
-    if (ref_attrs.classes) |ref_cls| {
-        if (result.classes) |existing| {
-            result.classes = std.fmt.allocPrint(a, "{s} {s}", .{ ref_cls, existing }) catch existing;
-        } else {
-            result.classes = ref_cls;
-        }
-    }
     if (ref_attrs.attrs.len > 0) {
         if (result.attrs.len == 0) {
             result.attrs = ref_attrs.attrs;

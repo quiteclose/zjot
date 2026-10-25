@@ -25,6 +25,9 @@ Deliberate differences from djot.js 0.3.2:
    `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
    0.3.2 itself produces `Introduction1`. zjot follows the suite. Checked 2026-10-24.
 
+HTML, pending (not deliberate): zjot writes an element's `id` before its other attributes;
+djot.js keeps the source order (`{k=v .a #i}` gives `k="v" class="a" id="i"`). Deferred.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -42,6 +45,11 @@ converter renders it, so no `ap` case can pin it:
 10. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
+
+Ordered lists in the AST text form print neither `start` nor `type`, as djot.js's text
+form (its JSON has `start` and `style`); the HTML renders both from the list's markers,
+before any attributes. Attributes print as id, class, then the rest in source order, as
+djot.js's text form (the HTML keeps source order, see the HTML difference below).
 
 Footnotes in the AST text form: a reference prints its label, and every footnote
 definition follows the document as a `footnote` block with its `label` and span, in
@@ -6285,4 +6293,96 @@ doc
       str (2:1:6-2:1:6) text="x"
   para (4:1:13-5:0:14)
     str (4:1:13-4:1:13) text="y"
+````
+
+
+One class, one start: a block attribute joins a div's class; an ordered list keeps its start and type under attributes.
+
+A block attribute's class joins the div's own.
+````
+{.x}
+::: y
+z
+:::
+.
+<div class="x y">
+<p>z</p>
+</div>
+````
+
+A block attribute keeps an ordered list's start.
+````
+{.x}
+2. a
+.
+<ol start="2" class="x">
+<li>
+a
+</li>
+</ol>
+````
+
+A block attribute keeps an ordered list's type; the list's own come first.
+````
+{#i .x k=v}
+i. a
+.
+<ol type="i" id="i" class="x" k="v">
+<li>
+a
+</li>
+</ol>
+````
+
+Roman and alpha markers: the AST prints no type.
+```` ap
+i. a
+ii. b
+c. d
+.
+doc
+  ordered_list (1:1:0-4:0:15) tight=true
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+    list_item (2:1:5-3:0:10)
+      para (2:5:9-3:0:10)
+        str (2:5:9-2:5:9) text="b"
+    list_item (3:1:11-4:0:15)
+      para (3:4:14-4:0:15)
+        str (3:4:14-3:4:14) text="d"
+````
+
+Parenthesised alpha markers and a start of 5: the AST prints no start.
+```` ap
+(a) x
+(b) y
+
+5) z
+.
+doc
+  ordered_list (1:1:0-4:1:13) tight=true
+    list_item (1:1:0-2:0:5)
+      para (1:5:4-2:0:5)
+        str (1:5:4-1:5:4) text="x"
+    list_item (2:1:6-4:0:12)
+      para (2:5:10-3:0:11)
+        str (2:5:10-2:5:10) text="y"
+  ordered_list (4:1:13-5:0:17) tight=true
+    list_item (4:1:13-5:0:17)
+      para (4:4:16-5:0:17)
+        str (4:4:16-4:4:16) text="z"
+````
+
+A block attribute with an id and a key before a div with a class: id, class, key.
+```` ap
+{#i k=v}
+::: y
+z
+:::
+.
+doc
+  div (2:1:9-4:3:19) id="i" class="y" k="v"
+    para (3:1:15-4:0:16)
+      str (3:1:15-3:1:15) text="z"
 ````
