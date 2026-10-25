@@ -6,6 +6,7 @@ const Tag = node_mod.Tag;
 const Attr = node_mod.Attr;
 const SourcePos = node_mod.SourcePos;
 const CellAlign = node_mod.CellAlign;
+const ListStyle = node_mod.ListStyle;
 const attrs_mod = @import("attributes.zig");
 const BlockAttrs = attrs_mod.BlockAttrs;
 const inline_mod = @import("inline.zig");
@@ -264,7 +265,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
             node = try self.parseParagraph(failed_attr);
         }
 
-        if (pending_attrs) |ba| node = inline_mod.applyBlockAttrsToNode(node, ba);
+        if (pending_attrs) |ba| node = try inline_mod.applyBlockAttrsToNode(self.a, node, ba);
         return node;
     }
 
@@ -552,7 +553,7 @@ fn tryFencedDiv(self: *Parser) !?Node {
     const blocks = try inner_parser.parseBlocks();
     self.closing_fence = null;
     var node = Node{ .tag = .div, .children = blocks };
-    if (div_info.class) |cls| node.classes = cls;
+    if (div_info.class) |cls| node.attrs = try self.a.dupe(Attr, &.{.{ .key = "class", .value = cls }});
     if (self.track_pos) {
         node.start_pos = self.makePos(open_line, self.contentCol(open_line));
         // Closed, a div ends on its fence; unclosed, where the enclosing container does.
@@ -964,12 +965,8 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
             else => "-",
         },
         .ordered => {
-            const style = styles.possible[0] orelse .decimal;
-            const start = getListStart(first.marker_text, style);
-            var attrs: std.ArrayList(Attr) = .empty;
-            if (start != 1) try attrs.append(self.a, .{ .key = "start", .value = try std.fmt.allocPrint(self.a, "{d}", .{start}) });
-            if (style.htmlType()) |t| try attrs.append(self.a, .{ .key = "type", .value = t });
-            list.attrs = try attrs.toOwnedSlice(self.a);
+            list.list_style = styles.possible[0] orelse .decimal;
+            list.start = @intCast(getListStart(first.marker_text, list.list_style.?));
         },
     }
     return list;
@@ -1504,24 +1501,6 @@ fn parseBulletMarker(line: []const u8) ?Marker {
     const rest = if (trimmed.len > 1) trimmed[2..] else "";
     return .{ .rest = rest, .indent = indent, .content_col = indent + 2, .bullet = trimmed[0] };
 }
-
-const ListStyle = enum {
-    decimal,
-    lower_alpha,
-    upper_alpha,
-    lower_roman,
-    upper_roman,
-
-    fn htmlType(self: ListStyle) ?[]const u8 {
-        return switch (self) {
-            .decimal => null,
-            .lower_alpha => "a",
-            .upper_alpha => "A",
-            .lower_roman => "i",
-            .upper_roman => "I",
-        };
-    }
-};
 
 fn parseOrderedMarker(line: []const u8) ?Marker {
     var indent: usize = 0;

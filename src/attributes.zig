@@ -7,7 +7,6 @@ const Attr = @import("node.zig").Attr;
 
 pub const BlockAttrs = struct {
     id: ?[]const u8 = null,
-    classes: ?[]const u8 = null,
     attrs: []const Attr = &.{},
 
     pub fn merge(self: BlockAttrs, other: BlockAttrs, a: Allocator) !BlockAttrs {
@@ -51,9 +50,6 @@ pub const BlockAttrs = struct {
             try merged.append(a, .{ .key = "class", .value = try class_buf.toOwnedSlice(a) });
         }
 
-        if (self.classes != null or other.classes != null) {
-            result.classes = other.classes orelse self.classes;
-        }
         if (merged.items.len > 0) {
             result.attrs = try merged.toOwnedSlice(a);
         }
@@ -68,7 +64,6 @@ pub const BlockAttrs = struct {
         }
         return .{
             .id = if (self.id) |id| try a.dupe(u8, id) else null,
-            .classes = if (self.classes) |c| try a.dupe(u8, c) else null,
             .attrs = attrs,
         };
     }

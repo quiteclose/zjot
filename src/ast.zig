@@ -88,15 +88,19 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         try appendJsonStr(a, out, lang);
     }
 
+    // Attributes print as djot.js's text form does: id, class, then the rest in order.
     if (node.id) |id| {
         try out.appendSlice(a, " id=");
         try appendJsonStr(a, out, id);
     }
-    if (node.classes) |cls| {
-        try out.appendSlice(a, " class=");
-        try appendJsonStr(a, out, cls);
+    for (node.attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "class")) {
+            try out.appendSlice(a, " class=");
+            try appendJsonStr(a, out, attr.value);
+        }
     }
     for (node.attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "class")) continue;
         try out.append(a, ' ');
         try out.appendSlice(a, attr.key);
         try out.append(a, '=');

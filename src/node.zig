@@ -22,7 +22,6 @@ pub const Tag = enum {
     cell,
     raw_block,
     footnote,
-    reference_definition,
     // inline
     str,
     soft_break,
@@ -48,17 +47,31 @@ pub const Tag = enum {
     email,
     footnote_reference,
     symb,
-    escape,
-    left_single_quote,
-    right_single_quote,
-    left_double_quote,
-    right_double_quote,
     ellipsis,
     em_dash,
     en_dash,
 };
 
 pub const CellAlign = enum { default, left, right, center };
+
+/// The numbering of an ordered list, from its markers; `htmlType` is the `type` it renders.
+pub const ListStyle = enum {
+    decimal,
+    lower_alpha,
+    upper_alpha,
+    lower_roman,
+    upper_roman,
+
+    pub fn htmlType(self: ListStyle) ?[]const u8 {
+        return switch (self) {
+            .decimal => null,
+            .lower_alpha => "a",
+            .upper_alpha => "A",
+            .lower_roman => "i",
+            .upper_roman => "I",
+        };
+    }
+};
 
 pub const Attr = struct {
     key: []const u8,
@@ -77,7 +90,6 @@ pub const Node = struct {
     text: []const u8 = "",
     level: u8 = 0,
     id: ?[]const u8 = null,
-    classes: ?[]const u8 = null,
     lang: ?[]const u8 = null,
     destination: ?[]const u8 = null,
     reference: ?[]const u8 = null,
@@ -86,7 +98,11 @@ pub const Node = struct {
     checked: ?bool = null,
     head: bool = false,
     cell_align: CellAlign = .default,
+    /// Bullet lists: the marker character.
     style: ?[]const u8 = null,
+    /// Ordered lists: the first number and the numbering, rendered as `start` and `type`.
+    start: u32 = 1,
+    list_style: ?ListStyle = null,
     start_pos: ?SourcePos = null,
     end_pos: ?SourcePos = null,
 };

@@ -219,13 +219,11 @@ pub const Sections = struct {
         var heading = block;
         heading.id = null;
         heading.attrs = &.{};
-        heading.classes = null;
         self.events[n] = .{ .open = .{
             .tag = .section,
             .level = block.level,
             .id = block.id,
             .attrs = block.attrs,
-            .classes = block.classes,
             .start_pos = block.start_pos,
             .end_pos = self.doc_end,
         } };

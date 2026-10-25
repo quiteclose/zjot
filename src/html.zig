@@ -144,7 +144,14 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</ul>\n");
             },
             .ordered_list => {
+                // The list's own start and type come before its attributes, as djot.js.
                 try out.appendSlice(a, "<ol");
+                if (node.start != 1) try out.appendSlice(a, try std.fmt.allocPrint(a, " start=\"{d}\"", .{node.start}));
+                if (node.list_style) |style| if (style.htmlType()) |t| {
+                    try out.appendSlice(a, " type=\"");
+                    try out.appendSlice(a, t);
+                    try out.appendSlice(a, "\"");
+                };
                 try renderAttrs(a, out, node);
                 try out.appendSlice(a, ">\n");
                 for (node.children) |child| try self.renderListItem(child, node.tight);
@@ -156,11 +163,6 @@ pub const Renderer = struct {
                 try out.appendSlice(a, ">\n");
                 for (node.children) |child| try self.renderListItem(child, node.tight);
                 try out.appendSlice(a, "</ul>\n");
-            },
-            .task_list_item => {
-                try out.appendSlice(a, "<li>\n");
-                for (node.children) |child| try self.render(child);
-                try out.appendSlice(a, "</li>\n");
             },
             .definition_list => {
                 try out.appendSlice(a, "<dl>\n");
@@ -344,12 +346,7 @@ pub const Renderer = struct {
                 for (node.children) |child| try self.render(child);
                 try out.appendSlice(a, "\u{2019}");
             },
-            .escape => try appendEscaped(a, out, node.text),
             .non_breaking_space => try out.appendSlice(a, "&nbsp;"),
-            .left_single_quote => try out.appendSlice(a, "\u{2018}"),
-            .right_single_quote => try out.appendSlice(a, "\u{2019}"),
-            .left_double_quote => try out.appendSlice(a, "\u{201c}"),
-            .right_double_quote => try out.appendSlice(a, "\u{201d}"),
             .ellipsis => try out.appendSlice(a, "\u{2026}"),
             .em_dash => try out.appendSlice(a, "\u{2014}"),
             .en_dash => try out.appendSlice(a, "\u{2013}"),
@@ -367,9 +364,9 @@ pub const Renderer = struct {
                     }
                 }
             },
-            else => {
-                for (node.children) |child| try self.render(child);
-            },
+            // Lists render their items through `renderListItem`; footnotes are endnotes,
+            // written by `renderEndnote`, or AST blocks.
+            .list_item, .task_list_item, .footnote => unreachable,
         }
     }
 
@@ -413,10 +410,9 @@ pub fn renderSectionOpen(a: Allocator, out: *std.ArrayList(u8), section: Node) !
 
 pub const section_close = "</section>\n";
 
-/// The node's class, wherever it lives (an attribute named `class`, else `classes`).
 fn nodeClass(node: Node) ?[]const u8 {
     for (node.attrs) |attr| if (std.mem.eql(u8, attr.key, "class")) return attr.value;
-    return node.classes;
+    return null;
 }
 
 pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
@@ -430,21 +426,12 @@ pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
 
 /// The attributes of a node whose id the tag has already written (a footnote reference's).
 fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
-    var class_rendered = false;
     for (node.attrs) |attr| {
-        if (std.mem.eql(u8, attr.key, "class")) class_rendered = true;
         try out.append(a, ' ');
         try out.appendSlice(a, attr.key);
         try out.appendSlice(a, "=\"");
         try appendAttrEscaped(a, out, attr.value);
         try out.appendSlice(a, "\"");
-    }
-    if (!class_rendered) {
-        if (node.classes) |cls| {
-            try out.appendSlice(a, " class=\"");
-            try appendAttrEscaped(a, out, cls);
-            try out.appendSlice(a, "\"");
-        }
     }
 }
 
@@ -461,13 +448,6 @@ fn renderFilteredAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node, skip_c
         try out.appendSlice(a, "=\"");
         try appendAttrEscaped(a, out, attr.value);
         try out.appendSlice(a, "\"");
-    }
-    if (!skip_class) {
-        if (node.classes) |cls| {
-            try out.appendSlice(a, " class=\"");
-            try appendAttrEscaped(a, out, cls);
-            try out.appendSlice(a, "\"");
-        }
     }
 }
 
