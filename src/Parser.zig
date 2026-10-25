@@ -1,3 +1,12 @@
+//! The block parser: a container stack, the shape of djot.js's `block.js`, in one pass
+//! over the lines. Each line is run against the open containers from the outermost in
+//! (`continues`), then against the block starts while the innermost matched container
+//! holds blocks (`tryOpen`); what remains is lazy text for an open paragraph or heading, a
+//! blank line, or text for the innermost container. A container closes when a line neither
+//! continues it nor is lazy text for it, and its `Node` ends where the parser stands;
+//! `nextBlock` returns each top-level block's tree as it closes, never generating ids or
+//! resolving references, which the document does. Definitions are recorded as they close.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
@@ -10,1281 +19,941 @@ const BlockAttrs = attrs_mod.BlockAttrs;
 const inline_mod = @import("inline.zig");
 const LineMap = @import("LineMap.zig");
 const leaf = @import("leaf.zig");
-const FenceInfo = leaf.FenceInfo;
-const Marker = leaf.Marker;
-const ListKind = leaf.ListKind;
-const OrderedStyles = leaf.OrderedStyles;
 const document = @import("document.zig");
 const Definitions = document.Definitions;
 const FootnoteDef = document.FootnoteDef;
+const lines_mod = @import("Lines.zig");
+const Lines = lines_mod.Lines;
+const Line = lines_mod.Line;
 
 const Parser = @This();
 
-/// What parsing can fail with: only allocation. Named so the recursive functions can
-/// state it; `root.render` adds the writer's error.
-pub const Error = Allocator.Error;
+pub const Error = Allocator.Error || error{ReadFailed};
 
+/// A top-level block and the arena its nodes live in, which the consumer gives back
+/// through `recycle` once the block is written.
+pub const Block = struct { node: Node, arena: *std.heap.ArenaAllocator };
+
+/// The block arenas come from here.
+gpa: Allocator,
+/// The arena of the block being built, and its allocator. The parser swaps in a fresh
+/// one the moment a top-level block closes, so whatever opens on the line that closed
+/// it lives with the next block, never in an arena the consumer may already own.
+arena: *std.heap.ArenaAllocator,
 a: Allocator,
-/// The document's line index, shared by every parser over it.
-doc: LineIndex,
-/// This parser's window onto the document: `lines[i]` is document line `first + i` with
-/// the enclosing containers' prefixes removed, `start[i]` how many bytes they removed
-/// (none when `start` is empty, as in the root).
-first: usize = 0,
-lines: []const []const u8 = &.{},
-start: []const u32 = &.{},
-pos: usize = 0,
+/// A written block's arena, reused for the next block.
+spare: ?*std.heap.ArenaAllocator = null,
+/// The parser's own state across blocks: the stack and its buffers. An arena the
+/// consumer keeps for the document; nothing is freed before it.
+da: Allocator,
 defs: *Definitions,
-/// While a child parses a div's content: the line of the div's closing fence, where this
-/// parser stands (`tryFencedDiv`); the child's blocks end past it or on it.
-closing_fence: ?usize = null,
 track_pos: bool = false,
-/// Whether blank lines separate the block `nextBlock` last returned from the one before
-/// it (list tightness); a blank first line precedes no block and does not count. A div's
-/// closing fence counts as one, as djot.js (which emits a blank line event after it).
-blank_before: bool = false,
-fence_closed: bool = false,
-/// Where the document ends (`inputEnd`).
-doc_end: SourcePos = .{ .line = 1, .col = 1, .offset = 0 },
-/// The root parser's position after the last block `nextBlock` returned (`trailing`).
-after_block: usize = 0,
-/// The parser whose container this one parses the content of, suspended at the line that
-/// stopped the container; null in the root. A block that ends with this parser's window
-/// ends where djot.js closes it, which depends on the lines after the window as the
-/// enclosing parser sees them: lists and items at that stop (`containerEnd`,
-/// `stopBefore`), block quotes and tables at the first blank line (`endAtBlank`), a
-/// paragraph ending in a hard break at the next byte (`afterNewline`).
-enclosing: ?*const Parser = null,
+lines: Lines,
+stack: std.ArrayList(Container) = .empty,
+/// Block attributes waiting for the next top-level block.
+pending_attrs: ?BlockAttrs = null,
+/// The lines of the open leaf, which is always the tip, so one set of buffers serves.
+leaf_slices: std.ArrayList([]const u8) = .empty,
+leaf_starts: std.ArrayList(SourcePos) = .empty,
+/// The newline of the open leaf's last line, where its `LineMap` ends.
+leaf_last_eol: SourcePos = undefined,
+/// Children lists of closed containers, reused by the next ones pushed.
+spare_lists: std.ArrayList(std.ArrayList(Node)) = .empty,
+/// Open footnotes: their content is allocated for the document, not the block.
+footnote_depth: usize = 0,
+/// Set by a start or continuation that took the whole line (a fence): nothing else
+/// on it is read.
+finished_line: bool = false,
+/// The block `nextBlock` returns once the current line is parsed.
+done: ?Block = null,
+/// The last closed top-level block, kept until a block follows it or the input ends: a
+/// caption before that joins it when it is a table, as djot.js attaches a caption to the
+/// previous node, blank lines, definitions and attributes between notwithstanding.
+pending: ?Block = null,
+/// Lines consumed, and the line the last top-level block ended on.
+line_count: u32 = 0,
+last_block_line: u32 = 0,
 
-/// The line index of an input: one slice per line and each line's byte offset. A
-/// streaming consumer builds it once and keeps it for the document while the
-/// parser's own allocations come and go per block.
-pub const LineIndex = struct {
-    lines: []const []const u8 = &.{},
-    offsets: []const u32 = &.{},
+const Kind = enum { para, heading, thematic_break, attributes, block_quote, list, list_item, footnote, div, code_block, table, caption, reference_definition };
+
+/// What a container holds: blocks, list items, inline content, verbatim text, table
+/// cells, nothing, or attribute text.
+const Content = enum { block, items, inlines, text, cells, none, attributes };
+
+/// What a list's items share, read off their markers (djot.js's list styles).
+const ListStyle = union(enum) {
+    bullet: u8,
+    task,
+    definition,
+    ordered: struct { styles: leaf.OrderedStyles, delim: leaf.Delim },
 };
 
-pub fn indexLines(a: Allocator, input: []const u8) !LineIndex {
-    // Sized exactly: the index is the largest thing a streaming consumer keeps.
-    // A trailing newline would produce an empty final line; it is not counted, so
-    // line counts match the visible content.
-    var count = std.mem.count(u8, input, "\n") + 1;
-    if (input.len == 0 or input[input.len - 1] == '\n') count -= 1;
-    const lines = try a.alloc([]const u8, count);
-    const offsets = try a.alloc(u32, count);
-    var offset: u32 = 0;
-    var it = std.mem.splitScalar(u8, input, '\n');
-    for (lines, offsets) |*line, *line_offset| {
-        // CRLF input: the line is indexed without its carriage return; offsets keep it.
-        const raw = it.next().?;
-        line.* = std.mem.trimEnd(u8, raw, "\r");
-        line_offset.* = offset;
-        offset += @intCast(raw.len + 1);
+const Container = struct {
+    start: SourcePos,
+    children: std.ArrayList(Node),
+    /// Parser attributes waiting for this container's next child block.
+    pending_attrs: ?BlockAttrs = null,
+    /// For a leaf: one past the last non-blank character of its last line (djot.js ends
+    /// paragraphs and headings there, trailing whitespace excluded).
+    leaf_end: SourcePos = undefined,
+    data: union(Kind) {
+        /// `attrs_from`: no inline attribute is read before this joined offset (a failed
+        /// block attribute's first line is text, as djot.js reparses it).
+        para: struct { attrs_from: usize = 0 },
+        heading: struct { level: u8 },
+        thematic_break: struct { end: SourcePos },
+        /// `attrs`: parsed when the lines so far form a complete block attribute.
+        attributes: struct { indent: usize, attrs: ?BlockAttrs = null },
+        block_quote: void,
+        /// `blanklines` and `tight` as `parse.js` keeps them: a blank line marks the list
+        /// and the next event that is not a blank line, a list start or a list or item end
+        /// makes it loose.
+        list: struct { style: ListStyle, indent: usize, marker: [32]u8, marker_len: u8, blanklines: bool = false, tight: bool = true },
+        list_item: struct { indent: usize, checked: ?bool },
+        footnote: struct { label: []const u8, indent: usize, headings_before: usize },
+        /// `end`: the closing fence's last colon, once met.
+        div: struct { fence_len: usize, class: ?[]const u8, end: ?SourcePos = null },
+        /// `indent`: the fence's column, which content lines lose (deeper indentation
+        /// stays); `end`: the closing fence's last character, once met.
+        code_block: struct { fence: leaf.FenceInfo, indent: usize, lang: ?[]const u8, end: ?SourcePos = null },
+        /// `aligns`: the last separator row's, for the rows that follow.
+        table: struct { aligns: []const CellAlign = &.{} },
+        caption: void,
+        reference_definition: struct { label: []const u8, indent: usize },
+    },
+
+    fn content(self: Container) Content {
+        return switch (self.data) {
+            .para, .heading, .caption => .inlines,
+            .thematic_break, .reference_definition => .none,
+            .attributes => .attributes,
+            .block_quote, .list_item, .footnote, .div => .block,
+            .list => .items,
+            .code_block => .text,
+            .table => .cells,
+        };
     }
-    return .{ .lines = lines, .offsets = offsets };
+
+    /// Whether the container becomes a node of its parent (a definition, an attribute
+    /// block and a caption do not), which is what ends a held table's wait.
+    fn makesNode(self: Container) bool {
+        return switch (self.data) {
+            .attributes, .footnote, .caption, .reference_definition => false,
+            else => true,
+        };
+    }
+
+    fn isList(self: Container) bool {
+        return self.data == .list;
+    }
+};
+
+/// Where the parser stands when a container closes.
+const Stand = struct {
+    /// The current position: the next block's content, or a blank line's newline.
+    pos: SourcePos,
+    /// One position before `pos` (djot.js ends list items there); `pos` itself at the end.
+    before: SourcePos,
+    /// The first byte of the current line (its newline when it is empty), where a block
+    /// ending in a hard break ends; the input's end at the end.
+    line_first: SourcePos,
+    eof: bool = false,
+    /// Whether the current line belongs to the block closing (its closing fence).
+    inclusive: bool = false,
+};
+
+/// A position on the current line.
+const Cursor = struct {
+    line: Line,
+    i: usize = 0,
+    /// Columns before `i` after `skipSpace`, as djot.js's `indent`.
+    indent: usize = 0,
+
+    fn skipSpace(self: *Cursor) void {
+        const b = self.line.bytes;
+        while (self.i < b.len and (b[self.i] == ' ' or b[self.i] == '\t')) self.i += 1;
+        self.indent = self.i;
+    }
+
+    fn rest(self: Cursor) []const u8 {
+        return self.line.bytes[self.i..];
+    }
+
+    fn atEol(self: Cursor) bool {
+        return self.i >= self.line.bytes.len;
+    }
+
+    fn pos(self: Cursor) SourcePos {
+        if (self.atEol()) return self.line.eol;
+        return self.at(self.i);
+    }
+
+    /// The position of byte `i` of the line.
+    fn at(self: Cursor, i: usize) SourcePos {
+        return .{ .line = self.line.pos.line, .col = @intCast(i + 1), .offset = self.line.pos.offset + @as(u32, @intCast(i)) };
+    }
+
+    /// One position before `pos`: the byte before it, or col 0 (the previous line's
+    /// newline) at the line's start.
+    fn before(self: Cursor) SourcePos {
+        if (self.i == 0) return .{ .line = self.line.pos.line, .col = 0, .offset = self.line.pos.offset -| 1 };
+        return self.at(self.i - 1);
+    }
+
+    fn stand(self: Cursor) Stand {
+        return .{ .pos = self.pos(), .before = self.before(), .line_first = if (self.line.bytes.len == 0) self.line.eol else self.line.pos };
+    }
+};
+
+/// `gpa` backs the block arenas; `da` is the document's arena, for the parser's own
+/// buffers and what definitions keep.
+pub fn init(gpa: Allocator, da: Allocator, lines: Lines, defs: *Definitions) Allocator.Error!Parser {
+    const arena = try newArena(gpa);
+    return .{ .gpa = gpa, .arena = arena, .a = arena.allocator(), .da = da, .defs = defs, .lines = lines };
 }
 
-/// Where the input ends, as djot.js reports it: on its final newline, or one past the
-/// last character of the last line when there is none.
-pub fn inputEnd(index: LineIndex, input: []const u8) SourcePos {
-    const n: u32 = @intCast(index.lines.len);
-    if (input.len == 0 or input[input.len - 1] == '\n')
-        return .{ .line = n + 1, .col = 0, .offset = @intCast(input.len -| 1) };
-    return .{ .line = n, .col = @intCast(index.lines[n - 1].len + 1), .offset = @intCast(input.len) };
+pub fn deinit(self: *Parser) void {
+    self.lines.deinit();
+    self.destroy(self.arena);
+    if (self.spare) |spare| self.destroy(spare);
+    if (self.pending) |p| self.destroy(p.arena);
+    if (self.done) |d| self.destroy(d.arena);
 }
 
-pub fn init(a: Allocator, input: []const u8, defs: *Definitions) !Parser {
-    return initIndexed(a, input, try indexLines(a, input), defs);
+fn newArena(gpa: Allocator) Allocator.Error!*std.heap.ArenaAllocator {
+    const arena = try gpa.create(std.heap.ArenaAllocator);
+    arena.* = std.heap.ArenaAllocator.init(gpa);
+    return arena;
 }
 
-/// Where the input ended.
+fn destroy(self: *Parser, arena: *std.heap.ArenaAllocator) void {
+    arena.deinit();
+    self.gpa.destroy(arena);
+}
+
+/// Takes a written block's arena back for the next block, or frees it when one is spare.
+pub fn recycle(self: *Parser, arena: *std.heap.ArenaAllocator) void {
+    if (self.spare == null) {
+        _ = arena.reset(.retain_capacity);
+        self.spare = arena;
+    } else self.destroy(arena);
+}
+
+/// Where the input ended; meaningful once `nextBlock` has returned null.
 pub fn endPos(self: *const Parser) SourcePos {
-    return self.doc_end;
+    return self.lines.end();
 }
 
-/// Whether lines followed the last block (blank lines, definitions, attributes), which
-/// carry djot.js's events to the input's end.
+/// Whether lines followed the last top-level block (blank lines, definitions,
+/// attributes), which carry djot.js's events to the input's end.
 pub fn trailing(self: *const Parser) bool {
-    return self.pos > self.after_block;
+    return self.line_count > self.last_block_line;
 }
 
-/// A parser over the whole document, whose index was built elsewhere so it can outlive
-/// what the parser allocates from `a`.
-pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Definitions) Parser {
-    return .{ .a = a, .doc = index, .lines = index.lines, .defs = defs, .doc_end = inputEnd(index, input) };
-}
-
-/// The lines of a container as the parser of its content will see them: each a slice of
-/// the enclosing parser's line with the container's prefix removed (a blank line keeps
-/// what the prefix leaves, which a code block preserves, as djot.js), consecutive from
-/// line `first` of the enclosing parser's window.
-const Window = struct {
-    first: usize,
-    lines: std.ArrayList([]const u8) = .empty,
-    start: std.ArrayList(u32) = .empty,
-
-    /// Line `line_idx` of `p` without its first `strip` bytes.
-    fn add(self: *Window, p: *const Parser, line_idx: usize, strip: usize) !void {
-        try self.addSlice(p, line_idx, strip, p.lines[line_idx][strip..]);
-    }
-
-    /// `content`, from line `line_idx` of `p`, `strip` bytes in.
-    fn addSlice(self: *Window, p: *const Parser, line_idx: usize, strip: usize, content: []const u8) !void {
-        std.debug.assert(line_idx == self.first + self.lines.items.len);
-        try self.lines.append(p.a, content);
-        try self.start.append(p.a, p.startOf(line_idx) + @as(u32, @intCast(strip)));
-    }
-
-    fn pop(self: *Window) void {
-        _ = self.lines.pop();
-        _ = self.start.pop();
-    }
-};
-
-/// A parser over the content of a container this parser stopped at the end of; `a` holds
-/// what it allocates (footnote content outlives the block).
-fn child(self: *const Parser, a: Allocator, w: Window) Parser {
-    return .{
-        .a = a,
-        .doc = self.doc,
-        .first = self.first + w.first,
-        .lines = w.lines.items,
-        .start = w.start.items,
-        .defs = self.defs,
-        .track_pos = self.track_pos,
-        .doc_end = self.doc_end,
-        .enclosing = self,
-    };
-}
-
-fn startOf(self: *const Parser, line_idx: usize) u32 {
-    return if (line_idx < self.start.len) self.start[line_idx] else 0;
-}
-
-/// The position of 1-based `col` on window line `line_idx`; col 0 is the end of the
-/// previous line (its newline), whatever this line strips. Past the last line lies the
-/// window's end.
-fn makePos(self: *const Parser, line_idx: usize, col: u32) SourcePos {
-    if (line_idx >= self.lines.len) return self.windowEnd();
-    const doc_line = self.first + line_idx;
-    const line: u32 = @intCast(doc_line + 1);
-    if (col == 0) return .{ .line = line, .col = 0, .offset = self.doc.offsets[doc_line] -| 1 };
-    const start = self.startOf(line_idx);
-    return .{ .line = line, .col = col + start, .offset = self.doc.offsets[doc_line] + start + col - 1 };
-}
-
-/// Where this window ends: the newline of its last line (col 0 of the line after it), or
-/// the document's end when it holds the last line.
-fn windowEnd(self: *const Parser) SourcePos {
-    const after = self.first + self.lines.len;
-    if (after >= self.doc.lines.len) return self.doc_end;
-    return .{ .line = @intCast(after + 1), .col = 0, .offset = self.doc.offsets[after] -| 1 };
-}
-
-/// The index, in the enclosing parser's window, of the line after this one's.
-fn afterInEnclosing(self: *const Parser) usize {
-    return self.first + self.lines.len - self.enclosing.?.first;
-}
-
-/// Where a block that ran to this window's end ends: where the enclosing container
-/// stopped, or the document's end.
-fn enclosingEnd(self: *const Parser) SourcePos {
-    return if (self.enclosing) |p| p.containerEnd() else self.doc_end;
-}
-
-fn parseBlocks(self: *Parser) Error![]const Node {
-    var children: std.ArrayList(Node) = .empty;
-    while (try self.nextBlock()) |n| try children.append(self.a, n);
-    return children.toOwnedSlice(self.a);
-}
-
-/// The next block, or null at the end of the window. Definitions are recorded in `defs`
-/// as they are met and never returned, so a caller may drop each block before asking for
-/// the next.
-pub fn nextBlock(self: *Parser) Error!?Node {
-    var pending_attrs: ?BlockAttrs = null;
-    const after_fence = self.fence_closed;
-    self.fence_closed = false;
-    self.blank_before = false;
-
-    while (self.pos < self.lines.len) {
-        const line = self.lines[self.pos];
-
-        if (leaf.isBlank(line)) {
-            if (self.pos > 0) self.blank_before = true;
-            self.pos += 1;
-            pending_attrs = null;
-            continue;
-        }
-
-        if (try self.tryBlockAttr()) |ba| {
-            pending_attrs = leaf.mergeBlockAttrs(self.a, pending_attrs, ba) catch ba;
-            continue;
-        }
-        // A block attribute that opened but could not close is text, read without
-        // attributes, as djot.js reparses it.
-        const failed_attr = try attrs_mod.opensAttr(self.a, line);
-
-        var node: Node = undefined;
-
-        if (try self.tryHeading()) |h| {
-            node = h;
-        } else if (self.tryThematicBreak()) |tb| {
-            node = tb;
-        } else if (try self.tryCodeBlock()) |cb| {
-            node = cb;
-        } else if (try self.tryBlockQuote()) |bq| {
-            node = bq;
-        } else if (try self.tryFencedDiv()) |fd| {
-            node = fd;
-        } else if (try self.tryRefDef(pending_attrs)) |_| {
-            pending_attrs = null;
-            continue;
-        } else if (try self.tryFootnoteDef()) |_| {
-            pending_attrs = null;
-            continue;
-        } else if (try self.tryDefinitionList()) |dl| {
-            node = dl;
-        } else if (try self.tryList(.bullet)) |bl| {
-            node = bl;
-        } else if (try self.tryList(.ordered)) |ol| {
-            node = ol;
-        } else if (try self.tryTable()) |tbl| {
-            node = tbl;
-        } else {
-            node = try self.parseParagraph(failed_attr);
-        }
-
-        if (pending_attrs) |ba| node = try inline_mod.applyBlockAttrsToNode(self.a, node, ba);
-        if (after_fence) self.blank_before = true;
-        self.after_block = self.pos;
-        return node;
-    }
-
-    return null;
-}
-
-fn tryBlockAttr(self: *Parser) !?BlockAttrs {
-    const found = (try self.blockAttrAt(self.pos)) orelse return null;
-    self.pos += found.lines;
-    return found.attrs;
-}
-
-/// The block attribute starting at `pos`, which may continue over indented lines.
-fn blockAttrAt(self: *Parser, pos: usize) !?struct { attrs: BlockAttrs, lines: usize } {
-    const line = self.lines[pos];
-    const trimmed = std.mem.trim(u8, line, " \t");
-    if (trimmed.len < 1 or trimmed[0] != '{') return null;
-
-    if (trimmed[trimmed.len - 1] == '}') {
-        if (try attrs_mod.parseAttrsFromStr(self.a, trimmed)) |ba| return .{ .attrs = ba, .lines = 1 };
-    }
-
-    const indent = leaf.indentOf(line);
-    var full_text: std.ArrayList(u8) = .empty;
-    try full_text.appendSlice(self.a, trimmed);
-    var lines_consumed: usize = 1;
-
-    while (pos + lines_consumed < self.lines.len) {
-        const next = self.lines[pos + lines_consumed];
-        if (leaf.isBlank(next)) break;
-        const next_indent = leaf.indentOf(next);
-        if (next_indent <= indent) break;
-        try full_text.append(self.a, '\n');
-        try full_text.appendSlice(self.a, std.mem.trim(u8, next, " \t"));
-        lines_consumed += 1;
-
-        if (try attrs_mod.parseAttrsFromStr(self.a, full_text.items)) |ba| {
-            return .{ .attrs = ba, .lines = lines_consumed };
-        }
-    }
-
-    return null;
-}
-
-/// `literal_first_line`: the first line was a failed block attribute; no inline attribute
-/// is read from it.
-fn parseParagraph(self: *Parser, literal_first_line: bool) !Node {
-    const para_start_line = self.pos;
-    var text_lines: std.ArrayList([]const u8) = .empty;
-    while (self.pos < self.lines.len) {
-        const line = self.lines[self.pos];
-        if (leaf.isBlank(line)) break;
-        try text_lines.append(self.a, std.mem.trimStart(u8, line, " \t"));
-        self.pos += 1;
-    }
-
-    const attrs_from: usize = if (literal_first_line) text_lines.items[0].len else 0;
-    var para = Node{ .tag = .para, .children = try self.parseInlinesFrom(text_lines.items, para_start_line, attrs_from) };
-    if (self.track_pos) {
-        para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
-        para.end_pos = self.leafEnd(para.children, self.pos - 1);
-    }
-    return para;
-}
-
-/// Where a paragraph or heading whose last line is `last_line` ends, as djot.js: one past
-/// its last non-blank character (the line's newline, col 0 of the next line, unless
-/// whitespace trails it), or one past a hard break that ends it.
-fn leafEnd(self: *const Parser, children: []const Node, last_line: usize) SourcePos {
-    if (children.len > 0 and children[children.len - 1].tag == .hard_break) return self.afterNewline(last_line + 1);
-    return self.afterContent(last_line);
-}
-
-/// One past the last non-blank character of `line_idx`: the line's newline (col 0 of the
-/// next line) unless whitespace trails it.
-fn afterContent(self: *const Parser, line_idx: usize) SourcePos {
-    const line = self.lines[line_idx];
-    const content = std.mem.trimEnd(u8, line, " \t").len;
-    if (content == line.len) return self.makePos(line_idx + 1, 0);
-    return self.makePos(line_idx, @intCast(content + 1));
-}
-
-/// The first byte of `line_idx`: its newline when it is empty, the enclosing parser's
-/// next byte or the document's end past this parser's input.
-fn afterNewline(self: *const Parser, line_idx: usize) SourcePos {
-    if (line_idx >= self.lines.len) return if (self.enclosing) |p| p.afterNewline(self.afterInEnclosing()) else self.doc_end;
-    if (self.lines[line_idx].len == 0) return self.makePos(line_idx + 1, 0);
-    return self.makePos(line_idx, 1);
-}
-
-/// Parses the inline content of `slices`, each a slice of its line, taken from the
-/// consecutive lines starting at `first_line`; positioned when positions are tracked.
-fn parseInlinesAt(self: *Parser, slices: []const []const u8, first_line: usize) ![]const Node {
-    return self.parseInlinesFrom(slices, first_line, 0);
-}
-
-/// As `parseInlinesAt`, reading no inline attribute before joined offset `attrs_from`.
-fn parseInlinesFrom(self: *Parser, slices: []const []const u8, first_line: usize, attrs_from: usize) ![]const Node {
-    const src = try inline_mod.joinLines(self.a, slices);
-    if (src.len == 0) return &.{};
-    const map: ?LineMap = if (self.track_pos) try self.buildInlineLineMap(slices, first_line) else null;
-    return inline_mod.parseInlineContent(self.a, src, map, attrs_from);
-}
-
-fn contentCol(self: *const Parser, line_idx: usize) u32 {
-    if (line_idx >= self.lines.len) return 1;
-    const full_line = self.lines[line_idx];
-    const trimmed = std.mem.trimStart(u8, full_line, " \t");
-    return @intCast(full_line.len - trimmed.len + 1);
-}
-
-/// The map from the joined `slices` back to their lines, which start at `start_line`;
-/// each slice's column is where it lies in its line.
-fn buildInlineLineMap(self: *Parser, slices: []const []const u8, start_line: usize) !LineMap {
-    var segs: std.ArrayList(LineMap.Segment) = .empty;
-    var joined_pos: u32 = 0;
-    for (slices, 0..) |line, i| {
-        const orig_line_idx = start_line + i;
-        const orig = self.lines[orig_line_idx];
-        std.debug.assert(@intFromPtr(line.ptr) >= @intFromPtr(orig.ptr) and @intFromPtr(line.ptr) + line.len <= @intFromPtr(orig.ptr) + orig.len);
-        const col: u32 = @intCast(@intFromPtr(line.ptr) - @intFromPtr(orig.ptr) + 1);
-        const pos_val = self.makePos(orig_line_idx, col);
-        try segs.append(self.a, .{
-            .joined_start = joined_pos,
-            .orig_line = pos_val.line,
-            .orig_col = pos_val.col,
-            .orig_offset = pos_val.offset,
-        });
-        joined_pos += @intCast(line.len + 1);
-    }
-    return .{ .segments = try segs.toOwnedSlice(self.a), .total = joined_pos - 1, .end = self.makePos(start_line + slices.len, 0) };
-}
-
-fn tryHeading(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const trimmed = std.mem.trimStart(u8, line, " \t");
-    const hashes = leaf.headingLevel(trimmed) orelse return null;
-    const start_line = self.pos;
-
-    self.pos += 1;
-    var content_lines: std.ArrayList([]const u8) = .empty;
-    const after_hashes = std.mem.trim(u8, trimmed[hashes..], " \t");
-    if (after_hashes.len > 0) try content_lines.append(self.a, after_hashes);
-    const first_content_line = if (after_hashes.len > 0) start_line else start_line + 1;
-
-    while (self.pos < self.lines.len) {
-        const next = self.lines[self.pos];
-        if (leaf.isBlank(next)) break;
-        if (leaf.isThematicBreak(next) or leaf.isCodeFence(next) != null or
-            leaf.startsBlockQuote(next) or leaf.isFencedDivStart(next) != null)
+/// The next top-level block, or null at the end of the input. Definitions are recorded
+/// in `defs` as they close and never returned.
+pub fn nextBlock(self: *Parser) Error!?Block {
+    while (self.done == null) {
+        const line = (try self.lines.next()) orelse {
+            const end = self.lines.end();
+            try self.closeFrom(0, .{ .pos = end, .before = end, .line_first = end, .eof = true });
+            self.flush();
             break;
-        if (leaf.parseBulletMarker(next) != null or leaf.parseOrderedMarker(next) != null) break;
-        if (try attrs_mod.tryParseBlockAttr(self.a, next) != null or leaf.definitionLabel(next) != null) break;
-        const next_trimmed = std.mem.trimStart(u8, next, " ");
-        const next_hashes = leaf.countLeadingChar(next_trimmed, '#');
-        if (next_hashes == hashes and next_hashes < next_trimmed.len and
-            (next_trimmed[next_hashes] == ' ' or next_trimmed[next_hashes] == '\t'))
-        {
-            try content_lines.append(self.a, std.mem.trim(u8, next_trimmed[next_hashes..], " \t"));
-        } else if (next_hashes > 0 and next_hashes <= 6 and next_hashes != hashes and
-            (next_hashes >= next_trimmed.len or next_trimmed[next_hashes] == ' ' or next_trimmed[next_hashes] == '\t'))
-        {
-            break;
-        } else {
-            try content_lines.append(self.a, next);
-        }
-        self.pos += 1;
+        };
+        self.line_count += 1;
+        try self.parseLine(line);
     }
-
-    var node = Node{ .tag = .heading, .level = @intCast(hashes), .children = try self.parseInlinesAt(content_lines.items, first_content_line) };
-    if (self.track_pos) {
-        node.start_pos = self.makePos(start_line, self.contentCol(start_line));
-        node.end_pos = self.leafEnd(node.children, self.pos - 1);
-    }
-    self.defs.headings_parsed += 1;
-    return node;
+    defer self.done = null;
+    return self.done;
 }
 
-fn tryThematicBreak(self: *Parser) ?Node {
-    const line = self.lines[self.pos];
-    if (!leaf.isThematicBreak(line)) return null;
-    var node = Node{ .tag = .thematic_break };
-    if (self.track_pos) {
-        node.start_pos = self.makePos(self.pos, self.contentCol(self.pos));
-        node.end_pos = self.makePos(self.pos + 1, 0);
+/// The pending block's wait is over: it is the block to return, once the one already
+/// due (closed earlier on this line) has been.
+fn flush(self: *Parser) void {
+    if (self.done != null) return;
+    if (self.pending) |p| {
+        self.done = p;
+        self.pending = null;
     }
-    self.pos += 1;
-    return node;
 }
 
-fn tryCodeBlock(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const fence_info = leaf.isCodeFence(line) orelse return null;
-    const open_line = self.pos;
-    self.pos += 1;
-
-    var content: std.ArrayList(u8) = .empty;
-    var closed_at: ?usize = null;
-    while (self.pos < self.lines.len) {
-        const l = self.lines[self.pos];
-        self.pos += 1;
-        if (leaf.isClosingCodeFence(l, fence_info)) {
-            closed_at = self.pos - 1;
-            break;
-        }
-        var stripped = l;
-        var indent_remaining = fence_info.indent;
-        while (indent_remaining > 0 and stripped.len > 0 and stripped[0] == ' ') {
-            stripped = stripped[1..];
-            indent_remaining -= 1;
-        }
-        try content.appendSlice(self.a, stripped);
-        try content.append(self.a, '\n');
-    }
-
-    const lang = fence_info.lang;
-    var node = Node{ .tag = .code_block, .text = try content.toOwnedSlice(self.a), .lang = lang };
-    if (lang != null and lang.?[0] == '=') {
-        node.tag = .raw_block;
-        node.lang = lang.?[1..];
-    }
-    if (self.track_pos) {
-        node.start_pos = self.makePos(open_line, @intCast(fence_info.indent + 1));
-        // A fenced block ends on its closing fence; unclosed, where its container does.
-        node.end_pos = if (closed_at) |l| self.fenceEnd(l) else self.containerEnd();
-    }
-    return node;
+fn tip(self: *Parser) *Container {
+    return &self.stack.items[self.stack.items.len - 1];
 }
 
-fn tryBlockQuote(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    if (!leaf.startsBlockQuote(line)) return null;
-    const start_line = self.pos;
-    const start_col: u32 = @intCast(leaf.countIndent(line) + 1);
-
-    var w = Window{ .first = start_line };
-    var paragraph = OpenParagraph{};
-    while (self.pos < self.lines.len) {
-        const l = self.lines[self.pos];
-        if (leaf.startsBlockQuote(l)) {
-            const inner = leaf.stripBlockQuotePrefix(l);
-            try w.addSlice(self, self.pos, l.len - inner.len, inner);
-            try paragraph.feed(self.a, inner);
-            self.pos += 1;
-        } else if (!leaf.isBlank(l) and paragraph.open and !try self.isBlockStartAt(self.pos)) {
-            try w.add(self, self.pos, 0);
-            try paragraph.feed(self.a, l);
-            self.pos += 1;
-        } else {
-            break;
-        }
-    }
-
-    var inner_parser = self.child(self.a, w);
-    const inner_blocks = try inner_parser.parseBlocks();
-    var node = Node{ .tag = .block_quote, .children = inner_blocks };
-    if (self.track_pos) {
-        node.start_pos = self.makePos(start_line, start_col);
-        node.end_pos = self.endAtBlank(self.pos);
-    }
-    return node;
+/// The allocator for nodes: the document's inside a footnote, whose content outlives
+/// the block, else the block's.
+fn nodeAllocator(self: *const Parser) Allocator {
+    return if (self.footnote_depth > 0) self.defs.a else self.a;
 }
 
-fn tryFencedDiv(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const div_info = leaf.isFencedDivStart(line) orelse return null;
-    const open_line = self.pos;
-    const close = try self.divClose(open_line, div_info.fence);
-    var w = Window{ .first = open_line + 1 };
-    for (open_line + 1..close orelse self.lines.len) |i| try w.add(self, i, 0);
-    // The child's blocks end at the fence; this parser stands on it meanwhile.
-    self.pos = close orelse self.lines.len;
-    self.closing_fence = close;
-    var inner_parser = self.child(self.a, w);
-    const blocks = try inner_parser.parseBlocks();
-    self.closing_fence = null;
-    var node = Node{ .tag = .div, .children = blocks };
-    if (div_info.class) |cls| node.attrs = try self.a.dupe(Attr, &.{.{ .key = "class", .value = cls }});
-    if (self.track_pos) {
-        node.start_pos = self.makePos(open_line, self.contentCol(open_line));
-        // Closed, a div ends on its fence; unclosed, where the enclosing container does.
-        node.end_pos = if (close) |l| self.fenceEnd(l) else self.containerEnd();
-    }
-    if (close != null) self.pos += 1;
-    self.fence_closed = close != null;
-    return node;
-}
-
-/// The closing fence of the div opened with `fence` on `open_line`, or null when the div
-/// runs to the end of the window: as djot.js, the first line after it of at least as many
-/// colons and nothing else, indented or not, that no code block holds (an open paragraph
-/// makes a code fence text, so the paragraph tracker decides what a code block holds).
-/// Nested divs do not count: the first fitting fence closes the outermost div.
-fn divClose(self: *Parser, open_line: usize, fence: []const u8) !?usize {
-    var paragraph = OpenParagraph{};
-    var i = open_line + 1;
-    while (i < self.lines.len) : (i += 1) {
-        const line = self.lines[i];
-        if (paragraph.fence == null and leaf.closesDiv(line, fence)) return i;
-        try paragraph.feed(self.a, line);
-    }
-    return null;
-}
-
-fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
-    const def = leaf.definitionLabel(self.lines[self.pos]) orelse return null;
-    if (def.is_footnote) return null;
-    const label = def.label;
-    var dest_text = def.rest;
-
-    self.pos += 1;
-    var dest_parts: std.ArrayList([]const u8) = .empty;
-    if (dest_text.len > 0) try dest_parts.append(self.a, dest_text);
-    while (self.pos < self.lines.len) {
-        const next = self.lines[self.pos];
-        if (leaf.isBlank(next)) break;
-        if (next.len == 0 or (next[0] != ' ' and next[0] != '\t')) break;
-        const next_trimmed = std.mem.trimStart(u8, next, " ");
-        if (next_trimmed.len > 0 and next_trimmed[0] == '[') break;
-        try dest_parts.append(self.a, std.mem.trim(u8, next, " \t"));
-        self.pos += 1;
-    }
-
-    if (dest_parts.items.len == 0) {
-        dest_text = "";
-    } else if (dest_parts.items.len == 1) {
-        dest_text = dest_parts.items[0];
-    } else {
-        var buf: std.ArrayList(u8) = .empty;
-        for (dest_parts.items) |part| try buf.appendSlice(self.a, part);
-        dest_text = try buf.toOwnedSlice(self.a);
-    }
-
-    const da = self.defs.a;
-    try self.defs.ref_defs.put(da, try da.dupe(u8, label), .{
-        .url = try da.dupe(u8, dest_text),
-        .attrs = if (pending_attrs) |ba| try ba.dupe(da) else null,
-    });
-    return {};
-}
-
-fn tryFootnoteDef(self: *Parser) !?void {
-    const def = leaf.definitionLabel(self.lines[self.pos]) orelse return null;
-    if (!def.is_footnote) return null;
-    const label = def.label;
-    const rest = def.rest;
-    const def_line = self.pos;
-    const headings_before = self.defs.headings_parsed;
-    self.pos += 1;
-
-    var w = Window{ .first = if (rest.len > 0) def_line else def_line + 1 };
-    var paragraph = OpenParagraph{};
-    // The first indented line sets the content indent; deeper lines keep the rest, as
-    // in a list item (`collectItemContent`).
-    var content_indent: ?usize = null;
-    if (rest.len > 0) {
-        try w.addSlice(self, def_line, def.rest_col, rest);
-        try paragraph.feed(self.a, rest);
-    }
-    while (self.pos < self.lines.len) {
-        const l = self.lines[self.pos];
-        if (leaf.isBlank(l)) {
-            var lookahead = self.pos + 1;
-            while (lookahead < self.lines.len and leaf.isBlank(self.lines[lookahead])) : (lookahead += 1) {}
-            if (lookahead < self.lines.len and
-                self.lines[lookahead].len > 0 and
-                (self.lines[lookahead][0] == ' ' or self.lines[lookahead][0] == '\t'))
-            {
-                try w.add(self, self.pos, @min(content_indent orelse l.len, l.len));
-                try paragraph.feed(self.a, "");
-                self.pos += 1;
-            } else break;
-        } else if (l[0] == ' ' or l[0] == '\t') {
-            const indent = leaf.countIndent(l);
-            const strip = @min(indent, content_indent orelse indent);
-            if (content_indent == null) content_indent = indent;
-            try w.add(self, self.pos, strip);
-            try paragraph.feed(self.a, l[strip..]);
-            self.pos += 1;
-        } else if (paragraph.open and !try self.isBlockStartAt(self.pos)) {
-            // An unindented line continues an open paragraph, as in a list item.
-            try w.add(self, self.pos, 0);
-            try paragraph.feed(self.a, l);
-            self.pos += 1;
-        } else break;
-    }
-
-    // The footnote's blocks are rendered at the end of the document, so they are parsed
-    // with the definitions' allocator rather than the current block's, and positioned
-    // like any container's.
-    const da = self.defs.a;
-    var inner_parser = self.child(da, w);
-    const stored = try da.create(FootnoteDef);
-    stored.* = .{ .blocks = try inner_parser.parseBlocks() };
-    if (self.track_pos) {
-        stored.start_pos = self.makePos(def_line, self.contentCol(def_line));
-        stored.end_pos = self.definitionEnd();
-    }
-    const key = try da.dupe(u8, label);
-    try self.defs.footnote_defs.put(da, key, stored);
-    try self.defs.footnote_log.append(da, .{ .label = key, .def = stored, .headings_before = headings_before });
-    return {};
-}
-
-/// An item's lines after its marker, as one window, and whether blank lines ended it.
-const ItemContent = struct {
-    window: Window,
-    trailing_blank: bool,
-};
-
-/// Collects an item's lines: `first_rest` is the first line's content, starting at
-/// column `first_col`; `content_col` is where continuation lines are expected. After the
-/// first line come lines indented past the list's marker (content), unindented text
-/// continuing an open paragraph (lazy) and blank lines, up to a line that is none of
-/// these. Content lines all lose the same prefix: the content column, or less when one is
-/// indented less (a sublist's marker may sit anywhere past this list's marker, as
-/// djot.js), so a sublist's items and their content keep their relative indentation.
-fn collectItemContent(self: *Parser, content_col: usize, first_col: usize, list_indent: usize, first_rest: []const u8) !ItemContent {
-    const Kind = enum { first, content, lazy, blank };
-    var kinds: std.ArrayList(Kind) = .empty;
-    const first_line = self.pos;
-    try kinds.append(self.a, .first);
-    self.pos += 1;
-    var strip = content_col;
-    var paragraph = OpenParagraph{};
-    try paragraph.feed(self.a, first_rest);
-
-    while (self.pos < self.lines.len) {
-        const next = self.lines[self.pos];
-        if (leaf.isBlank(next)) {
-            try kinds.append(self.a, .blank);
-            try paragraph.feed(self.a, "");
-            self.pos += 1;
-            continue;
-        }
-        // A marker at or left of this list's ends the item, lazy or not.
-        if (leaf.parseBulletMarker(next)) |m| if (m.indent <= list_indent) break;
-        if (leaf.parseOrderedMarker(next)) |m| if (m.indent <= list_indent) break;
-        const next_indent = leaf.countIndent(next);
-        if (next_indent > list_indent) {
-            try kinds.append(self.a, .content);
-            strip = @min(strip, next_indent);
-            try paragraph.feed(self.a, next[@min(next_indent, content_col)..]);
-            self.pos += 1;
-            continue;
-        }
-        if (paragraph.open and !(try self.isBlockStartAt(self.pos))) {
-            try kinds.append(self.a, .lazy);
-            try paragraph.feed(self.a, std.mem.trimStart(u8, next, " \t"));
-            self.pos += 1;
-            continue;
-        }
-        break;
-    }
-
-    var trailing_blank = false;
-    while (kinds.items[kinds.items.len - 1] == .blank) {
-        _ = kinds.pop();
-        trailing_blank = true;
-    }
-    var w = Window{ .first = first_line };
-    for (kinds.items, first_line..) |kind, line_idx| {
-        const line = self.lines[line_idx];
-        switch (kind) {
-            // A bare marker's line is shorter than its content column.
-            .first => try w.addSlice(self, line_idx, @min(first_col, line.len), first_rest),
-            .content => try w.add(self, line_idx, strip),
-            .lazy => try w.add(self, line_idx, line.len - std.mem.trimStart(u8, line, " \t").len),
-            .blank => try w.add(self, line_idx, @min(strip, line.len)),
-        }
-    }
-    return .{ .window = w, .trailing_blank = trailing_blank };
-}
-
-const ItemBlocks = struct {
-    blocks: []const Node,
-    /// A blank line separated two of the blocks, which makes the list loose.
-    loose: bool,
-};
-
-fn isList(node: Node) bool {
-    return switch (node.tag) {
-        .bullet_list, .ordered_list, .task_list, .definition_list => true,
+/// Whether the container at depth `n` (none when `n` is 0) holds blocks or items, so
+/// starts are tried after it.
+fn holdsBlocks(self: *const Parser, n: usize) bool {
+    if (n == 0) return true;
+    return switch (self.stack.items[n - 1].content()) {
+        .block, .items => true,
         else => false,
     };
 }
 
-fn parseItemContent(self: *Parser, content: *const ItemContent) !ItemBlocks {
-    var blocks: std.ArrayList(Node) = .empty;
-    var loose = false;
-    var parser = self.child(self.a, content.window);
-    while (try parser.nextBlock()) |block| {
-        // As djot.js, a blank line belongs to the innermost list open when it came, and
-        // makes it loose unless a list follows it: a blank after a sublist is the
-        // sublist's, discarded when it closes; one before a sublist is reset by its start.
-        const after_list = blocks.items.len > 0 and isList(blocks.items[blocks.items.len - 1]);
-        if (parser.blank_before and !after_list and !isList(block)) loose = true;
-        try blocks.append(self.a, block);
+fn parseLine(self: *Parser, line: Line) Error!void {
+    var cur = Cursor{ .line = line };
+    self.finished_line = false;
+    // Open containers continue from the outermost in; the first that does not ends it.
+    var matched: usize = 0;
+    for (self.stack.items) |*c| {
+        cur.skipSpace();
+        if (!try self.continues(c, &cur)) break;
+        matched += 1;
     }
-    // A blank followed only by definitions counts too: they are events, not blocks.
-    const after_list = blocks.items.len > 0 and isList(blocks.items[blocks.items.len - 1]);
-    if (parser.blank_before and !after_list) loose = true;
-    return .{ .blocks = try blocks.toOwnedSlice(self.a), .loose = loose };
-}
-
-/// Where a container ends, as djot.js: where the next block's content starts on the line
-/// the parser stopped at, or that line's newline when it is blank (a block quote stops
-/// there); past the enclosing div's closing fence when that stopped it; at the end of
-/// this window, where the enclosing parser stopped, or the document's end.
-fn containerEnd(self: *const Parser) SourcePos {
-    if (self.pos >= self.lines.len) return self.enclosingEnd();
-    const line = self.lines[self.pos];
-    if (leaf.isBlank(line) or self.closing_fence == self.pos) return self.makePos(self.pos + 1, 0);
-    return self.makePos(self.pos, @intCast(leaf.countIndent(line) + 1));
-}
-
-/// Where a footnote definition ends, as djot.js: where the next block's content starts,
-/// blank lines skipped, or where this parser's input ends.
-fn definitionEnd(self: *const Parser) SourcePos {
-    var next = self.pos;
-    while (next < self.lines.len and leaf.isBlank(self.lines[next])) : (next += 1) {}
-    if (next >= self.lines.len) return self.enclosingEnd();
-    return self.makePos(next, @intCast(leaf.countIndent(self.lines[next]) + 1));
-}
-
-/// Where an item ends, as djot.js: one position before `containerEnd` (the character
-/// before the stop line's content, or col 0, the previous line's end, when it has none),
-/// on the closing fence's last character, or where the enclosing parser's items end.
-fn stopBefore(self: *const Parser) SourcePos {
-    if (self.pos >= self.lines.len) return if (self.enclosing) |p| p.stopBefore() else self.doc_end;
-    const line = self.lines[self.pos];
-    if (self.closing_fence == self.pos) return self.fenceEnd(self.pos);
-    if (leaf.isBlank(line)) return self.makePos(self.pos, 0);
-    const stop = self.containerEnd();
-    return .{ .line = stop.line, .col = stop.col - 1, .offset = stop.offset - 1 };
-}
-
-/// Where a block quote or table ends, as djot.js: on the newline of the blank line at
-/// `line_idx` that follows it, in this parser or the enclosing one; else at `containerEnd`.
-fn endAtBlank(self: *const Parser, line_idx: usize) SourcePos {
-    if (line_idx >= self.lines.len) return if (self.enclosing) |p| p.endAtBlank(self.afterInEnclosing()) else self.containerEnd();
-    if (leaf.isBlank(self.lines[line_idx])) return self.makePos(line_idx + 1, 0);
-    return self.containerEnd();
-}
-
-/// The last fence character of the code or div fence on `line_idx`; what follows it does
-/// not count.
-fn fenceEnd(self: *const Parser, line_idx: usize) SourcePos {
-    const line = self.lines[line_idx];
-    const rest = std.mem.trimStart(u8, line, " \t");
-    const run = leaf.countLeadingChar(rest, rest[0]);
-    return self.makePos(line_idx, @intCast(line.len - rest.len + run));
-}
-
-/// A bullet or ordered list: consecutive items whose markers continue the first one's
-/// (bullets: the same character, task or plain alike; ordered: a shared number style).
-fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
-    const first = leaf.parseMarker(kind, self.lines[self.pos]) orelse return null;
-    const list_indent = first.indent;
-    const list_start_line = self.pos;
-    // A task item after plain items, or the reverse, starts a new list, as djot.js.
-    const list_is_task = kind == .bullet and leaf.isTaskItem(first.rest);
-    var styles = OrderedStyles{ .possible = first.styles, .n = first.n_styles };
-
-    var items: std.ArrayList(Node) = .empty;
-    var is_tight = true;
-    var saw_blank_between = false;
-
-    while (self.pos < self.lines.len) {
-        const m = leaf.parseMarker(kind, self.lines[self.pos]) orelse break;
-        if (m.indent != list_indent) break;
-        switch (kind) {
-            .bullet => if (m.bullet != first.bullet or leaf.isTaskItem(m.rest) != list_is_task) break,
-            .ordered => if (m.delim != first.delim or !styles.accept(m, items.items.len == 0)) break,
-        }
-
-        const item_start_line = self.pos;
-        // A task item's content starts after the checkbox and the space that follows
-        // it, as djot.js; a bare checkbox opens no paragraph.
-        var first_rest = m.rest;
-        var first_col = m.content_col;
-        if (list_is_task) {
-            const after_box = std.mem.trimStart(u8, m.rest[@min(4, m.rest.len)..], " \t");
-            first_col += m.rest.len - after_box.len;
-            first_rest = after_box;
-        }
-        const content = try self.collectItemContent(m.content_col, first_col, list_indent, first_rest);
-        const parsed = try self.parseItemContent(&content);
-        const inner_blocks = parsed.blocks;
-        // Blank lines between items make the list loose, unless a sublist absorbs them: the
-        // one ending the item before, or the one this item starts with, as djot.js.
-        const starts_with_list = inner_blocks.len > 0 and isList(inner_blocks[0]);
-        const ends_with_list = inner_blocks.len > 0 and isList(inner_blocks[inner_blocks.len - 1]);
-        if (parsed.loose or (saw_blank_between and !starts_with_list)) is_tight = false;
-        saw_blank_between = content.trailing_blank and !ends_with_list;
-        try items.append(self.a, .{
-            .tag = if (list_is_task) .task_list_item else .list_item,
-            .children = inner_blocks,
-            .checked = if (list_is_task) m.rest[1] != ' ' else null,
-            .start_pos = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null,
-            .end_pos = if (self.track_pos) self.stopBefore() else null,
-        });
+    if (self.finished_line) {
+        // A closing code fence: the containers above its block close, and the line is done.
+        var stand = cur.stand();
+        stand.inclusive = true;
+        return self.closeFrom(matched, stand);
     }
-
-    var list = Node{
-        .tag = switch (kind) {
-            .bullet => if (list_is_task) .task_list else .bullet_list,
-            .ordered => .ordered_list,
-        },
-        .children = try items.toOwnedSlice(self.a),
-        .tight = is_tight,
-        .start_pos = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null,
-        .end_pos = if (self.track_pos) self.containerEnd() else null,
+    // New containers open while the innermost matched one holds blocks or items.
+    cur.skipSpace();
+    var new_starts = false;
+    while (!cur.atEol() and self.holdsBlocks(matched)) {
+        if (!try self.tryOpen(&cur, matched)) break;
+        matched = self.stack.items.len;
+        new_starts = true;
+        if (self.finished_line) return;
+        cur.skipSpace();
+    }
+    // The rest of the line: lazy text continues an open paragraph or heading that no
+    // longer matched, when nothing opened and the line is not blank; otherwise the
+    // containers that did not match close here.
+    cur.skipSpace();
+    const blank = cur.atEol();
+    const lazy = !blank and !new_starts and matched < self.stack.items.len and self.tip().content() == .inlines;
+    if (!lazy) try self.closeFrom(matched, cur.stand());
+    if (self.holdsBlocks(self.stack.items.len)) {
+        if (blank) {
+            if (!new_starts) self.blankLine();
+        } else {
+            try self.push(.{ .para = .{} }, cur.pos());
+        }
+    }
+    if (self.stack.items.len > 0) switch (self.tip().content()) {
+        .inlines => if (!blank) try self.addLeafLine(cur),
+        .text => try self.addCodeLine(cur),
+        else => {},
     };
-    switch (kind) {
-        .bullet => list.style = switch (first.bullet) {
-            '+' => "+",
-            '*' => "*",
-            else => "-",
+}
+
+/// Whether the line at `cur` continues `c`, moving `cur` past the prefix it consumes.
+fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
+    switch (c.data) {
+        .para => return !cur.atEol(),
+        .heading => |h| {
+            const r = cur.rest();
+            const hashes = leaf.countLeadingChar(r, '#');
+            if (hashes != h.level or (hashes < r.len and r[hashes] != ' ' and r[hashes] != '\t')) return false;
+            cur.i += hashes;
+            c.leaf_end = afterContent(cur.line);
+            return true;
         },
-        .ordered => {
-            list.list_style = styles.possible[0] orelse .decimal;
-            list.start = leaf.getListStart(first.marker_text, list.list_style.?);
+        .thematic_break => return false,
+        .attributes => |*at| {
+            if (at.attrs != null) return false;
+            // Lines indented past the opener keep the attribute going until it parses.
+            if (!cur.atEol() and cur.indent > at.indent) {
+                try self.addLeafSlice(std.mem.trim(u8, cur.rest(), " \t"), cur.pos(), cur.line);
+                c.leaf_end = afterContent(cur.line);
+                const a = self.nodeAllocator();
+                at.attrs = try attrs_mod.parseAttrsFromStr(a, try inline_mod.joinLines(a, self.leaf_slices.items));
+                cur.i = cur.line.bytes.len;
+                return true;
+            }
+            // It never parsed: its lines are a paragraph, the first read without inline
+            // attributes when it opened one, and this line continues it or not as a
+            // paragraph's would.
+            const first = self.leaf_slices.items[0];
+            c.data = .{ .para = .{ .attrs_from = if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0 } };
+            return !cur.atEol();
         },
-    }
-    return list;
-}
-
-fn tryDefinitionList(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const trimmed = std.mem.trimStart(u8, line, " ");
-    if (trimmed.len < 2 or trimmed[0] != ':' or (trimmed[1] != ' ' and trimmed[1] != '\t')) return null;
-    const list_start_line = self.pos;
-
-    var items: std.ArrayList(Node) = .empty;
-
-    while (self.pos < self.lines.len) {
-        const cur = self.lines[self.pos];
-        const cur_trimmed = std.mem.trimStart(u8, cur, " ");
-        if (cur_trimmed.len < 2 or cur_trimmed[0] != ':' or (cur_trimmed[1] != ' ' and cur_trimmed[1] != '\t')) break;
-
-        const marker_indent = @as(usize, @intCast(cur.len - cur_trimmed.len));
-        const content_indent = marker_indent + 2;
-        const first_content = cur_trimmed[2..];
-        const item_line = self.pos;
-        self.pos += 1;
-
-        var w = Window{ .first = item_line };
-        var paragraph = OpenParagraph{};
-        try w.add(self, item_line, content_indent);
-        try paragraph.feed(self.a, first_content);
-
-        while (self.pos < self.lines.len) {
-            const next = self.lines[self.pos];
-            if (leaf.isBlank(next)) {
-                const first_blank = self.pos;
-                self.pos += 1;
-                while (self.pos < self.lines.len and leaf.isBlank(self.lines[self.pos])) self.pos += 1;
-                if (self.pos >= self.lines.len) break;
-                const peek = self.lines[self.pos];
-                if (leaf.countIndent(peek) >= content_indent) {
-                    for (first_blank..self.pos) |blank| {
-                        try w.add(self, blank, @min(content_indent, self.lines[blank].len));
-                        try paragraph.feed(self.a, "");
-                    }
-                    continue;
-                }
-                break;
-            }
-            const ni = leaf.countIndent(next);
-            if (ni >= content_indent) {
-                try w.add(self, self.pos, content_indent);
-                try paragraph.feed(self.a, next[content_indent..]);
-                self.pos += 1;
-            } else if ((ni > marker_indent and ni < content_indent) or
-                (paragraph.open and !try self.isBlockStartAt(self.pos)))
-            {
-                // Under-indented lines, and unindented ones while a paragraph (the
-                // term, or a definition's paragraph) is open, continue it lazily.
-                const lazy = std.mem.trimStart(u8, next, " \t");
-                try w.add(self, self.pos, next.len - lazy.len);
-                try paragraph.feed(self.a, lazy);
-                self.pos += 1;
-            } else {
-                break;
-            }
-        }
-
-        var inner_parser = self.child(self.a, w);
-        const all_blocks = try inner_parser.parseBlocks();
-
-        var term_node: Node = undefined;
-        var def_blocks: []const Node = &.{};
-        if (all_blocks.len > 0 and all_blocks[0].tag == .para) {
-            term_node = .{ .tag = .term, .children = all_blocks[0].children };
-            def_blocks = all_blocks[1..];
-        } else {
-            term_node = .{ .tag = .term, .children = &.{} };
-            def_blocks = all_blocks;
-        }
-
-        var item_children: std.ArrayList(Node) = .empty;
-        try item_children.append(self.a, term_node);
-        try item_children.append(self.a, .{ .tag = .definition, .children = def_blocks });
-        var item = Node{ .tag = .definition_list_item, .children = try item_children.toOwnedSlice(self.a) };
-        if (self.track_pos) {
-            item.start_pos = self.makePos(item_line, @intCast(marker_indent + 1));
-            item.end_pos = self.stopBefore();
-        }
-        try items.append(self.a, item);
-    }
-
-    if (items.items.len == 0) return null;
-    var list = Node{ .tag = .definition_list, .children = try items.toOwnedSlice(self.a) };
-    if (self.track_pos) {
-        list.start_pos = self.makePos(list_start_line, @intCast(leaf.countIndent(line) + 1));
-        list.end_pos = self.containerEnd();
-    }
-    return list;
-}
-
-fn tryTable(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    if (!leaf.isTableRow(line)) return null;
-    const start_line = self.pos;
-
-    var raw_rows: std.ArrayList([]const u8) = .empty;
-    while (self.pos < self.lines.len) {
-        const l = self.lines[self.pos];
-        if (!leaf.isTableRow(l)) break;
-        try raw_rows.append(self.a, l);
-        self.pos += 1;
-    }
-
-    var aligns: std.ArrayList([]const CellAlign) = .empty;
-    var head_above: std.ArrayList(bool) = .empty;
-    for (raw_rows.items) |r| {
-        if (leaf.isTableSep(r)) {
-            try aligns.append(self.a, try leaf.parseSepAligns(self.a, r));
-            try head_above.append(self.a, true);
-        } else {
-            try aligns.append(self.a, &.{});
-            try head_above.append(self.a, false);
-        }
-    }
-
-    var is_head_row: std.ArrayList(bool) = .empty;
-    for (raw_rows.items, 0..) |_, idx| {
-        if (head_above.items[idx]) {
-            try is_head_row.append(self.a, false);
-        } else {
-            const next_is_sep = (idx + 1 < head_above.items.len and head_above.items[idx + 1]);
-            try is_head_row.append(self.a, next_is_sep);
-        }
-    }
-
-    var rows: std.ArrayList(Node) = .empty;
-    var current_aligns: []const CellAlign = &.{};
-    for (raw_rows.items, 0..) |r, idx| {
-        if (head_above.items[idx]) {
-            current_aligns = aligns.items[idx];
-            continue;
-        }
-        const effective_aligns = if (is_head_row.items[idx])
-            (if (idx + 1 < aligns.items.len) aligns.items[idx + 1] else current_aligns)
-        else
-            current_aligns;
-        const line_idx = start_line + idx;
-        const cells = try self.parseTableRowWithAlign(r, line_idx, effective_aligns, is_head_row.items[idx]);
-        var row = Node{ .tag = .row, .children = cells, .head = is_head_row.items[idx] };
-        if (self.track_pos) {
-            row.start_pos = self.makePos(line_idx, self.contentCol(line_idx));
-            row.end_pos = self.afterContent(line_idx);
-        }
-        try rows.append(self.a, row);
-    }
-    const rows_end = self.pos;
-
-    // The last caption after the rows wins, as djot.js.
-    var cap_lines: std.ArrayList([]const u8) = .empty;
-    var cap_line: usize = rows_end;
-    while (self.pos < self.lines.len) {
-        var look = self.pos;
-        while (look < self.lines.len and leaf.isBlank(self.lines[look])) : (look += 1) {}
-        if (look >= self.lines.len) break;
-        if (leaf.captionContent(self.lines[look])) |first| {
-            cap_lines.items.len = 0;
-            cap_line = look;
-            self.pos = look;
-            try cap_lines.append(self.a, first);
-            self.pos += 1;
-            while (self.pos < self.lines.len) {
-                const l = self.lines[self.pos];
-                if (leaf.isBlank(l)) break;
-                if (leaf.isTableRow(l)) break;
-                try cap_lines.append(self.a, std.mem.trim(u8, l, " \t"));
-                self.pos += 1;
-            }
-        } else break;
-    }
-
-    // djot.js gives every table a caption, empty when there is none; a caption whose
-    // marker line is empty starts on that line's newline and holds the lines after it.
-    const bare_marker = cap_lines.items.len > 0 and cap_lines.items[0].len == 0;
-    const cap_slices = if (bare_marker) cap_lines.items[1..] else cap_lines.items;
-    var caption = Node{ .tag = .caption, .children = try self.parseInlinesAt(cap_slices, if (bare_marker) cap_line + 1 else cap_line) };
-    if (self.track_pos and cap_lines.items.len > 0) {
-        caption.start_pos = self.captionStart(cap_line);
-        caption.end_pos = if (cap_slices.len == 0) caption.start_pos else self.afterContent(self.pos - 1);
-    }
-    var table = Node{ .tag = .table };
-    if (self.track_pos) {
-        table.start_pos = self.makePos(start_line, self.contentCol(start_line));
-        // As djot.js: where a caption on the line after the rows starts; else at the blank
-        // line that follows the rows, or where the next block starts.
-        table.end_pos = if (rows_end < self.lines.len and leaf.captionContent(self.lines[rows_end]) != null)
-            self.captionStart(rows_end)
-        else
-            self.endAtBlank(rows_end);
-    }
-    var table_children: std.ArrayList(Node) = .empty;
-    try table_children.append(self.a, caption);
-    for (rows.items) |r| try table_children.append(self.a, r);
-    table.children = try table_children.toOwnedSlice(self.a);
-    return table;
-}
-
-/// Where the caption on `line_idx` starts: its text, or the line's newline when it has none.
-fn captionStart(self: *const Parser, line_idx: usize) SourcePos {
-    const line = self.lines[line_idx];
-    const content = leaf.captionContent(line).?;
-    if (content.len == 0) return self.makePos(line_idx + 1, 0);
-    return self.makePos(line_idx, @intCast(@intFromPtr(content.ptr) - @intFromPtr(line.ptr) + 1));
-}
-
-fn parseTableRowWithAlign(self: *Parser, line: []const u8, line_idx: usize, col_aligns: []const CellAlign, is_head: bool) ![]const Node {
-    var cells: std.ArrayList(Node) = .empty;
-    const cell_strs = try leaf.rowCells(self.a, line);
-    for (cell_strs, 0..) |cell, col| {
-        const cell_text = std.mem.trim(u8, cell, " \t");
-        var node = Node{ .tag = .cell, .children = try self.parseInlinesAt(&.{cell_text}, line_idx), .head = is_head };
-        if (col < col_aligns.len) node.cell_align = col_aligns[col];
-        if (self.track_pos) {
-            // A cell runs from its leading pipe to the next one, inclusive.
-            const open_col: u32 = @intCast(@intFromPtr(cell.ptr) - @intFromPtr(line.ptr));
-            node.start_pos = self.makePos(line_idx, open_col);
-            node.end_pos = self.makePos(line_idx, open_col + @as(u32, @intCast(cell.len)) + 1);
-        }
-        try cells.append(self.a, node);
-    }
-    return cells.toOwnedSlice(self.a);
-}
-
-/// Whether the line at `pos` starts a block other than a paragraph, so a container's
-/// lazy paragraph continuation stops there. The set is djot.js's: every block start,
-/// definitions and attribute blocks included.
-fn isBlockStartAt(self: *Parser, pos: usize) !bool {
-    if (try isBlockStartLine(self.a, self.lines[pos])) return true;
-    return (try self.blockAttrAt(pos)) != null;
-}
-
-/// `isBlockStartAt` for a line on its own: everything but an attribute block that
-/// continues over the following lines.
-fn isBlockStartLine(a: Allocator, line: []const u8) !bool {
-    const trimmed = std.mem.trimStart(u8, line, " \t");
-    if (trimmed.len == 0) return false;
-    if (leaf.headingLevel(trimmed) != null) return true;
-    if (leaf.startsBlockQuote(line)) return true;
-    if (leaf.isCodeFence(line) != null) return true;
-    if (leaf.parseBulletMarker(line) != null) return true;
-    if (leaf.parseOrderedMarker(line) != null) return true;
-    if (leaf.isThematicBreak(trimmed)) return true;
-    if (trimmed[0] == ':' and trimmed.len > 1 and (trimmed[1] == ' ' or trimmed[1] == '\t')) return true;
-    if (leaf.definitionLabel(line) != null) return true;
-    if (leaf.isTableRow(line)) return true;
-    if (leaf.isFencedDivStart(line) != null) return true;
-    return try attrs_mod.tryParseBlockAttr(a, line) != null;
-}
-
-/// Whether the lines collected so far into a container leave a paragraph (or a heading,
-/// which also takes continuation lines) open, which is what an unindented line may
-/// lazily continue. It follows the parser's own rules: nothing interrupts a paragraph; a
-/// heading ends at what `tryHeading` stops at; a blank line closes either; after that a
-/// code block, thematic break, table row, reference definition, empty footnote
-/// definition or attribute line starts closed. A div fence met outside a paragraph opens
-/// a div and a bare one closes the innermost div and whatever it held (fence lengths are
-/// not matched; djot.js does not either). A block quote met outside a paragraph gets a
-/// tracker of its own over its stripped lines, and a line that is not a quote line ends
-/// it unless it is lazy text for the quote's open paragraph. List items are read as text
-/// (their fences and rules are recognised whatever the indent).
-const OpenParagraph = struct {
-    open: bool = false,
-    heading: bool = false,
-    fence: ?FenceInfo = null,
-    /// The fence lengths of the open divs, outermost first, as the parser sees them.
-    div_fences: std.ArrayList(usize) = .empty,
-    quote: ?*OpenParagraph = null,
-    in_quote: bool = false,
-
-    fn feed(self: *OpenParagraph, a: Allocator, line: []const u8) !void {
-        if (self.in_quote) {
-            const q = self.quote.?;
-            if (leaf.isBlank(line)) {
-                self.in_quote = false;
-                self.open = false;
-                return;
-            }
-            if (leaf.startsBlockQuote(line)) {
-                try q.feed(a, leaf.stripBlockQuotePrefix(line));
-                self.open = q.open;
-                return;
-            }
-            if (q.open and !try isBlockStartLine(a, line)) {
-                try q.feed(a, line);
-                self.open = q.open;
-                return;
-            }
-            // The nested quote has ended; this line is ours.
-            self.in_quote = false;
-            self.open = false;
-        }
-        if (self.fence) |f| {
-            if (leaf.isClosingCodeFence(line, f)) self.fence = null;
-            return;
-        }
-        if (leaf.isBlank(line)) {
-            self.open = false;
-            self.heading = false;
-            return;
-        }
-        if (self.open and !(self.heading and try endsHeading(a, line))) {
-            // A closing fence ends the paragraph with its div; an opener is text here.
-            if (leaf.isFencedDivStart(line)) |div| if (div.class == null) {
-                if (self.closingDiv(div.fence.len)) |depth| {
-                    self.div_fences.items.len = depth;
-                    self.open = false;
-                    self.heading = false;
-                }
+        .block_quote => {
+            if (!leaf.startsBlockQuote(cur.rest())) return false;
+            cur.i += 1;
+            return true;
+        },
+        .list => |*l| {
+            if (cur.atEol() or cur.indent > l.indent) return true;
+            // A marker of the list's style continues it, whatever its indent (djot.js),
+            // narrowing an ordered list's possible styles.
+            const m = listMarker(cur.rest()) orelse return false;
+            return switch (l.style) {
+                .bullet => |ch| m.style == .bullet and m.style.bullet == ch,
+                .task => m.style == .task,
+                .definition => m.style == .definition,
+                .ordered => |*o| m.style == .ordered and m.style.ordered.delim == o.delim and o.styles.accept(m.ordered.?, false),
             };
-            return;
-        }
-        self.open = false;
-        self.heading = false;
-        if (leaf.isFencedDivStart(line)) |div| {
-            if (div.class == null) {
-                if (self.closingDiv(div.fence.len)) |depth| {
-                    self.div_fences.items.len = depth;
-                    return;
-                }
+        },
+        .list_item => |it| return cur.atEol() or cur.indent > it.indent,
+        .footnote => |f| return cur.atEol() or cur.indent > f.indent,
+        .div => |*dv| {
+            // A code block's lines are its own, whatever they look like (djot.js #109).
+            if (self.tip().data == .code_block) return true;
+            // A bare fence of at least as many colons closes the div, ending it on its
+            // last colon; the rest of the line is blank.
+            const r = cur.rest();
+            if (leaf.closesDiv(r, dv.fence_len)) {
+                dv.end = cur.at(cur.i + leaf.countLeadingChar(r, ':') - 1);
+                cur.i = cur.line.bytes.len;
+                return false;
             }
-            try self.div_fences.append(a, div.fence.len);
-            return;
-        }
-        if (leaf.isCodeFence(line)) |f| {
-            self.fence = f;
-            return;
-        }
-        if (leaf.startsBlockQuote(line)) {
-            const q = self.quote orelse try a.create(OpenParagraph);
-            q.* = .{};
-            try q.feed(a, leaf.stripBlockQuotePrefix(line));
-            self.quote = q;
-            self.in_quote = true;
-            self.open = q.open;
-            return;
-        }
-        if (leaf.definitionLabel(line)) |def| {
-            self.open = def.is_footnote and def.rest.len > 0;
-            return;
-        }
-        if (leaf.isThematicBreak(line) or leaf.isTableRow(line) or try attrs_mod.tryParseBlockAttr(a, line) != null) return;
-        self.open = true;
-        self.heading = leaf.headingLevel(std.mem.trimStart(u8, line, " \t")) != null;
+            return true;
+        },
+        .code_block => |*cb| {
+            // The closing fence ends the block on its last character and takes the line.
+            const r = cur.rest();
+            if (leaf.isClosingCodeFence(r, cb.fence)) {
+                cb.end = cur.at(cur.i + leaf.countLeadingChar(r, cb.fence.char) - 1);
+                cur.i = cur.line.bytes.len;
+                self.finished_line = true;
+                return false;
+            }
+            return true;
+        },
+        .table => {
+            if (!leaf.isTableRow(cur.rest())) return false;
+            try self.tableRow(c, cur);
+            return true;
+        },
+        .caption => return !cur.atEol(),
+        .reference_definition => |rd| {
+            // A deeper-indented line holding one word continues the destination.
+            const r = cur.rest();
+            if (cur.atEol() or cur.indent <= rd.indent or std.mem.indexOfAny(u8, r, " \t") != null) return false;
+            try self.addLeafSlice(r, cur.pos(), cur.line);
+            cur.i = cur.line.bytes.len;
+            return true;
+        },
     }
+}
 
-    /// The depth a bare fence of `len` colons closes to: that of the outermost open div
-    /// whose fence it fits, as `tryFencedDiv` (`divClose`); null when it opens a div.
-    fn closingDiv(self: *const OpenParagraph, len: usize) ?usize {
-        for (self.div_fences.items, 0..) |fence, depth| {
-            if (fence <= len) return depth;
-        }
-        return null;
-    }
-
-    /// What `tryHeading` stops at.
-    fn endsHeading(a: Allocator, line: []const u8) !bool {
-        return leaf.isThematicBreak(line) or leaf.isCodeFence(line) != null or leaf.startsBlockQuote(line) or
-            leaf.isFencedDivStart(line) != null or leaf.parseBulletMarker(line) != null or
-            leaf.parseOrderedMarker(line) != null or try attrs_mod.tryParseBlockAttr(a, line) != null or
-            leaf.definitionLabel(line) != null;
-    }
+/// A list marker at the start of a line's content: the style it gives the list, how many
+/// bytes it and the space after it take, and a task item's state.
+const Marker = struct {
+    style: ListStyle,
+    advance: usize,
+    checked: ?bool = null,
+    /// An ordered marker's text, for the list's start number.
+    text: []const u8 = "",
+    ordered: ?leaf.Marker = null,
 };
 
-test "CRLF input is indexed without carriage returns; offsets count them" {
-    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer arena.deinit();
-    const index = try indexLines(arena.allocator(), "-\r\n- b\r\n");
-    try std.testing.expectEqualStrings("-", index.lines[0]);
-    try std.testing.expectEqualStrings("- b", index.lines[1]);
-    try std.testing.expectEqual(@as(u32, 3), index.offsets[1]);
+fn listMarker(r: []const u8) ?Marker {
+    if (leaf.parseBulletMarker(r)) |m| {
+        if (leaf.isTaskItem(m.rest)) return .{ .style = .task, .advance = r.len - m.rest.len + 3, .checked = m.rest[1] != ' ' };
+        return .{ .style = .{ .bullet = m.bullet }, .advance = r.len - m.rest.len };
+    }
+    if (r.len >= 1 and r[0] == ':' and (r.len == 1 or r[1] == ' ' or r[1] == '\t')) return .{ .style = .definition, .advance = @min(2, r.len) };
+    if (leaf.parseOrderedMarker(r)) |m| return .{
+        .style = .{ .ordered = .{ .styles = .{ .possible = m.styles, .n = m.n_styles }, .delim = m.delim } },
+        .advance = r.len - m.rest.len,
+        .text = m.marker_text,
+        .ordered = m,
+    };
+    return null;
 }
 
-test "definitions outlive the block that defined them" {
-    const input =
-        \\> {.c}
-        \\> [x]: /u
-        \\
-        \\[^n]: note
-        \\
-        \\a
-    ;
-    const block_mem = try std.testing.allocator.alloc(u8, 1 << 16);
-    defer std.testing.allocator.free(block_mem);
-    var block_fba = std.heap.FixedBufferAllocator.init(block_mem);
-    var doc_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
-    defer doc_arena.deinit();
-    var defs = Definitions{ .a = doc_arena.allocator() };
+/// Tries the block starts at `cur`, in djot.js's order; on one, closes the containers
+/// above `matched`, pushes the new one and moves `cur` past its marker. After a list,
+/// only its item can open.
+fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
+    const r = cur.rest();
+    const stand = cur.stand();
+    if (matched > 0 and self.stack.items[matched - 1].content() == .items) {
+        const m = listMarker(r).?; // the list opened on, or continued by, this marker
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .list_item = .{ .indent = cur.indent, .checked = m.checked } }, cur.pos());
+        cur.i += m.advance;
+        return true;
+    }
+    if (leaf.startsBlockQuote(r)) {
+        try self.closeFrom(matched, stand);
+        try self.push(.block_quote, cur.pos());
+        cur.i += 1;
+        return true;
+    }
+    if (leaf.headingLevel(r)) |level| {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .heading = .{ .level = @intCast(level) } }, cur.pos());
+        self.tip().leaf_end = afterContent(cur.line);
+        cur.i += level;
+        return true;
+    }
+    if (r.len > 1 and r[0] == '^' and (r[1] == ' ' or r[1] == '\t')) {
+        // The containers before it close where its text starts (djot.js moves past the
+        // marker first), so a table ends at its caption.
+        cur.i += 1;
+        cur.skipSpace();
+        try self.closeFrom(matched, cur.stand());
+        try self.push(.caption, cur.pos());
+        self.tip().leaf_end = cur.pos();
+        return true;
+    }
+    if (leaf.definitionLabel(r)) |def| {
+        const spaced = r.len == def.rest_col or r[def.rest_col - 1] == ' ' or r[def.rest_col - 1] == '\t';
+        if (def.is_footnote and spaced) {
+            try self.closeFrom(matched, stand);
+            try self.push(.{ .footnote = .{
+                .label = try self.defs.a.dupe(u8, def.label[1..]),
+                .indent = cur.indent,
+                .headings_before = self.defs.headings_parsed,
+            } }, cur.pos());
+            self.footnote_depth += 1;
+            cur.i += def.rest_col;
+            return true;
+        }
+        // A reference definition's destination is one word, to the end of the line
+        // (`[^n]:x`, no space after the colon, is one, labelled `^n`, as djot.js).
+        if (std.mem.indexOfAny(u8, def.rest, " \t") == null and def.rest_col + def.rest.len == r.len) {
+            try self.closeFrom(matched, stand);
+            try self.push(.{ .reference_definition = .{ .label = try self.defs.a.dupe(u8, def.label), .indent = cur.indent } }, cur.pos());
+            if (def.rest.len > 0) try self.addLeafSlice(def.rest, cur.at(cur.i + def.rest_col), cur.line);
+            cur.i = cur.line.bytes.len;
+            return true;
+        }
+    }
+    if (leaf.isThematicBreak(r)) {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .thematic_break = .{ .end = cur.line.eol } }, cur.pos());
+        cur.i = cur.line.bytes.len;
+        return true;
+    }
+    if (listMarker(r)) |m| {
+        try self.closeFrom(matched, stand);
+        var list: @FieldType(@FieldType(Container, "data"), "list") = .{ .style = m.style, .indent = cur.indent, .marker = undefined, .marker_len = 0 };
+        if (m.text.len <= list.marker.len) {
+            @memcpy(list.marker[0..m.text.len], m.text);
+            list.marker_len = @intCast(m.text.len);
+        }
+        try self.push(.{ .list = list }, cur.pos());
+        return true; // the item opens on the same marker next
+    }
+    if (leaf.isTableRow(r)) {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .table = .{} }, cur.pos());
+        try self.tableRow(self.tip(), cur);
+        return true;
+    }
+    if (r[0] == '{') {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
+        const text = std.mem.trimEnd(u8, r, " \t");
+        try self.addLeafSlice(text, cur.pos(), cur.line);
+        self.tip().leaf_end = afterContent(cur.line);
+        // Complete on one line, or kept open for the indented lines that may follow.
+        if (text[text.len - 1] == '}') self.tip().data.attributes.attrs = try attrs_mod.parseAttrsFromStr(self.nodeAllocator(), text);
+        cur.i = cur.line.bytes.len;
+        return true;
+    }
+    if (leaf.isFencedDivStart(r)) |dv| if (divClass(dv.class)) {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .div = .{
+            .fence_len = dv.fence.len,
+            .class = if (dv.class) |cls| try self.nodeAllocator().dupe(u8, cls) else null,
+        } }, cur.pos());
+        cur.i = cur.line.bytes.len;
+        self.finished_line = true;
+        return true;
+    };
+    if (leaf.isCodeFence(r)) |fence| {
+        try self.closeFrom(matched, stand);
+        try self.push(.{ .code_block = .{
+            .fence = fence,
+            .indent = cur.indent,
+            .lang = if (fence.lang) |lang| try self.nodeAllocator().dupe(u8, lang) else null,
+        } }, cur.pos());
+        cur.i = cur.line.bytes.len;
+        self.finished_line = true;
+        return true;
+    }
+    return false;
+}
 
-    var p = try Parser.init(block_fba.allocator(), input, &defs);
-    while (try p.nextBlock()) |_| {}
-    // Whatever a definition still shares with the block allocator is now garbage.
-    @memset(block_mem, 0xff);
+/// A table row at `cur`, which takes the line: a separator sets the aligns of the rows
+/// to come and makes the row before it a head row; any other row's cells run from
+/// pipe to pipe, read with the aligns set so far.
+fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
+    const a = self.nodeAllocator();
+    const r = cur.rest();
+    defer {
+        cur.i = cur.line.bytes.len;
+        self.finished_line = true;
+    }
+    if (leaf.isTableSep(r)) {
+        const aligns = try leaf.parseSepAligns(a, r);
+        c.data.table.aligns = aligns;
+        if (c.children.items.len > 0) {
+            const row = &c.children.items[c.children.items.len - 1];
+            row.head = true;
+            // The cells were made for this row alone, so they are this parser's to change.
+            for (@constCast(row.children), 0..) |*cell, i| {
+                cell.head = true;
+                cell.cell_align = if (i < aligns.len) aligns[i] else .default;
+            }
+        }
+        return;
+    }
+    const strs = try leaf.rowCells(a, r);
+    const cells = try a.alloc(Node, strs.len);
+    for (strs, cells, 0..) |str, *cell, i| {
+        const text = std.mem.trim(u8, str, " \t");
+        // Where the cell's text and its pipes lie on the line.
+        const idx = cur.i + (@intFromPtr(str.ptr) - @intFromPtr(r.ptr));
+        const text_idx = idx + (@intFromPtr(text.ptr) - @intFromPtr(str.ptr));
+        if (text.len > 0) try self.addLeafSlice(text, cur.at(text_idx), cur.line);
+        cell.* = .{
+            .tag = .cell,
+            .children = try self.leafInlines(a, 0),
+            .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
+            .start_pos = if (self.track_pos) cur.at(idx - 1) else null,
+            .end_pos = if (self.track_pos) cur.at(idx + str.len) else null,
+        };
+    }
+    try c.children.append(self.da, .{
+        .tag = .row,
+        .children = cells,
+        .start_pos = if (self.track_pos) cur.pos() else null,
+        .end_pos = if (self.track_pos) afterContent(cur.line) else null,
+    });
+}
 
-    const x = defs.ref_defs.get("x").?;
-    try std.testing.expectEqualStrings("/u", x.url);
-    try std.testing.expectEqualStrings("class", x.attrs.?.attrs[0].key);
-    try std.testing.expectEqualStrings("c", x.attrs.?.attrs[0].value);
-    const note = defs.footnote_defs.get("n").?;
-    try std.testing.expectEqualStrings("note", note.blocks[0].children[0].text);
+/// The line at `cur` as the open code block's next line: it loses the fence's
+/// indentation and keeps the rest, blank lines included.
+fn addCodeLine(self: *Parser, cur: Cursor) Error!void {
+    const keep = cur.indent -| self.tip().data.code_block.indent;
+    try self.addLeafSlice(cur.line.bytes[cur.i - keep ..], cur.at(cur.i - keep), cur.line);
+}
+
+/// A div opener's class is one word, as djot.js (`[\w_-]*` to the end of the line).
+fn divClass(class: ?[]const u8) bool {
+    for (class orelse return true) |ch| {
+        if (!std.ascii.isAlphanumeric(ch) and ch != '_' and ch != '-') return false;
+    }
+    return true;
+}
+
+fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Error!void {
+    self.listEvent(data == .list, data == .list_item);
+    const c = Container{
+        .start = start,
+        .children = self.spare_lists.pop() orelse .empty,
+        .data = data,
+    };
+    if (self.stack.items.len == 0 and c.makesNode()) self.flush();
+    try self.stack.append(self.da, c);
+}
+
+/// The innermost list a tightness event reaches: the tip, or the list the tip's item is
+/// in (`parse.js` looks no deeper).
+fn listNode(self: *Parser) ?*Container {
+    const n = self.stack.items.len;
+    if (n > 0 and self.stack.items[n - 1].isList()) return &self.stack.items[n - 1];
+    if (n > 1 and self.stack.items[n - 2].isList()) return &self.stack.items[n - 2];
+    return null;
+}
+
+/// `parse.js`'s rule on every event but a blank line: after blank lines, anything but a
+/// list start or a list or item end makes the list loose, and anything but an item
+/// boundary clears the blank lines seen.
+fn listEvent(self: *Parser, is_list: bool, is_item: bool) void {
+    const ln = self.listNode() orelse return;
+    const l = &ln.data.list;
+    if (!is_list and !is_item and l.blanklines) l.tight = false;
+    if (!is_item) l.blanklines = false;
+}
+
+/// A blank line: it marks the innermost list for tightness, and block attributes do not
+/// survive one (see the `zjot.test` header).
+fn blankLine(self: *Parser) void {
+    if (self.listNode()) |ln| ln.data.list.blanklines = true;
+    if (self.stack.items.len > 0) self.tip().pending_attrs = null else self.pending_attrs = null;
+}
+
+/// The rest of the line at `cur` as the open leaf's next line.
+fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
+    const text = switch (self.tip().data) {
+        .heading => std.mem.trimEnd(u8, cur.rest(), " \t"),
+        else => cur.rest(),
+    };
+    try self.addLeafSlice(text, cur.pos(), cur.line);
+    self.tip().leaf_end = afterContent(cur.line);
+}
+
+fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
+    const slice = if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
+    try self.leaf_slices.append(self.da, slice);
+    try self.leaf_starts.append(self.da, start);
+    self.leaf_last_eol = line.eol;
+}
+
+/// Where the open leaf's inline content is read from: `joined_start` of each line in the
+/// text `joinLines` makes, and the position it came from.
+fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
+    const segs = try a.alloc(LineMap.Segment, self.leaf_slices.items.len);
+    var joined: u32 = 0;
+    for (self.leaf_slices.items, self.leaf_starts.items, segs) |slice, start, *seg| {
+        seg.* = .{ .joined_start = joined, .orig_line = start.line, .orig_col = start.col, .orig_offset = start.offset };
+        joined += @intCast(slice.len + 1);
+    }
+    return .{ .segments = segs, .total = joined - 1, .end = self.leaf_last_eol };
+}
+
+/// The inline content of the open leaf, which empties the leaf buffers.
+fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize) Error![]const Node {
+    defer self.dropLeaf();
+    const src = try inline_mod.joinLines(a, self.leaf_slices.items);
+    if (src.len == 0) return &.{};
+    const map: ?LineMap = if (self.track_pos) try self.leafLineMap(a) else null;
+    return inline_mod.parseInlineContent(a, src, map, attrs_from);
+}
+
+fn dropLeaf(self: *Parser) void {
+    self.leaf_slices.clearRetainingCapacity();
+    self.leaf_starts.clearRetainingCapacity();
+}
+
+/// One past the last non-blank character of `line`: its newline unless whitespace trails.
+fn afterContent(line: Line) SourcePos {
+    const content: u32 = @intCast(std.mem.trimEnd(u8, line.bytes, " \t").len);
+    if (content == line.bytes.len) return line.eol;
+    return .{ .line = line.pos.line, .col = content + 1, .offset = line.pos.offset + content };
+}
+
+/// Where a paragraph or heading ends, as djot.js: after its last non-blank character, or
+/// one past a hard break that ends it.
+fn leafEnd(c: Container, children: []const Node, stand: Stand) SourcePos {
+    if (children.len > 0 and children[children.len - 1].tag == .hard_break) return stand.line_first;
+    return c.leaf_end;
+}
+
+/// Closes the containers from depth `from` up, innermost first.
+fn closeFrom(self: *Parser, from: usize, stand: Stand) Error!void {
+    while (self.stack.items.len > from) try self.close(stand);
+}
+
+/// Closes the tip: its node, ending where the parser stands, joins its parent's
+/// children, or is the top-level block `nextBlock` returns; a footnote is recorded.
+fn close(self: *Parser, stand: Stand) Error!void {
+    self.listEvent(self.tip().isList(), self.tip().data == .list_item);
+    var c = self.stack.pop().?;
+    defer {
+        c.children.clearRetainingCapacity();
+        self.spare_lists.append(self.da, c.children) catch {}; // a spare list is only a saving
+    }
+    const a = self.nodeAllocator();
+    const pos = self.track_pos;
+    const node: Node = switch (c.data) {
+        .para => |p| try self.leafNode(a, c, .para, p.attrs_from, stand),
+        .heading => |h| blk: {
+            var n = try self.leafNode(a, c, .heading, 0, stand);
+            n.level = h.level;
+            self.defs.headings_parsed += 1;
+            break :blk n;
+        },
+        .thematic_break => |tb| .{
+            .tag = .thematic_break,
+            .start_pos = if (pos) c.start else null,
+            .end_pos = if (pos) tb.end else null,
+        },
+        .attributes => |at| {
+            if (at.attrs) |attrs| {
+                // Waits for the next block in the container it was written in.
+                const slot = if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
+                slot.* = if (slot.*) |existing| try existing.merge(attrs, self.nodeAllocator()) else attrs;
+                self.dropLeaf();
+                return;
+            }
+            // Never completed: its lines are a paragraph (djot.js reparses them).
+            const first = self.leaf_slices.items[0];
+            const attrs_from: usize = if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0;
+            return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, attrs_from, stand), stand);
+        },
+        .block_quote => .{
+            .tag = .block_quote,
+            .children = try a.dupe(Node, c.children.items),
+            .start_pos = if (pos) c.start else null,
+            .end_pos = if (pos) stand.pos else null,
+        },
+        .list => |l| blk: {
+            var n = Node{
+                .tag = switch (l.style) {
+                    .bullet => .bullet_list,
+                    .task => .task_list,
+                    .definition => .definition_list,
+                    .ordered => .ordered_list,
+                },
+                .children = try a.dupe(Node, c.children.items),
+                .tight = l.tight,
+                .start_pos = if (pos) c.start else null,
+                .end_pos = if (pos) stand.pos else null,
+            };
+            switch (l.style) {
+                .bullet => |ch| n.style = switch (ch) {
+                    '+' => "+",
+                    '*' => "*",
+                    else => "-",
+                },
+                .ordered => |o| {
+                    n.list_style = o.styles.possible[0] orelse .decimal;
+                    n.start = leaf.getListStart(l.marker[0..l.marker_len], n.list_style.?);
+                },
+                else => {},
+            }
+            break :blk n;
+        },
+        .list_item => |it| blk: {
+            const in_definition_list = self.tip().data.list.style == .definition;
+            var n = Node{
+                .tag = if (in_definition_list) .definition_list_item else if (it.checked != null) .task_list_item else .list_item,
+                .checked = it.checked,
+                .start_pos = if (pos) c.start else null,
+                .end_pos = if (pos) stand.before else null,
+            };
+            if (in_definition_list) {
+                // The first paragraph is the term; the rest is the definition.
+                const items = c.children.items;
+                const has_term = items.len > 0 and items[0].tag == .para;
+                const pair = try a.alloc(Node, 2);
+                pair[0] = .{ .tag = .term, .children = if (has_term) items[0].children else &.{} };
+                pair[1] = .{ .tag = .definition, .children = try a.dupe(Node, if (has_term) items[1..] else items) };
+                n.children = pair;
+            } else n.children = try a.dupe(Node, c.children.items);
+            break :blk n;
+        },
+        .footnote => |f| {
+            // Recorded for the document, where its content was allocated; the block
+            // attributes before it are dropped.
+            self.footnote_depth -= 1;
+            const da = self.defs.a;
+            const stored = try da.create(FootnoteDef);
+            stored.* = .{
+                .blocks = try da.dupe(Node, c.children.items),
+                .start_pos = if (pos) c.start else null,
+                .end_pos = if (pos) stand.pos else null,
+            };
+            try self.defs.footnote_defs.put(da, f.label, stored);
+            try self.defs.footnote_log.append(da, .{ .label = f.label, .def = stored, .headings_before = f.headings_before });
+            if (self.stack.items.len > 0) self.tip().pending_attrs = null else self.pending_attrs = null;
+            return;
+        },
+        .div => |dv| .{
+            .tag = .div,
+            .children = try a.dupe(Node, c.children.items),
+            .attrs = if (dv.class) |cls| try a.dupe(Attr, &.{.{ .key = "class", .value = cls }}) else &.{},
+            .start_pos = if (pos) c.start else null,
+            // Closed, a div ends on its fence; unclosed, where its container does.
+            .end_pos = if (pos) (dv.end orelse stand.pos) else null,
+        },
+        .code_block => |cb| blk: {
+            const raw = cb.lang != null and cb.lang.?[0] == '=';
+            break :blk .{
+                .tag = if (raw) .raw_block else .code_block,
+                .text = try self.leafText(a),
+                .lang = if (raw) cb.lang.?[1..] else cb.lang,
+                .start_pos = if (pos) c.start else null,
+                // Closed, it ends on its fence; unclosed, where its container does.
+                .end_pos = if (pos) (cb.end orelse stand.pos) else null,
+            };
+        },
+        .table => blk: {
+            // djot.js gives every table a caption, empty until one follows it.
+            const children = try a.alloc(Node, c.children.items.len + 1);
+            children[0] = .{ .tag = .caption };
+            @memcpy(children[1..], c.children.items);
+            break :blk .{
+                .tag = .table,
+                .children = children,
+                .start_pos = if (pos) c.start else null,
+                .end_pos = if (pos) stand.pos else null,
+            };
+        },
+        .caption => {
+            // Joins the table before it, if that is what stands before it; else it is
+            // dropped, as djot.js. Its nodes live where the table's do.
+            const table: ?*Node = if (self.stack.items.len > 0) blk: {
+                const siblings = self.tip().children.items;
+                break :blk if (siblings.len > 0 and siblings[siblings.len - 1].tag == .table) &siblings[siblings.len - 1] else null;
+            } else if (self.pending) |*p| (if (p.node.tag == .table) &p.node else null) else null;
+            const t = table orelse {
+                self.dropLeaf();
+                return;
+            };
+            const has_text = self.leaf_slices.items.len > 0;
+            const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
+            var n = try self.leafNode(ta, c, .caption, 0, stand);
+            if (!has_text) n.end_pos = n.start_pos;
+            @constCast(t.children)[0] = n; // the placeholder, made with the table
+            if (self.stack.items.len == 0) self.last_block_line = if (stand.eof) self.line_count else self.line_count - 1;
+            return;
+        },
+        .reference_definition => |rd| {
+            // Recorded for the document, with the block attributes waiting before it.
+            const da = self.defs.a;
+            const url = try std.mem.concat(da, u8, self.leaf_slices.items);
+            self.dropLeaf();
+            const slot = if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
+            try self.defs.ref_defs.put(da, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
+            slot.* = null;
+            return;
+        },
+    };
+    try self.closeAs(node, stand);
+}
+
+/// The open code block's text: its lines, each with a newline, which empties the buffers.
+fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
+    defer self.dropLeaf();
+    var total: usize = 0;
+    for (self.leaf_slices.items) |s| total += s.len + 1;
+    const text = try a.alloc(u8, total);
+    var p: usize = 0;
+    for (self.leaf_slices.items) |s| {
+        @memcpy(text[p..][0..s.len], s);
+        text[p + s.len] = '\n';
+        p += s.len + 1;
+    }
+    return text;
+}
+
+fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, attrs_from: usize, stand: Stand) Error!Node {
+    const children = try self.leafInlines(a, attrs_from);
+    return .{
+        .tag = tag,
+        .children = children,
+        .start_pos = if (self.track_pos) c.start else null,
+        .end_pos = if (self.track_pos) leafEnd(c, children, stand) else null,
+    };
+}
+
+/// `node`, with the block attributes waiting for it, joins its parent or is done.
+fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
+    if (self.stack.items.len > 0) {
+        const parent = self.tip();
+        const n = if (parent.pending_attrs) |ba| try inline_mod.applyBlockAttrsToNode(self.nodeAllocator(), node, ba) else node;
+        parent.pending_attrs = null;
+        try parent.children.append(self.da, n);
+    } else {
+        const n = if (self.pending_attrs) |ba| try inline_mod.applyBlockAttrsToNode(self.a, node, ba) else node;
+        self.pending_attrs = null;
+        // A block attribute that failed and became a paragraph never flushed the block
+        // before it when it opened; it does so now.
+        self.flush();
+        std.debug.assert(self.pending == null);
+        // The block takes its arena with it; what opens from here on is the next block's.
+        self.pending = .{ .node = n, .arena = self.arena };
+        self.arena = self.spare orelse try newArena(self.gpa);
+        self.spare = null;
+        self.a = self.arena.allocator();
+        // The block ended on the line before the one that closed it, unless that line was
+        // its own (a closing fence) or the last.
+        self.last_block_line = if (stand.eof or stand.inclusive) self.line_count else self.line_count - 1;
+    }
 }
