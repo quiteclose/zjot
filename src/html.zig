@@ -379,14 +379,18 @@ pub const Renderer = struct {
         }
     }
 
+    /// The string content of an image's children, as djot.js: every leaf's text (a
+    /// footnote reference's label included), a break as a space, a symbol as nothing.
     fn collectAltText(a: Allocator, out: *std.ArrayList(u8), children: []const Node) anyerror!void {
-        for (children) |child| {
-            if (child.tag == .str or child.tag == .soft_break) {
-                try appendAttrEscaped(a, out, if (child.tag == .soft_break) " " else child.text);
+        for (children) |child| switch (child.tag) {
+            .soft_break, .hard_break => try out.append(a, ' '),
+            .symb => {},
+            else => if (child.text.len > 0) {
+                try appendAttrEscaped(a, out, child.text);
             } else {
                 try collectAltText(a, out, child.children);
-            }
-        }
+            },
+        };
     }
 
     fn renderListItem(self: *Renderer, item: Node, tight: bool) anyerror!void {

@@ -25,7 +25,11 @@ Deliberate differences from djot.js 0.3.2:
    `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
    0.3.2 itself produces `Introduction1`. zjot follows the suite. Checked 2026-10-24.
 
-3. A symbol renders as `<span class="symbol">alias</span>`, its attributes on the span
+3. A user id on a footnote reference is dropped (`a[^n]{#i .c}` renders `role` and the
+   class only); djot.js 0.3.2 writes a second `id` attribute after `role`, which is not
+   HTML. Decided 2026-10-24 (plan 261024090850 D27).
+
+4. A symbol renders as `<span class="symbol">alias</span>`, its attributes on the span
    (the class joined to `symbol`, the id and the rest after, as for math:
    `:sym:{.a #i k=v}` gives `<span class="symbol a" id="i" k="v">sym</span>`); djot.js
    0.3.2 prints the `:alias:` text and drops the attributes. The AST agrees (`symb` with
@@ -6648,4 +6652,37 @@ after
 </li>
 </ul>
 <p>after</p>
+````
+
+
+Alt text is the image's string content; a blank line inside a container keeps what its prefix leaves.
+
+Alt text takes every leaf's text, a footnote reference's label included, and nothing for a symbol.
+````
+![a *b* `c` :sym: $x$ e[^x]](u)
+
+[^x]: n
+.
+<p><img alt="a b c  $x$ ex" src="u"></p>
+````
+
+A whitespace-only line inside an item's code block keeps the spaces past the item's indent.
+````
+- a
+
+  ```
+  x
+    
+  y
+  ```
+.
+<ul>
+<li>
+<p>a</p>
+<pre><code>x
+  
+y
+</code></pre>
+</li>
+</ul>
 ````

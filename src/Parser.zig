@@ -125,8 +125,9 @@ pub fn initIndexed(a: Allocator, input: []const u8, index: LineIndex, defs: *Def
 }
 
 /// The lines of a container as the parser of its content will see them: each a slice of
-/// the enclosing parser's line with the container's prefix removed, consecutive from line
-/// `first` of the enclosing parser's window.
+/// the enclosing parser's line with the container's prefix removed (a blank line keeps
+/// what the prefix leaves, which a code block preserves, as djot.js), consecutive from
+/// line `first` of the enclosing parser's window.
 const Window = struct {
     first: usize,
     lines: std.ArrayList([]const u8) = .empty,
@@ -135,11 +136,6 @@ const Window = struct {
     /// Line `line_idx` of `p` without its first `strip` bytes.
     fn add(self: *Window, p: *const Parser, line_idx: usize, strip: usize) !void {
         try self.addSlice(p, line_idx, strip, p.lines[line_idx][strip..]);
-    }
-
-    /// A blank line, added empty.
-    fn addBlank(self: *Window, p: *const Parser, line_idx: usize) !void {
-        try self.addSlice(p, line_idx, 0, "");
     }
 
     /// `content`, from line `line_idx` of `p`, `strip` bytes in.
@@ -675,7 +671,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
                 self.lines[lookahead].len > 0 and
                 (self.lines[lookahead][0] == ' ' or self.lines[lookahead][0] == '\t'))
             {
-                try w.addBlank(self, self.pos);
+                try w.add(self, self.pos, @min(content_indent orelse l.len, l.len));
                 try paragraph.feed(self.a, "");
                 self.pos += 1;
             } else break;
@@ -775,7 +771,7 @@ fn collectItemContent(self: *Parser, content_col: usize, first_col: usize, list_
             .first => try w.addSlice(self, line_idx, @min(first_col, line.len), first_rest),
             .content => try w.add(self, line_idx, strip),
             .lazy => try w.add(self, line_idx, line.len - std.mem.trimStart(u8, line, " \t").len),
-            .blank => try w.addBlank(self, line_idx),
+            .blank => try w.add(self, line_idx, @min(strip, line.len)),
         }
     }
     return .{ .window = w, .trailing_blank = trailing_blank };
@@ -1007,7 +1003,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
                 const peek = self.lines[self.pos];
                 if (countIndent(peek) >= content_indent) {
                     for (first_blank..self.pos) |blank| {
-                        try w.addBlank(self, blank);
+                        try w.add(self, blank, @min(content_indent, self.lines[blank].len));
                         try paragraph.feed(self.a, "");
                     }
                     continue;
