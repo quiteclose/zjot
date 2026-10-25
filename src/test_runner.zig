@@ -154,6 +154,7 @@ const test_file_names = [_][]const u8{
     "thematic_breaks.test",
     "verbatim.test",
     "zjot.test",
+    "grid.test",
 };
 
 test "djot test suite" {
