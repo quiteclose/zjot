@@ -6,12 +6,12 @@ doc
     footnote_reference (1:37:36-1:42:41) text="2" id="fnref2"
   footnote role="doc-endnotes"
     list_item id="fn1"
-      para
-        str text="First note."
+      para (3:9:52-4:0:63)
+        str (3:9:52-3:19:62) text="First note."
         link destination="#fnref1" role="doc-backlink"
     list_item id="fn2"
-      para
-        str text="Second note,"
-        soft_break
-        str text="with a continuation."
+      para (5:9:73-7:0:108)
+        str (5:9:73-5:20:84) text="Second note,"
+        soft_break (6:0:85-6:0:85)
+        str (6:3:88-6:22:107) text="with a continuation."
         link destination="#fnref2" role="doc-backlink"

@@ -497,7 +497,8 @@ fn tryFencedDiv(self: *Parser) !?Node {
     return node;
 }
 
-const DefinitionLabel = struct { label: []const u8, rest: []const u8, is_footnote: bool };
+/// `rest_col` is the number of bytes before `rest` on its line.
+const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_col: u32, is_footnote: bool };
 
 /// `[label]:` or `[^label]:` opening a reference or footnote definition: space
 /// indentation only, a label of at least one character, and what follows the colon.
@@ -509,9 +510,13 @@ fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const label = trimmed[1 .. close + 1];
     const is_footnote = label.len > 0 and label[0] == '^';
     if (is_footnote and label.len < 2) return null;
+    const after_colon = trimmed[close + 3 ..];
+    const rest = std.mem.trim(u8, after_colon, " \t");
+    const rest_lead = after_colon.len - std.mem.trimStart(u8, after_colon, " \t").len;
     return .{
         .label = if (is_footnote) label[1..] else label,
-        .rest = std.mem.trim(u8, trimmed[close + 3 ..], " \t"),
+        .rest = rest,
+        .rest_col = @intCast(line.len - after_colon.len + rest_lead),
         .is_footnote = is_footnote,
     };
 }
@@ -562,12 +567,16 @@ fn tryFootnoteDef(self: *Parser) !?void {
     self.pos += 1;
 
     var content_lines: std.ArrayList([]const u8) = .empty;
+    var orig_lines: std.ArrayList(usize) = .empty;
+    var col_offsets: std.ArrayList(u32) = .empty;
     var paragraph = OpenParagraph{};
     // The first indented line sets the content indent; deeper lines keep the rest, as
     // in a list item (`collectItemContent`).
     var content_indent: ?usize = null;
     if (rest.len > 0) {
         try content_lines.append(self.a, rest);
+        try orig_lines.append(self.a, self.pos - 1);
+        try col_offsets.append(self.a, def.rest_col);
         try paragraph.feed(self.a, rest);
     }
     while (self.pos < self.lines.len) {
@@ -580,6 +589,8 @@ fn tryFootnoteDef(self: *Parser) !?void {
                 (self.lines[lookahead][0] == ' ' or self.lines[lookahead][0] == '\t'))
             {
                 try content_lines.append(self.a, "");
+                try orig_lines.append(self.a, self.pos);
+                try col_offsets.append(self.a, 0);
                 try paragraph.feed(self.a, "");
                 self.pos += 1;
             } else break;
@@ -588,11 +599,15 @@ fn tryFootnoteDef(self: *Parser) !?void {
             const strip = @min(indent, content_indent orelse indent);
             if (content_indent == null) content_indent = indent;
             try content_lines.append(self.a, l[strip..]);
+            try orig_lines.append(self.a, self.pos);
+            try col_offsets.append(self.a, @intCast(strip));
             try paragraph.feed(self.a, l[strip..]);
             self.pos += 1;
         } else if (paragraph.open and !try self.isBlockStartAt(self.pos)) {
             // An unindented line continues an open paragraph, as in a list item.
             try content_lines.append(self.a, l);
+            try orig_lines.append(self.a, self.pos);
+            try col_offsets.append(self.a, 0);
             try paragraph.feed(self.a, l);
             self.pos += 1;
         } else break;
@@ -600,10 +615,12 @@ fn tryFootnoteDef(self: *Parser) !?void {
 
     if (self.defs.sealed) return {};
     // The footnote's blocks are rendered at the end of the document, so they are
-    // parsed with the definitions' allocator rather than the current block's.
+    // parsed with the definitions' allocator rather than the current block's; they are
+    // positioned like any container's, which is why pass one tracks positions too.
     const da = self.defs.a;
     const inner_text = try inline_mod.joinLines(da, content_lines.items);
     var inner_parser = Parser.init(da, inner_text, self.defs);
+    try self.positionSubParser(&inner_parser, orig_lines.items, col_offsets.items);
     const inner_blocks = try inner_parser.parseBlocks();
     try self.defs.footnote_defs.put(da, try da.dupe(u8, label), inner_blocks);
     return {};

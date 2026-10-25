@@ -35,7 +35,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     var defs = Parser.Definitions{ .a = da };
     var survey = document.Survey{ .a = da };
     {
-        var parser = Parser.initIndexed(ba, input, index, &defs);
+        var parser = blockParser(ba, input, index, &defs, opts);
         while (try parser.nextBlock()) |block| {
             // Definitions met before this block come first in the id sequence.
             try survey.visitFootnotes(&defs);
@@ -47,9 +47,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     defs.sealed = true;
 
     var resolver = document.Resolver{ .a = da, .defs = &defs, .survey = &survey };
-    var parser = Parser.initIndexed(ba, input, index, &defs);
-    parser.track_pos = opts.sourcepos;
-    if (opts.sourcepos) parser.input_end = Parser.inputEnd(index, input);
+    var parser = blockParser(ba, input, index, &defs, opts);
     var sections = document.Sections{ .doc_end = parser.input_end };
     var out = Emitter{ .w = w, .mode = opts.mode };
     try out.root(ba);
@@ -60,6 +58,15 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     }
     for (sections.finish()) |event| try out.emit(ba, event);
     if (try resolver.footnoteSection(ba)) |endnotes| try out.emit(ba, .{ .block = endnotes });
+}
+
+/// A block parser over the whole input; both passes use one, because footnote content
+/// is stored in pass one and must carry positions when `opts.sourcepos` asks for them.
+fn blockParser(ba: Allocator, input: []const u8, index: Parser.LineIndex, defs: *Parser.Definitions, opts: RenderOpts) Parser {
+    var parser = Parser.initIndexed(ba, input, index, defs);
+    parser.track_pos = opts.sourcepos;
+    if (opts.sourcepos) parser.input_end = Parser.inputEnd(index, input);
+    return parser;
 }
 
 /// Writes section events as output, one rendered block per write, so nothing larger
