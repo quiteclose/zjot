@@ -44,8 +44,9 @@ arena: *std.heap.ArenaAllocator,
 a: Allocator,
 /// A written block's arena, reused for the next block.
 spare: ?*std.heap.ArenaAllocator = null,
-/// The parser's own state across blocks: the stack and its buffers. An arena the
-/// consumer keeps for the document; nothing is freed before it.
+/// The document's arena, for what the definitions keep. The parser's own buffers (the
+/// stack, the open leaf's lines, spare children lists) grow on `gpa`, so a buffer
+/// outgrown is freed rather than left in the arena for the document.
 da: Allocator,
 defs: *Definitions,
 track_pos: bool = false,
@@ -217,6 +218,12 @@ pub fn init(gpa: Allocator, da: Allocator, lines: Lines, defs: *Definitions) All
 
 pub fn deinit(self: *Parser) void {
     self.lines.deinit();
+    for (self.stack.items) |*c| c.children.deinit(self.gpa);
+    self.stack.deinit(self.gpa);
+    self.leaf_slices.deinit(self.gpa);
+    self.leaf_starts.deinit(self.gpa);
+    for (self.spare_lists.items) |*l| l.deinit(self.gpa);
+    self.spare_lists.deinit(self.gpa);
     self.destroy(self.arena);
     if (self.spare) |spare| self.destroy(spare);
     if (self.pending) |p| self.destroy(p.arena);
@@ -594,12 +601,12 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
         const aligns = try leaf.parseSepAligns(a, r);
         c.data.table.aligns = aligns;
         if (c.children.items.len > 0) {
-            const row = &c.children.items[c.children.items.len - 1];
+            const row = &c.children.items[c.children.items.len - 1].data.row;
             row.head = true;
             // The cells were made for this row alone, so they are this parser's to change.
             for (@constCast(row.children), 0..) |*cell, i| {
-                cell.head = true;
-                cell.cell_align = if (i < aligns.len) aligns[i] else .default;
+                cell.data.cell.head = true;
+                cell.data.cell.cell_align = if (i < aligns.len) aligns[i] else .default;
             }
         }
         return;
@@ -613,16 +620,16 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
         const text_idx = idx + (@intFromPtr(text.ptr) - @intFromPtr(str.ptr));
         if (text.len > 0) try self.addLeafSlice(text, cur.at(text_idx), cur.line);
         cell.* = .{
-            .tag = .cell,
-            .children = try self.leafInlines(a, 0),
-            .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
+            .data = .{ .cell = .{
+                .children = try self.leafInlines(a, 0),
+                .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
+            } },
             .start_pos = if (self.track_pos) cur.at(idx - 1) else null,
             .end_pos = if (self.track_pos) cur.at(idx + str.len) else null,
         };
     }
-    try c.children.append(self.da, .{
-        .tag = .row,
-        .children = cells,
+    try c.children.append(self.gpa, .{
+        .data = .{ .row = .{ .children = cells } },
         .start_pos = if (self.track_pos) cur.pos() else null,
         .end_pos = if (self.track_pos) afterContent(cur.line) else null,
     });
@@ -651,7 +658,7 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
         .data = data,
     };
     if (self.stack.items.len == 0 and c.makesNode()) self.flush();
-    try self.stack.append(self.da, c);
+    try self.stack.append(self.gpa, c);
 }
 
 /// The innermost list a tightness event reaches: the tip, or the list the tip's item is
@@ -705,8 +712,8 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
 
 fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
     const slice = if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
-    try self.leaf_slices.append(self.da, slice);
-    try self.leaf_starts.append(self.da, start);
+    try self.leaf_slices.append(self.gpa, slice);
+    try self.leaf_starts.append(self.gpa, start);
     self.leaf_last_eol = line.eol;
 }
 
@@ -746,7 +753,7 @@ fn afterContent(line: Line) SourcePos {
 /// Where a paragraph or heading ends, as djot.js: after its last non-blank character, or
 /// one past a hard break that ends it.
 fn leafEnd(c: Container, children: []const Node, stand: Stand) SourcePos {
-    if (children.len > 0 and children[children.len - 1].tag == .hard_break) return stand.line_first;
+    if (children.len > 0 and children[children.len - 1].data == .hard_break) return stand.line_first;
     return c.leaf_end;
 }
 
@@ -762,20 +769,18 @@ fn close(self: *Parser, stand: Stand) Error!void {
     var c = self.stack.pop().?;
     defer {
         c.children.clearRetainingCapacity();
-        self.spare_lists.append(self.da, c.children) catch {}; // a spare list is only a saving
+        self.spare_lists.append(self.gpa, c.children) catch {}; // a spare list is only a saving
     }
     const a = self.nodeAllocator();
     const pos = self.track_pos;
     const node: Node = switch (c.data) {
-        .para => |p| try self.leafNode(a, c, .para, p.attrs_from, stand),
+        .para => |p| try self.leafNode(a, c, .para, 0, p.attrs_from, stand),
         .heading => |h| blk: {
-            var n = try self.leafNode(a, c, .heading, 0, stand);
-            n.level = h.level;
             self.defs.headings_parsed += 1;
-            break :blk n;
+            break :blk try self.leafNode(a, c, .heading, h.level, 0, stand);
         },
         .thematic_break => |tb| .{
-            .tag = .thematic_break,
+            .data = .thematic_break,
             .start_pos = if (pos) c.start else null,
             .end_pos = if (pos) tb.end else null,
         },
@@ -789,59 +794,53 @@ fn close(self: *Parser, stand: Stand) Error!void {
             }
             // Never completed: its lines are a paragraph (djot.js reparses them).
             const attrs_from = try self.failedAttrsFrom();
-            return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, attrs_from, stand), stand);
+            return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, 0, attrs_from, stand), stand);
         },
         .block_quote => .{
-            .tag = .block_quote,
-            .children = try a.dupe(Node, c.children.items),
+            .data = .{ .block_quote = try a.dupe(Node, c.children.items) },
             .start_pos = if (pos) c.start else null,
             .end_pos = if (pos) stand.pos else null,
         },
         .list => |l| blk: {
-            var n = Node{
-                .tag = switch (l.style) {
-                    .bullet => .bullet_list,
-                    .task => .task_list,
-                    .definition => .definition_list,
-                    .ordered => .ordered_list,
+            const children = try a.dupe(Node, c.children.items);
+            const data: node_mod.Payload = switch (l.style) {
+                .bullet => |ch| .{ .bullet_list = .{ .marker = ch, .tight = l.tight, .children = children } },
+                .task => .{ .task_list = .{ .tight = l.tight, .children = children } },
+                .definition => .{ .definition_list = children },
+                .ordered => |o| ordered: {
+                    const style = o.styles.possible[0] orelse .decimal;
+                    break :ordered .{ .ordered_list = .{
+                        .style = style,
+                        .start = leaf.getListStart(l.marker[0..l.marker_len], style),
+                        .tight = l.tight,
+                        .children = children,
+                    } };
                 },
-                .children = try a.dupe(Node, c.children.items),
-                .tight = l.tight,
+            };
+            break :blk .{
+                .data = data,
                 .start_pos = if (pos) c.start else null,
                 .end_pos = if (pos) stand.pos else null,
             };
-            switch (l.style) {
-                .bullet => |ch| n.style = switch (ch) {
-                    '+' => "+",
-                    '*' => "*",
-                    else => "-",
-                },
-                .ordered => |o| {
-                    n.list_style = o.styles.possible[0] orelse .decimal;
-                    n.start = leaf.getListStart(l.marker[0..l.marker_len], n.list_style.?);
-                },
-                else => {},
-            }
-            break :blk n;
         },
         .list_item => |it| blk: {
-            const in_definition_list = self.tip().data.list.style == .definition;
-            var n = Node{
-                .tag = if (in_definition_list) .definition_list_item else if (it.checked != null) .task_list_item else .list_item,
-                .checked = it.checked,
+            const items = c.children.items;
+            const data: node_mod.Payload = if (self.tip().data.list.style == .definition) definition: {
+                // The first paragraph is the term; the rest is the definition.
+                const has_term = items.len > 0 and items[0].data == .para;
+                const pair = try a.alloc(Node, 2);
+                pair[0] = .{ .data = .{ .term = if (has_term) items[0].data.para else &.{} } };
+                pair[1] = .{ .data = .{ .definition = try a.dupe(Node, if (has_term) items[1..] else items) } };
+                break :definition .{ .definition_list_item = pair };
+            } else if (it.checked) |checked|
+                .{ .task_list_item = .{ .checked = checked, .children = try a.dupe(Node, items) } }
+            else
+                .{ .list_item = try a.dupe(Node, items) };
+            break :blk .{
+                .data = data,
                 .start_pos = if (pos) c.start else null,
                 .end_pos = if (pos) stand.before else null,
             };
-            if (in_definition_list) {
-                // The first paragraph is the term; the rest is the definition.
-                const items = c.children.items;
-                const has_term = items.len > 0 and items[0].tag == .para;
-                const pair = try a.alloc(Node, 2);
-                pair[0] = .{ .tag = .term, .children = if (has_term) items[0].children else &.{} };
-                pair[1] = .{ .tag = .definition, .children = try a.dupe(Node, if (has_term) items[1..] else items) };
-                n.children = pair;
-            } else n.children = try a.dupe(Node, c.children.items);
-            break :blk n;
         },
         .footnote => |f| {
             // Recorded for the document, where its content was allocated; the block
@@ -860,19 +859,17 @@ fn close(self: *Parser, stand: Stand) Error!void {
             return;
         },
         .div => |dv| .{
-            .tag = .div,
-            .children = try a.dupe(Node, c.children.items),
+            .data = .{ .div = try a.dupe(Node, c.children.items) },
             .attrs = if (dv.class) |cls| try a.dupe(Attr, &.{.{ .key = "class", .value = cls }}) else &.{},
             .start_pos = if (pos) c.start else null,
             // Closed, a div ends on its fence; unclosed, where its container does.
             .end_pos = if (pos) (dv.end orelse stand.pos) else null,
         },
         .code_block => |cb| blk: {
+            const text = try self.leafText(a);
             const raw = cb.lang != null and cb.lang.?[0] == '=';
             break :blk .{
-                .tag = if (raw) .raw_block else .code_block,
-                .text = try self.leafText(a),
-                .lang = if (raw) cb.lang.?[1..] else cb.lang,
+                .data = if (raw) .{ .raw_block = .{ .format = cb.lang.?[1..], .text = text } } else .{ .code_block = .{ .lang = cb.lang, .text = text } },
                 .start_pos = if (pos) c.start else null,
                 // Closed, it ends on its fence; unclosed, where its container does.
                 .end_pos = if (pos) (cb.end orelse stand.pos) else null,
@@ -881,11 +878,10 @@ fn close(self: *Parser, stand: Stand) Error!void {
         .table => blk: {
             // djot.js gives every table a caption, empty until one follows it.
             const children = try a.alloc(Node, c.children.items.len + 1);
-            children[0] = .{ .tag = .caption };
+            children[0] = .{ .data = .{ .caption = &.{} } };
             @memcpy(children[1..], c.children.items);
             break :blk .{
-                .tag = .table,
-                .children = children,
+                .data = .{ .table = children },
                 .start_pos = if (pos) c.start else null,
                 .end_pos = if (pos) stand.pos else null,
             };
@@ -896,20 +892,22 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // table's do.
             const table: ?*Node = if (self.stack.items.len > 0) blk: {
                 const siblings = self.tip().children.items;
-                break :blk if (siblings.len > 0 and siblings[siblings.len - 1].tag == .table) &siblings[siblings.len - 1] else null;
-            } else if (self.pending) |*p| (if (p.node.tag == .table) &p.node else null) else null;
+                break :blk if (siblings.len > 0 and siblings[siblings.len - 1].data == .table) &siblings[siblings.len - 1] else null;
+            } else if (self.pending) |*p| (if (p.node.data == .table) &p.node else null) else null;
             const t = table orelse {
                 self.dropLeaf();
                 return;
             };
             const has_text = self.leaf_slices.items.len > 0;
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
-            var n = try self.leafNode(ta, c, .caption, 0, stand);
+            var n = try self.leafNode(ta, c, .caption, 0, 0, stand);
             if (!has_text) n.end_pos = n.start_pos;
+            // At the top the attributes were parsed into the next block's arena, which the
+            // waiting table outlives, so they are copied into the table's.
             const slot = self.attrsSlot();
-            if (slot.*) |ba| n = try inline_mod.applyBlockAttrsToNode(ta, n, ba);
+            if (slot.*) |ba| n = try inline_mod.applyBlockAttrsToNode(ta, n, if (self.stack.items.len == 0) try ba.dupe(ta) else ba);
             slot.* = null;
-            @constCast(t.children)[0] = n; // the placeholder, made with the table
+            @constCast(t.data.table)[0] = n; // the placeholder, made with the table
             if (self.stack.items.len == 0) {
                 self.pending.?.last = n.end_pos;
                 self.last_block_line = if (stand.eof) self.line_count else self.line_count - 1;
@@ -933,23 +931,19 @@ fn close(self: *Parser, stand: Stand) Error!void {
 /// The open code block's text: its lines, each with a newline, which empties the buffers.
 fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
     defer self.dropLeaf();
-    var total: usize = 0;
-    for (self.leaf_slices.items) |s| total += s.len + 1;
-    const text = try a.alloc(u8, total);
-    var p: usize = 0;
-    for (self.leaf_slices.items) |s| {
-        @memcpy(text[p..][0..s.len], s);
-        text[p + s.len] = '\n';
-        p += s.len + 1;
-    }
-    return text;
+    return inline_mod.joinLinesTerminated(a, self.leaf_slices.items);
 }
 
-fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, attrs_from: usize, stand: Stand) Error!Node {
+/// A paragraph, heading (of `level`) or caption over the open leaf's inlines.
+fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, level: u8, attrs_from: usize, stand: Stand) Error!Node {
     const children = try self.leafInlines(a, attrs_from);
     return .{
-        .tag = tag,
-        .children = children,
+        .data = switch (tag) {
+            .para => .{ .para = children },
+            .heading => .{ .heading = .{ .level = level, .children = children } },
+            .caption => .{ .caption = children },
+            else => unreachable,
+        },
         .start_pos = if (self.track_pos) c.start else null,
         .end_pos = if (self.track_pos) leafEnd(c, children, stand) else null,
     };
@@ -961,7 +955,7 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         const parent = self.tip();
         const n = if (parent.pending_attrs) |ba| try inline_mod.applyBlockAttrsToNode(self.nodeAllocator(), node, ba) else node;
         parent.pending_attrs = null;
-        try parent.children.append(self.da, n);
+        try parent.children.append(self.gpa, n);
     } else {
         const n = if (self.pending_attrs) |ba| try inline_mod.applyBlockAttrsToNode(self.a, node, ba) else node;
         self.pending_attrs = null;
@@ -971,7 +965,7 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         self.flush();
         std.debug.assert(self.pending == null);
         const block = Block{ .node = n, .arena = self.arena, .last = n.end_pos };
-        if (n.tag == .table or self.done != null) self.pending = block else self.done = block;
+        if (n.data == .table or self.done != null) self.pending = block else self.done = block;
         // The block takes its arena with it; what opens from here on is the next block's.
         self.arena = self.spare orelse try newArena(self.gpa);
         self.spare = null;

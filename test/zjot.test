@@ -7485,3 +7485,23 @@ doc
         cell (4:1:10-4:5:14) head=false align="default"
           str (4:3:12-4:3:12) text="a"
 ````
+
+A div's closing fence that ends an item counts as a blank line for tightness, as djot.js
+(a code fence does not).
+````
+- ::: foo
+  b
+  :::
+- c
+.
+<ul>
+<li>
+<div class="foo">
+<p>b</p>
+</div>
+</li>
+<li>
+<p>c</p>
+</li>
+</ul>
+````

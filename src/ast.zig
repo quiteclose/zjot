@@ -8,7 +8,7 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
     var i: usize = 0;
     while (i < indent) : (i += 1) try out.append(a, ' ');
 
-    const tag_name = if (is_root and node.tag == .section) "doc" else @tagName(node.tag);
+    const tag_name = if (is_root and node.data == .section) "doc" else @tagName(node.data);
     try out.appendSlice(a, tag_name);
 
     if (node.start_pos) |sp| {
@@ -21,58 +21,54 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         }
     }
 
-    switch (node.tag) {
-        .str, .verbatim, .raw_inline, .raw_block, .code_block, .footnote_reference, .symb => {
-            if (node.tag == .symb) {
-                if (node.text.len > 0) {
-                    try out.appendSlice(a, " alias=");
-                    try appendJsonStr(a, out, node.text);
-                }
-            } else if (node.text.len > 0) {
-                try out.appendSlice(a, " text=");
-                try appendJsonStr(a, out, node.text);
-            }
+    switch (node.data) {
+        // As djot.js's text form: a url, an email and math print no text.
+        .str, .verbatim, .footnote_reference => |text| if (text.len > 0) {
+            try out.appendSlice(a, " text=");
+            try appendJsonStr(a, out, text);
         },
-        .heading => {
-            try out.appendSlice(a, try std.fmt.allocPrint(a, " level={d}", .{node.level}));
+        .symb => |alias| if (alias.len > 0) {
+            try out.appendSlice(a, " alias=");
+            try appendJsonStr(a, out, alias);
         },
-        .footnote => {
+        .code_block => |c| if (c.text.len > 0) {
+            try out.appendSlice(a, " text=");
+            try appendJsonStr(a, out, c.text);
+        },
+        .raw_block => |r| if (r.text.len > 0) {
+            try out.appendSlice(a, " text=");
+            try appendJsonStr(a, out, r.text);
+        },
+        .raw_inline => |r| if (r.text.len > 0) {
+            try out.appendSlice(a, " text=");
+            try appendJsonStr(a, out, r.text);
+        },
+        .heading => |h| try out.appendSlice(a, try std.fmt.allocPrint(a, " level={d}", .{h.level})),
+        .footnote => |f| {
             try out.appendSlice(a, " label=");
-            try appendJsonStr(a, out, node.text);
+            try appendJsonStr(a, out, f.label);
         },
-        .bullet_list => {
-            try out.appendSlice(a, if (node.tight) " tight=true" else " tight=false");
-            if (node.style) |s| {
-                try out.appendSlice(a, " style=");
-                try appendJsonStr(a, out, s);
-            }
+        .bullet_list => |l| {
+            try out.appendSlice(a, if (l.tight) " tight=true" else " tight=false");
+            try out.appendSlice(a, " style=");
+            try appendJsonStr(a, out, &.{l.marker});
         },
-        .ordered_list => {
-            try out.appendSlice(a, if (node.tight) " tight=true" else " tight=false");
-        },
-        .task_list_item => {
-            if (node.checked) |checked| {
-                try out.appendSlice(a, if (checked) " checked=true" else " checked=false");
-            }
-        },
-        .link, .image, .url, .email => {
-            if (node.destination) |dest| {
+        .ordered_list => |l| try out.appendSlice(a, if (l.tight) " tight=true" else " tight=false"),
+        .task_list_item => |item| try out.appendSlice(a, if (item.checked) " checked=true" else " checked=false"),
+        .link, .image => |l| {
+            if (l.destination) |dest| {
                 try out.appendSlice(a, " destination=");
                 try appendJsonStr(a, out, dest);
             }
-            if (node.reference) |ref| {
-                if (ref.len > 0) {
-                    try out.appendSlice(a, " reference=");
-                    try appendJsonStr(a, out, ref);
-                }
-            }
+            if (l.reference) |ref| if (ref.len > 0) {
+                try out.appendSlice(a, " reference=");
+                try appendJsonStr(a, out, ref);
+            };
         },
-        .row => {
-            try out.appendSlice(a, if (node.head) " head=true" else " head=false");
-        },
-        .cell => {
-            try out.appendSlice(a, if (node.head) " head=true" else " head=false");
-            const align_str = switch (node.cell_align) {
+        .row => |r| try out.appendSlice(a, if (r.head) " head=true" else " head=false"),
+        .cell => |c| {
+            try out.appendSlice(a, if (c.head) " head=true" else " head=false");
+            const align_str = switch (c.cell_align) {
                 .default => " align=\"default\"",
                 .left => " align=\"left\"",
                 .right => " align=\"right\"",
@@ -83,9 +79,20 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         else => {},
     }
 
-    if (node.lang) |lang| {
-        try out.appendSlice(a, " lang=");
-        try appendJsonStr(a, out, lang);
+    switch (node.data) {
+        .code_block => |c| if (c.lang) |lang| {
+            try out.appendSlice(a, " lang=");
+            try appendJsonStr(a, out, lang);
+        },
+        .raw_block => |r| {
+            try out.appendSlice(a, " lang=");
+            try appendJsonStr(a, out, r.format);
+        },
+        .raw_inline => |r| {
+            try out.appendSlice(a, " lang=");
+            try appendJsonStr(a, out, r.format);
+        },
+        else => {},
     }
 
     // Attributes print as djot.js's text form does: id, class, then the rest in order.
@@ -109,7 +116,7 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
 
     try out.append(a, '\n');
 
-    for (node.children) |child| {
+    for (node.children()) |child| {
         try renderAstNode(a, out, child, indent + 2, false);
     }
 }

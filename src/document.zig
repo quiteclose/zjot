@@ -102,8 +102,11 @@ pub const Ids = struct {
             const seen = try self.ids_used.getOrPut(self.a, id);
             if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
         }
-        var by_reference = (n.tag == .link or n.tag == .image) and n.reference != null and n.destination == null;
-        if (n.tag == .heading) {
+        var by_reference = switch (n.data) {
+            .link, .image => |l| l.reference != null and l.destination == null,
+            else => false,
+        };
+        if (n.data == .heading) {
             try self.assignFootnotes();
             self.assigned_headings += 1;
             _ = self.scratch.reset(.retain_capacity);
@@ -115,7 +118,7 @@ pub const Ids = struct {
                 try self.auto_refs.put(self.a, try self.a.dupe(u8, label), dest);
             }
         }
-        for (@constCast(n.children)) |*child| {
+        for (@constCast(n.children())) |*child| {
             if (try self.assignNode(child)) by_reference = true;
         }
         return by_reference;
@@ -167,45 +170,39 @@ pub const Ids = struct {
 
 /// Resolves one block against the definitions, once they are final: a link or image
 /// written by reference takes a definition's destination and attributes, else the target
-/// the heading with that text claimed. The resolved tree lives in the allocator passed
-/// per block.
+/// the heading with that text claimed. Writes into the tree, which is the block's alone;
+/// `ba` is the block's allocator, for what the labels and merged attributes need.
 pub const Resolver = struct {
     defs: *const Definitions,
     ids: *const Ids,
 
-    pub fn resolve(self: *const Resolver, ba: Allocator, block: Node) !Node {
+    pub fn resolve(self: *const Resolver, ba: Allocator, block: *Node) !void {
         return self.resolveNode(ba, block);
     }
 
-    fn resolveNode(self: *const Resolver, ba: Allocator, node: Node) !Node {
-        var n = node;
-        if ((n.tag == .link or n.tag == .image) and n.destination == null) {
-            if (n.reference) |ref| {
-                const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(ba, n) catch "");
+    fn resolveNode(self: *const Resolver, ba: Allocator, n: *Node) Allocator.Error!void {
+        switch (n.data) {
+            .link, .image => |*l| if (l.destination == null) if (l.reference) |ref| {
+                const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(ba, n.*) catch "");
                 const label = inline_mod.normalizeLabel(ba, raw_label) catch raw_label;
                 if (self.defs.ref_defs.get(label)) |def| {
-                    n.destination = def.url;
-                    if (def.attrs) |attrs| n = try inline_mod.mergeRefAttrs(n, attrs, ba);
+                    l.destination = def.url;
+                    if (def.attrs) |attrs| n.* = try inline_mod.mergeRefAttrs(n.*, attrs, ba);
                 } else if (self.ids.auto_refs.get(label)) |dest| {
-                    n.destination = dest;
+                    l.destination = dest;
                 }
-            }
+            },
+            else => {},
         }
-        if (n.children.len > 0) {
-            const children = try ba.alloc(Node, n.children.len);
-            for (n.children, children) |child, *out| out.* = try self.resolveNode(ba, child);
-            n.children = children;
-        }
-        return n;
+        for (@constCast(n.children())) |*child| try self.resolveNode(ba, child);
     }
 
     /// The footnote definition `label`, its links resolved; without blocks when nothing
     /// defines it.
     pub fn footnote(self: *const Resolver, ba: Allocator, label: []const u8) !Node {
-        const def = self.defs.footnote_defs.get(label) orelse return .{ .tag = .footnote, .text = label };
-        const blocks = try ba.alloc(Node, def.blocks.len);
-        for (def.blocks, blocks) |block, *out| out.* = try self.resolveNode(ba, block);
-        return .{ .tag = .footnote, .text = label, .children = blocks, .start_pos = def.start_pos, .end_pos = def.end_pos };
+        const def = self.defs.footnote_defs.get(label) orelse return .{ .data = .{ .footnote = .{ .label = label } } };
+        for (@constCast(def.blocks)) |*block| try self.resolveNode(ba, block);
+        return .{ .data = .{ .footnote = .{ .label = label, .children = def.blocks } }, .start_pos = def.start_pos, .end_pos = def.end_pos };
     }
 };
 
@@ -229,24 +226,24 @@ pub const Sections = struct {
 
     /// The events for one block, valid until the next call.
     pub fn feed(self: *Sections, block: Node) []const Event {
-        if (block.tag != .heading) {
+        if (block.data != .heading) {
             self.events[0] = .{ .block = block };
             return self.events[0..1];
         }
+        const level = block.data.heading.level;
         var n: usize = 0;
-        while (self.depth > 0 and self.levels[self.depth - 1] >= block.level) {
+        while (self.depth > 0 and self.levels[self.depth - 1] >= level) {
             self.depth -= 1;
             self.events[n] = .close;
             n += 1;
         }
-        self.levels[self.depth] = block.level;
+        self.levels[self.depth] = level;
         self.depth += 1;
         var heading = block;
         heading.id = null;
         heading.attrs = &.{};
         self.events[n] = .{ .open = .{
-            .tag = .section,
-            .level = block.level,
+            .data = .{ .section = .{ .level = level } },
             .id = block.id,
             .attrs = block.attrs,
             .start_pos = block.start_pos,
@@ -286,17 +283,17 @@ test "sections: a heading closes deeper and equal levels, then opens its own" {
     var sections = Sections{};
     const h = struct {
         fn at(level: u8) Node {
-            return .{ .tag = .heading, .level = level, .id = "x" };
+            return .{ .data = .{ .heading = .{ .level = level } }, .id = "x" };
         }
     };
     try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(1)).len); // open, block
-    try std.testing.expectEqual(@as(usize, 1), sections.feed(.{ .tag = .para }).len);
+    try std.testing.expectEqual(@as(usize, 1), sections.feed(.{ .data = .{ .para = &.{} } }).len);
     try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(3)).len); // nests under 1
     const back_to_two = sections.feed(h.at(2)); // closes 3, not 1
     try std.testing.expectEqual(@as(usize, 3), back_to_two.len);
     try std.testing.expect(back_to_two[0] == .close);
     try std.testing.expect(back_to_two[1] == .open);
-    try std.testing.expect(back_to_two[1].open.tag == .section);
+    try std.testing.expect(back_to_two[1].open.data == .section);
     try std.testing.expect(back_to_two[2].block.id == null); // moved onto the section
     try std.testing.expectEqual(@as(usize, 2), sections.finish().len); // closes 2 and 1
 }

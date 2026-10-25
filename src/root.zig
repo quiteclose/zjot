@@ -69,12 +69,12 @@ fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) 
 
     var last_end: ?SourcePos = null;
     while (try parser.nextBlock()) |block| {
-        var queued = false;
-        errdefer if (!queued) parser.recycle(block.arena);
         var node = block.node;
-        const by_reference = try ids.assign(&node);
+        const by_reference = ids.assign(&node) catch |err| {
+            parser.recycle(block.arena); // `out.block` owns it from here on, failing or not
+            return err;
+        };
         try out.block(node, block.arena, by_reference);
-        queued = true;
         last_end = block.last;
     }
     try ids.assignFootnotes();
@@ -160,7 +160,7 @@ const Output = struct {
         // The AST format names the document and nests every block under it.
         defer _ = self.scratch.reset(.retain_capacity);
         var buf: std.ArrayList(u8) = .empty;
-        try ast.renderAstNode(self.scratch.allocator(), &buf, .{ .tag = .section }, 0, true);
+        try ast.renderAstNode(self.scratch.allocator(), &buf, .{ .data = .{ .section = .{} } }, 0, true);
         try self.w.writeAll(buf.items);
         self.indent = 2;
     }
@@ -227,8 +227,8 @@ const Output = struct {
     }
 
     fn numberFootnotes(self: *Output, node: Node) !void {
-        if (node.tag == .footnote_reference) _ = try self.footnotes.number(node.text);
-        for (node.children) |child| try self.numberFootnotes(child);
+        if (node.data == .footnote_reference) _ = try self.footnotes.number(node.data.footnote_reference);
+        for (node.children()) |child| try self.numberFootnotes(child);
     }
 
     /// `section` with its own copies of its id and attributes; `freeSection` takes them back.
@@ -314,13 +314,13 @@ const Output = struct {
             },
             .block => |b| {
                 const ba = b.arena.allocator();
-                const node = if (resolve) try self.resolver.resolve(ba, b.node.*) else b.node.*;
+                if (resolve) try self.resolver.resolve(ba, b.node);
                 switch (self.mode) {
                     .html => {
                         var renderer = html.Renderer{ .a = ba, .out = &buf, .footnotes = &self.footnotes };
-                        try renderer.render(node);
+                        try renderer.render(b.node.*);
                     },
-                    .ast => try ast.renderAstNode(ba, &buf, node, indent, false),
+                    .ast => try ast.renderAstNode(ba, &buf, b.node.*, indent, false),
                 }
             },
             .text, .close => unreachable,
@@ -367,7 +367,7 @@ const Output = struct {
             .html => {
                 if (n == 1) try buf.appendSlice(a, html.endnotes_open);
                 var renderer = html.Renderer{ .a = a, .out = &buf, .footnotes = &self.footnotes };
-                try renderer.renderEndnote(n, note.children);
+                try renderer.renderEndnote(n, note.children());
             },
             .ast => try ast.renderAstNode(a, &buf, note, self.indent, false),
         }
