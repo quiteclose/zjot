@@ -8,7 +8,7 @@ zjot passes all 261 test cases from the canonical [djot.js](https://github.com/j
 
 ## Build
 
-Requires Zig 0.15 or later.
+Requires Zig 0.16 or later.
 
 ```
 zig build
@@ -122,15 +122,17 @@ Runs 261 test cases vendored from the djot.js test suite, covering attributes, b
 
 ## Architecture
 
-zjot is a block-streaming renderer in one pass. The block parser is a container stack over the input's lines, the shape of djot.js's block parser: each line continues the open containers from the outermost in, opens new blocks while the innermost holds blocks, and what remains is lazy text or a blank line; it yields one block at a time (`Parser.nextBlock`) as a `Node` tree for that block alone, and there is no intermediate event stream and no tree of the whole document. Each block gets its heading ids as it arrives and is written as soon as nothing in it can still change: Djot lets a block refer to a later one, so a block holding a reference-style link waits in a queue until the input ends and the definitions are final, and the blocks behind it wait their turn. Only the definitions, the ids and the waiting blocks live for the whole document.
+zjot is a block-streaming renderer in one pass. The block parser is a container stack over the input's lines, the shape of djot.js's block parser: each line continues the open containers from the outermost in, opens new blocks while the innermost holds blocks, and what remains is lazy text or a blank line; it yields one block at a time (`Parser.nextBlock`) as a `Node` tree for that block alone, and there is no intermediate event stream and no tree of the whole document. Each block gets its heading ids as it arrives and is written as soon as nothing in it can still change: Djot lets a block refer to a later one, so a block holding a reference-style link waits in a queue until the input ends and the definitions are final, and the blocks behind it are rendered as they arrive and wait as text. Only the definitions, the ids and what waits live for the whole document.
 
 ```
 src/
-  root.zig           Public API
-  main.zig           CLI binary
-  node.zig           AST types (Node, Tag, Attr, SourcePos)
-  Parser.zig         Block parsing + list helpers + position tracking
-  document.zig       Heading ids, reference resolution, sections
+  root.zig           Public API: render, renderReader, toHtml, toAst, toAstOpts; the output queue
+  main.zig           CLI binary, streaming its input
+  node.zig           AST types (Node with a per-tag payload, Tag, Attr, SourcePos)
+  Parser.zig         Block parsing: the container stack over lines, one block at a time
+  leaf.zig           What one line says: block starts, list markers, fences, table rows
+  Lines.zig          The line source, over a slice or a std.Io.Reader
+  document.zig       Definitions, heading ids and implicit references, reference resolution, sections
   inline.zig         Inline parsing (emphasis, links, smart quotes, etc.)
   attributes.zig     Attribute parser ({#id .class key=value})
   html.zig           HTML renderer
