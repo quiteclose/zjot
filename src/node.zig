@@ -101,7 +101,7 @@ pub const Node = struct {
     /// Bullet lists: the marker character.
     style: ?[]const u8 = null,
     /// Ordered lists: the first number and the numbering, rendered as `start` and `type`.
-    start: u32 = 1,
+    start: u64 = 1,
     list_style: ?ListStyle = null,
     start_pos: ?SourcePos = null,
     end_pos: ?SourcePos = null,

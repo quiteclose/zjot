@@ -47,12 +47,12 @@ pub const Survey = struct {
     /// defined again starts its ids over with the definition that replaced the earlier one.
     pub fn visitFootnotes(self: *Survey, defs: *const Definitions) !void {
         while (self.visited_footnotes < defs.footnote_log.items.len) : (self.visited_footnotes += 1) {
-            const label = defs.footnote_log.items[self.visited_footnotes];
-            const ids = try self.footnote_heading_ids.getOrPut(self.a, label);
+            const entry = defs.footnote_log.items[self.visited_footnotes];
+            const ids = try self.footnote_heading_ids.getOrPut(self.a, entry.label);
             ids.value_ptr.* = .empty;
-            self.current_footnote = label;
+            self.current_footnote = entry.label;
             defer self.current_footnote = null;
-            for (defs.footnote_defs.get(label).?.blocks) |block| try self.visitNode(block, .footnote);
+            for (entry.def.blocks) |block| try self.visitNode(block, .footnote);
         }
     }
 
@@ -156,7 +156,7 @@ pub const Resolver = struct {
                 const label = inline_mod.normalizeLabel(ba, raw_label) catch raw_label;
                 if (self.defs.ref_defs.get(label)) |def| {
                     n.destination = def.url;
-                    if (def.attrs) |attrs| n = inline_mod.mergeRefAttrs(n, attrs, ba);
+                    if (def.attrs) |attrs| n = try inline_mod.mergeRefAttrs(n, attrs, ba);
                 } else if (self.survey.auto_refs.get(label)) |dest| {
                     n.destination = dest;
                 }

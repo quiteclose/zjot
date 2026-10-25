@@ -39,6 +39,9 @@ def render(n, indent, root):
 def convert(djot_input, sourcepos):
     args=['npx','-y','@djot/djot@0.3.2','-t','ast']+(['-p'] if sourcepos else [])
     r=subprocess.run(args,input=djot_input.encode(),capture_output=True)
+    if r.returncode!=0:
+        sys.stderr.write('djot2ast: djot.js failed (exit %d):\n%s'%(r.returncode,r.stderr.decode()))
+        sys.exit(2)
     doc=json.loads(r.stdout)
     # zjot prints every footnote definition after the document; djot.js keeps them in a map
     # (JavaScript lists integer-like labels such as "1" first, whatever the definition order).

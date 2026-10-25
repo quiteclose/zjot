@@ -6894,3 +6894,42 @@ q
 <p k="v" id="i">q</p>
 <p><span id="j" k="v" class="c">x</span></p>
 ````
+
+
+Final review fixes.
+
+An ordered marker past 32 bits keeps its start.
+````
+4294967296. a
+.
+<ol start="4294967296">
+<li>
+a
+</li>
+</ol>
+````
+
+A footnote defined twice with no block between: each definition's headings get ids where it stands.
+````
+[^a]: # A
+
+[^a]: # B
+
+# B
+
+x[^a]
+.
+<section id="B-1">
+<h1>B</h1>
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="B">B</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
