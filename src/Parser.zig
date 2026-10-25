@@ -44,10 +44,6 @@ track_pos: bool = false,
 /// closing fence counts as one, as djot.js (which emits a blank line event after it).
 blank_before: bool = false,
 fence_closed: bool = false,
-/// Pass one: parse only the inlines the survey reads. Heading text makes ids and implicit
-/// references, and an inline attribute may claim an id (`[x]{#Foo}` before `# Foo` gives
-/// the heading `Foo-1`, as djot.js); every other block's inlines are parsed once, in pass two.
-survey_only: bool = false,
 /// Where the document ends (`inputEnd`).
 doc_end: SourcePos = .{ .line = 1, .col = 1, .offset = 0 },
 /// The parser whose container this one parses the content of, suspended at the line that
@@ -132,9 +128,9 @@ const Window = struct {
     }
 };
 
-/// A parser over the content of a container this parser stopped at the end of, in the
-/// same pass; `a` holds what it allocates (footnote content outlives the block).
-fn child(self: *const Parser, a: Allocator, w: Window, survey_only: bool) Parser {
+/// A parser over the content of a container this parser stopped at the end of; `a` holds
+/// what it allocates (footnote content outlives the block).
+fn child(self: *const Parser, a: Allocator, w: Window) Parser {
     return .{
         .a = a,
         .doc = self.doc,
@@ -143,7 +139,6 @@ fn child(self: *const Parser, a: Allocator, w: Window, survey_only: bool) Parser
         .start = w.start.items,
         .defs = self.defs,
         .track_pos = self.track_pos,
-        .survey_only = survey_only,
         .doc_end = self.doc_end,
         .enclosing = self,
     };
@@ -306,7 +301,7 @@ fn parseParagraph(self: *Parser, literal_first_line: bool) !Node {
     }
 
     const attrs_from: usize = if (literal_first_line) text_lines.items[0].len else 0;
-    var para = Node{ .tag = .para, .children = try self.parseBodyInlines(text_lines.items, para_start_line, attrs_from) };
+    var para = Node{ .tag = .para, .children = try self.parseInlinesFrom(text_lines.items, para_start_line, attrs_from) };
     if (self.track_pos) {
         para.start_pos = self.makePos(para_start_line, self.contentCol(para_start_line));
         para.end_pos = self.leafEnd(para.children, self.pos - 1);
@@ -343,17 +338,6 @@ fn afterNewline(self: *const Parser, line_idx: usize) SourcePos {
 /// consecutive lines starting at `first_line`; positioned when positions are tracked.
 fn parseInlinesAt(self: *Parser, slices: []const []const u8, first_line: usize) ![]const Node {
     return self.parseInlinesFrom(slices, first_line, 0);
-}
-
-/// The inlines of a block whose text the survey never reads (paragraphs, captions, cells):
-/// in pass one, none unless a `{` may open an inline attribute; see `survey_only`.
-fn parseBodyInlines(self: *Parser, slices: []const []const u8, first_line: usize, attrs_from: usize) ![]const Node {
-    if (self.survey_only) {
-        for (slices) |slice| {
-            if (std.mem.indexOfScalar(u8, slice, '{') != null) break;
-        } else return &.{};
-    }
-    return self.parseInlinesFrom(slices, first_line, attrs_from);
 }
 
 /// As `parseInlinesAt`, reading no inline attribute before joined offset `attrs_from`.
@@ -434,6 +418,7 @@ fn tryHeading(self: *Parser) !?Node {
         node.start_pos = self.makePos(start_line, self.contentCol(start_line));
         node.end_pos = self.leafEnd(node.children, self.pos - 1);
     }
+    self.defs.headings_parsed += 1;
     return node;
 }
 
@@ -512,7 +497,7 @@ fn tryBlockQuote(self: *Parser) !?Node {
         }
     }
 
-    var inner_parser = self.child(self.a, w, self.survey_only);
+    var inner_parser = self.child(self.a, w);
     const inner_blocks = try inner_parser.parseBlocks();
     var node = Node{ .tag = .block_quote, .children = inner_blocks };
     if (self.track_pos) {
@@ -532,7 +517,7 @@ fn tryFencedDiv(self: *Parser) !?Node {
     // The child's blocks end at the fence; this parser stands on it meanwhile.
     self.pos = close orelse self.lines.len;
     self.closing_fence = close;
-    var inner_parser = self.child(self.a, w, self.survey_only);
+    var inner_parser = self.child(self.a, w);
     const blocks = try inner_parser.parseBlocks();
     self.closing_fence = null;
     var node = Node{ .tag = .div, .children = blocks };
@@ -592,7 +577,6 @@ fn tryRefDef(self: *Parser, pending_attrs: ?BlockAttrs) !?void {
         dest_text = try buf.toOwnedSlice(self.a);
     }
 
-    if (self.defs.sealed) return {};
     const da = self.defs.a;
     try self.defs.ref_defs.put(da, try da.dupe(u8, label), .{
         .url = try da.dupe(u8, dest_text),
@@ -607,6 +591,7 @@ fn tryFootnoteDef(self: *Parser) !?void {
     const label = def.label;
     const rest = def.rest;
     const def_line = self.pos;
+    const headings_before = self.defs.headings_parsed;
     self.pos += 1;
 
     var w = Window{ .first = if (rest.len > 0) def_line else def_line + 1 };
@@ -646,20 +631,20 @@ fn tryFootnoteDef(self: *Parser) !?void {
         } else break;
     }
 
-    if (self.defs.sealed) return {};
     // The footnote's blocks are rendered at the end of the document, so they are parsed
-    // with the definitions' allocator rather than the current block's, and in full; they
-    // are positioned like any container's, which is why pass one tracks positions too.
-    var inner_parser = self.child(self.defs.a, w, false);
-    var stored = FootnoteDef{ .blocks = try inner_parser.parseBlocks() };
+    // with the definitions' allocator rather than the current block's, and positioned
+    // like any container's.
+    const da = self.defs.a;
+    var inner_parser = self.child(da, w);
+    const stored = try da.create(FootnoteDef);
+    stored.* = .{ .blocks = try inner_parser.parseBlocks() };
     if (self.track_pos) {
         stored.start_pos = self.makePos(def_line, self.contentCol(def_line));
         stored.end_pos = self.definitionEnd();
     }
-    const da = self.defs.a;
     const key = try da.dupe(u8, label);
     try self.defs.footnote_defs.put(da, key, stored);
-    try self.defs.footnote_log.append(da, .{ .label = key, .def = stored });
+    try self.defs.footnote_log.append(da, .{ .label = key, .def = stored, .headings_before = headings_before });
     return {};
 }
 
@@ -749,7 +734,7 @@ fn isList(node: Node) bool {
 fn parseItemContent(self: *Parser, content: *const ItemContent) !ItemBlocks {
     var blocks: std.ArrayList(Node) = .empty;
     var loose = false;
-    var parser = self.child(self.a, content.window, self.survey_only);
+    var parser = self.child(self.a, content.window);
     while (try parser.nextBlock()) |block| {
         // As djot.js, a blank line belongs to the innermost list open when it came, and
         // makes it loose unless a list follows it: a blank after a sublist is the
@@ -947,7 +932,7 @@ fn tryDefinitionList(self: *Parser) !?Node {
             }
         }
 
-        var inner_parser = self.child(self.a, w, self.survey_only);
+        var inner_parser = self.child(self.a, w);
         const all_blocks = try inner_parser.parseBlocks();
 
         var term_node: Node = undefined;
@@ -1064,7 +1049,7 @@ fn tryTable(self: *Parser) !?Node {
     // marker line is empty starts on that line's newline and holds the lines after it.
     const bare_marker = cap_lines.items.len > 0 and cap_lines.items[0].len == 0;
     const cap_slices = if (bare_marker) cap_lines.items[1..] else cap_lines.items;
-    var caption = Node{ .tag = .caption, .children = try self.parseBodyInlines(cap_slices, if (bare_marker) cap_line + 1 else cap_line, 0) };
+    var caption = Node{ .tag = .caption, .children = try self.parseInlinesAt(cap_slices, if (bare_marker) cap_line + 1 else cap_line) };
     if (self.track_pos and cap_lines.items.len > 0) {
         caption.start_pos = self.captionStart(cap_line);
         caption.end_pos = if (cap_slices.len == 0) caption.start_pos else self.afterContent(self.pos - 1);
@@ -1099,7 +1084,7 @@ fn parseTableRowWithAlign(self: *Parser, line: []const u8, line_idx: usize, col_
     const cell_strs = try leaf.rowCells(self.a, line);
     for (cell_strs, 0..) |cell, col| {
         const cell_text = std.mem.trim(u8, cell, " \t");
-        var node = Node{ .tag = .cell, .children = try self.parseBodyInlines(&.{cell_text}, line_idx, 0), .head = is_head };
+        var node = Node{ .tag = .cell, .children = try self.parseInlinesAt(&.{cell_text}, line_idx), .head = is_head };
         if (col < col_aligns.len) node.cell_align = col_aligns[col];
         if (self.track_pos) {
             // A cell runs from its leading pipe to the next one, inclusive.
