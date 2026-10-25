@@ -96,8 +96,9 @@ pub const Ids = struct {
 
     /// Assigns the footnote definitions logged but not yet assigned that stand before the
     /// next heading: those no more headings were parsed before than have been assigned.
-    /// Called before each heading and after each block, so after the last block it
-    /// assigns every definition left. The log holds a footnote defined inside another's
+    /// Called before each block and each heading, and after the last block, so what a
+    /// definition's headings claim comes before what a later block claims, as djot.js
+    /// assigns in source order, and nothing is left. The log holds a footnote defined inside another's
     /// content before the one around it (it closed first), so every unassigned entry is
     /// looked at, and one assigned may make another due.
     pub fn assignFootnotes(self: *Ids) Allocator.Error!void {
@@ -122,9 +123,9 @@ pub const Ids = struct {
     /// block holds a link or image by reference, which the definitions may still change
     /// until the input ends (what `Resolver.resolve` fills in).
     pub fn assign(self: *Ids, block: *Node) Allocator.Error!bool {
-        const by_reference = try self.assignNode(block);
+        // The definitions that closed before this block stand before it in the source.
         try self.assignFootnotes();
-        return by_reference;
+        return self.assignNode(block);
     }
 
     fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
