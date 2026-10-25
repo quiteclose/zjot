@@ -7107,3 +7107,208 @@ Block attributes render on a definition list and a table.
 </tr>
 </table>
 ````
+
+Implicit references: the first heading with the text claims it, as djot.js; a later
+heading with the same text does not take it over.
+````
+# Foo
+
+# Foo
+
+[Foo][]
+.
+<section id="Foo">
+<h1>Foo</h1>
+</section>
+<section id="Foo-1">
+<h1>Foo</h1>
+<p><a href="#Foo">Foo</a></p>
+</section>
+````
+
+Implicit references: a reference before both headings points at the first.
+````
+[Foo][]
+
+# Foo
+
+# Foo
+.
+<p><a href="#Foo">Foo</a></p>
+<section id="Foo">
+<h1>Foo</h1>
+</section>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+Implicit references: a heading inside a block quote claims its text too.
+````
+> # Foo
+
+[Foo][]
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+</blockquote>
+<p><a href="#Foo">Foo</a></p>
+````
+
+Implicit references: a heading inside a list item claims before a later top-level heading.
+````
+- # Foo
+
+[Foo][]
+
+# Foo
+.
+<ul>
+<li>
+<h1 id="Foo">Foo</h1>
+</li>
+</ul>
+<p><a href="#Foo">Foo</a></p>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+Implicit references: a heading in a footnote definition claims its text.
+````
+[^n]: # Foo
+
+text[^n] [Foo][]
+.
+<p>text<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a href="#Foo">Foo</a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Implicit references: a footnote's heading claims where the definition stands, before the
+heading that follows it.
+````
+[^n]: # Foo
+
+# Foo
+
+[Foo][] [^n]
+.
+<section id="Foo-1">
+<h1>Foo</h1>
+<p><a href="#Foo">Foo</a> <a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Heading ids: a footnote defined inside a container takes its ids where it stands, after
+the container's headings before it.
+````
+- # Foo
+
+  [^n]: # Foo
+
+[Foo][] [^n]
+.
+<ul>
+<li>
+<h1 id="Foo">Foo</h1>
+</li>
+</ul>
+<p><a href="#Foo">Foo</a> <a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+````
+> # Foo
+>
+> [^n]: # Foo
+
+[Foo][] [^n]
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+</blockquote>
+<p><a href="#Foo">Foo</a> <a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Section ends: a definition or attribute block after the last block carries the open
+sections to the input's end, as djot.js's last event.
+```` ap
+{#a}
+# A
+
+text
+
+[^n]: note
+.
+doc
+  section (2:1:5-7:0:26) id="a"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="A"
+    para (4:1:10-5:0:14)
+      str (4:1:10-4:4:13) text="text"
+  footnote (6:1:16-7:0:26) label="n"
+    para (6:7:22-7:0:26)
+      str (6:7:22-6:10:25) text="note"
+````
+
+```` ap
+{#c}
+# C
+
+[r]: /u
+.
+doc
+  section (2:1:5-5:0:17) id="c"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="C"
+````
+
+```` ap
+{#d}
+# D
+
+text
+
+{.x}
+.
+doc
+  section (2:1:5-7:0:20) id="d"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="D"
+    para (4:1:10-5:0:14)
+      str (4:1:10-4:4:13) text="text"
+````
