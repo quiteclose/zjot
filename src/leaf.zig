@@ -36,7 +36,7 @@ pub fn isThematicBreak(line: []const u8) bool {
     if (trimmed.len < 3) return false;
     var count: usize = 0;
     for (trimmed) |c| {
-        if (c == ' ') continue;
+        if (c == ' ' or c == '\t') continue;
         if (c != '*' and c != '-') return false;
         count += 1;
     }
@@ -65,20 +65,8 @@ pub fn isCodeFence(line: []const u8) ?FenceInfo {
     const fence_len = countLeadingChar(rest, fence_char);
     if (fence_len < 3) return null;
     const after_fence = std.mem.trim(u8, rest[fence_len..], " \t");
-
-    if (fence_char == '`') {
-        if (after_fence.len > 0) {
-            if (std.mem.indexOfScalar(u8, after_fence, ' ') != null) return null;
-            var bi: usize = 0;
-            while (bi < after_fence.len) : (bi += 1) {
-                if (after_fence[bi] == '`') {
-                    const back_run = countLeadingChar(after_fence[bi..], '`');
-                    if (back_run >= fence_len) return null;
-                    bi += back_run;
-                }
-            }
-        }
-    }
+    // The info string is one word without a backtick, as djot.js's pattern has it.
+    if (std.mem.indexOfAny(u8, after_fence, " \t`") != null) return null;
     return .{ .len = fence_len, .char = fence_char, .lang = if (after_fence.len > 0) after_fence else null, .indent = indent };
 }
 
@@ -122,7 +110,7 @@ pub const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_c
 /// djot.js), and what follows the colon.
 pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const trimmed = std.mem.trimStart(u8, line, " ");
-    if (trimmed.len < 4 or trimmed[0] != '[') return null;
+    if (trimmed.len < 3 or trimmed[0] != '[') return null;
     const close = std.mem.indexOfScalar(u8, trimmed[1..], ']') orelse return null;
     if (close + 2 >= trimmed.len or trimmed[close + 2] != ':') return null;
     const label = trimmed[1 .. close + 1];
@@ -252,8 +240,18 @@ pub const OrderedStyles = struct {
     possible: [2]?ListStyle,
     n: u2,
 
+    /// Whether `m` could be an item of the list: its styles share one with the list's.
+    pub fn matches(self: OrderedStyles, m: Marker) bool {
+        for (0..self.n) |pi| {
+            const ps = self.possible[pi] orelse continue;
+            for (0..m.n_styles) |si| if (m.styles[si] == ps) return true;
+        }
+        return false;
+    }
+
     /// Whether `m` continues the list: its styles share one with the list's, which then
-    /// narrow to the shared ones. The first item is always accepted.
+    /// narrow to the shared ones (djot.js narrows as an item opens, so a marker that opens
+    /// a sublist instead leaves the list's styles alone). The first item is always accepted.
     pub fn accept(self: *OrderedStyles, m: Marker, first: bool) bool {
         var shared: [2]?ListStyle = .{ null, null };
         var n_shared: u2 = 0;

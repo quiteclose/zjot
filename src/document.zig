@@ -17,10 +17,11 @@ const BlockAttrs = @import("attributes.zig").BlockAttrs;
 /// What block-level syntax defines for the whole document: reference link definitions
 /// and footnote definitions. A block anywhere may use a definition from anywhere, so
 /// they outlive any one block: everything stored here is allocated from `a`, which the
-/// caller keeps for the document, whatever allocator the blocks themselves use.
-/// Shared by pointer with child parsers so a definition inside a container is seen.
+/// caller keeps for the document, whatever allocator the blocks themselves use. The maps
+/// and the log grow on `gpa`, which frees a table outgrown; `deinit` frees them.
 pub const Definitions = struct {
     a: Allocator,
+    gpa: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
     /// By label, the definition that stands: a label defined again replaces the earlier
     /// (djot.js).
@@ -31,19 +32,27 @@ pub const Definitions = struct {
     /// Headings parsed so far, footnote content included: where a footnote stands among
     /// them (`LoggedFootnote.headings_before`).
     headings_parsed: usize = 0,
+
+    pub fn deinit(self: *Definitions) void {
+        self.ref_defs.deinit(self.gpa);
+        self.footnote_defs.deinit(self.gpa);
+        self.footnote_log.deinit(self.gpa);
+    }
 };
 
-/// A footnote definition's blocks and, when positions are tracked, its span: from its
-/// label to where the next block starts, as djot.js.
+/// A footnote definition's blocks, the block attributes written before it, and, when
+/// positions are tracked, its span: from its label to where the next block starts, as djot.js.
 pub const FootnoteDef = struct {
     blocks: []const Node,
+    attrs: ?BlockAttrs = null,
     start_pos: ?SourcePos = null,
     end_pos: ?SourcePos = null,
 };
 
 /// `headings_before`: the headings parsed before the definition started, so `Ids` assigns
-/// its headings after those and before the next, as djot.js's event order has it.
-pub const LoggedFootnote = struct { label: []const u8, def: *FootnoteDef, headings_before: usize };
+/// its headings after those and before the next, as djot.js's event order has it;
+/// `assigned` once it has.
+pub const LoggedFootnote = struct { label: []const u8, def: *FootnoteDef, headings_before: usize, assigned: bool = false };
 
 pub const RefDef = struct {
     url: []const u8,
@@ -58,7 +67,10 @@ pub const RefDef = struct {
 /// a definition wins anyway). Nothing later changes an id, so a block's ids are final when
 /// the block is.
 pub const Ids = struct {
+    /// For the ids and labels kept, which the document's nodes point at.
     a: Allocator,
+    /// For the maps, freed by `deinit`.
+    gpa: Allocator,
     defs: *const Definitions,
     ids_used: std.StringArrayHashMapUnmanaged(void) = .{},
     /// Normalized heading text to "#id".
@@ -68,21 +80,39 @@ pub const Ids = struct {
     next_suffix: std.StringArrayHashMapUnmanaged(usize) = .{},
     /// For a heading's text and label while its id is made, and the candidate ids tried.
     scratch: std.heap.ArenaAllocator,
+    /// Headings whose text gave no id so far: they are numbered `s-1`, `s-2`, ... (djot.js).
+    empty_ids: usize = 0,
     /// Headings assigned so far, in the parser's count (`Definitions.headings_parsed`).
     assigned_headings: usize = 0,
-    assigned_footnotes: usize = 0,
+    /// The log's first entry not yet assigned.
+    first_unassigned: usize = 0,
+
+    pub fn deinit(self: *Ids) void {
+        self.ids_used.deinit(self.gpa);
+        self.auto_refs.deinit(self.gpa);
+        self.next_suffix.deinit(self.gpa);
+        self.scratch.deinit();
+    }
 
     /// Assigns the footnote definitions logged but not yet assigned that stand before the
-    /// next heading: the ones no more headings were parsed before than have been assigned.
+    /// next heading: those no more headings were parsed before than have been assigned.
     /// Called before each heading and after each block, so after the last block it
-    /// assigns every definition left.
+    /// assigns every definition left. The log holds a footnote defined inside another's
+    /// content before the one around it (it closed first), so every unassigned entry is
+    /// looked at, and one assigned may make another due.
     pub fn assignFootnotes(self: *Ids) Allocator.Error!void {
         const log = self.defs.footnote_log.items;
-        while (self.assigned_footnotes < log.len and log[self.assigned_footnotes].headings_before <= self.assigned_headings) {
-            const def = log[self.assigned_footnotes].def;
-            self.assigned_footnotes += 1;
-            // The parser built these blocks for the definition alone.
-            for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block);
+        var progress = true;
+        while (progress) {
+            progress = false;
+            while (self.first_unassigned < log.len and log[self.first_unassigned].assigned) self.first_unassigned += 1;
+            for (log[self.first_unassigned..]) |*entry| {
+                if (entry.assigned or entry.headings_before > self.assigned_headings) continue;
+                entry.assigned = true;
+                progress = true;
+                // The parser built these blocks for the definition alone.
+                for (@constCast(entry.def.blocks)) |*block| _ = try self.assignNode(block);
+            }
         }
     }
 
@@ -99,7 +129,7 @@ pub const Ids = struct {
 
     fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
         if (n.id) |id| {
-            const seen = try self.ids_used.getOrPut(self.a, id);
+            const seen = try self.ids_used.getOrPut(self.gpa, id);
             if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
         }
         var by_reference = switch (n.data) {
@@ -115,7 +145,7 @@ pub const Ids = struct {
             const label = try inline_mod.normalizeLabel(self.scratch.allocator(), text);
             if (!self.auto_refs.contains(label)) {
                 const dest = try std.fmt.allocPrint(self.a, "#{s}", .{n.id.?});
-                try self.auto_refs.put(self.a, try self.a.dupe(u8, label), dest);
+                try self.auto_refs.put(self.gpa, try self.a.dupe(u8, label), dest);
             }
         }
         for (@constCast(n.children())) |*child| {
@@ -142,25 +172,26 @@ pub const Ids = struct {
 
         var base_id = try buf.toOwnedSlice(self.a);
         if (base_id.len == 0) {
-            base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.ids_used.count() + 1});
+            self.empty_ids += 1;
+            base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.empty_ids});
         }
 
         if (!self.ids_used.contains(base_id)) {
-            try self.ids_used.put(self.a, base_id, {});
+            try self.ids_used.put(self.gpa, base_id, {});
             return base_id;
         }
 
         // Ids are only ever added, so the first free suffix is never below the last
         // one handed out for this base; the search resumes there. Candidates are built
         // in scratch and only the accepted one is kept.
-        const next = try self.next_suffix.getOrPut(self.a, base_id);
+        const next = try self.next_suffix.getOrPut(self.gpa, base_id);
         if (!next.found_existing) next.value_ptr.* = 1;
         var counter = next.value_ptr.*;
         while (true) : (counter += 1) {
             const candidate = try std.fmt.allocPrint(self.scratch.allocator(), "{s}-{d}", .{ base_id, counter });
             if (!self.ids_used.contains(candidate)) {
                 const id = try self.a.dupe(u8, candidate);
-                try self.ids_used.put(self.a, id, {});
+                try self.ids_used.put(self.gpa, id, {});
                 next.value_ptr.* = counter + 1;
                 return id;
             }
@@ -202,7 +233,8 @@ pub const Resolver = struct {
     pub fn footnote(self: *const Resolver, ba: Allocator, label: []const u8) !Node {
         const def = self.defs.footnote_defs.get(label) orelse return .{ .data = .{ .footnote = .{ .label = label } } };
         for (@constCast(def.blocks)) |*block| try self.resolveNode(ba, block);
-        return .{ .data = .{ .footnote = .{ .label = label, .children = def.blocks } }, .start_pos = def.start_pos, .end_pos = def.end_pos };
+        const n = Node{ .data = .{ .footnote = .{ .label = label, .children = def.blocks } }, .start_pos = def.start_pos, .end_pos = def.end_pos };
+        return if (def.attrs) |attrs| try inline_mod.applyBlockAttrsToNode(ba, n, attrs) else n;
     }
 };
 
@@ -266,11 +298,11 @@ pub const Sections = struct {
 test "heading ids: the next free suffix per base, found without a search" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
-    const defs = Definitions{ .a = arena.allocator() };
-    var ids = Ids{ .a = arena.allocator(), .defs = &defs, .scratch = .init(std.testing.allocator) };
-    defer ids.scratch.deinit();
+    const defs = Definitions{ .a = arena.allocator(), .gpa = std.testing.allocator };
+    var ids = Ids{ .a = arena.allocator(), .gpa = std.testing.allocator, .defs = &defs, .scratch = .init(std.testing.allocator) };
+    defer ids.deinit();
     try std.testing.expectEqualStrings("x", try ids.generate("x"));
-    try ids.ids_used.put(ids.a, "x-2", {}); // an explicit id in the way
+    try ids.ids_used.put(ids.gpa, "x-2", {}); // an explicit id in the way
     try std.testing.expectEqualStrings("x-1", try ids.generate("x"));
     try std.testing.expectEqualStrings("x-3", try ids.generate("x"));
     var i: usize = 4;

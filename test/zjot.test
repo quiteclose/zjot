@@ -35,6 +35,20 @@ Deliberate differences from djot.js 0.3.2:
    0.3.2 prints the `:alias:` text and drops the attributes. The AST agrees (`symb` with
    its attributes). Decided 2026-10-24.
 
+5. A bare carriage return is content: `a\rb` is one line, where djot.js 0.3.2 ends a
+   line at any `\r` (an old Mac line end) and makes a soft break. Only `\r\n` ends a line
+   in zjot (the `\r` dropped, as the CRLF note below). The `.test` format cannot carry a
+   bare `\r`, so this is documented, not pinned. Decided 2026-10-25.
+
+6. An ordered list whose first marker's number does not fit 64 bits starts at 1 (and a
+   marker longer than 32 bytes is not kept); djot.js prints JavaScript's float for it
+   (`start="1.2345678901234568e+39"`). Decided 2026-10-25.
+
+7. A table separator cell may have spaces around its dashes: `| --- | --- |` separates a
+   head row, as djot.js's own README writes its tables. djot.js 0.3.2 matches a separator
+   cell only right after its pipe, so there it is an ordinary row of em dashes; its test
+   suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -7598,4 +7612,144 @@ doc
     list_item (2:1:5-3:0:9)
       para (2:4:8-3:0:9)
         str (2:4:8-2:4:8) text="b"
+````
+
+Heading ids: a footnote defined inside another's content takes its ids where it stands
+among the outer footnote's headings, as djot.js.
+````
+[^a]: # Foo
+
+    [^b]: # Foo
+
+    # Foo
+
+x[^a] y[^b]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> y<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<h1 id="Foo-2">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+````
+[^a]:
+    # Foo
+
+    [^b]: # Foo
+
+    # Foo
+
+x[^a] y[^b] [Foo][]
+.
+<p>x<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> y<a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a> <a href="#Foo">Foo</a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<h1 id="Foo-2">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An ordered list's possible styles narrow as items join it, not on a marker that opens a
+sublist inside an item, as djot.js.
+````
+  i. a
+i. b
+ j. c
+.
+<ol type="i">
+<li>
+a
+</li>
+<li>
+b
+j. c
+</li>
+</ol>
+````
+
+Headings whose text gives no id are numbered in their own sequence, as djot.js.
+````
+## a
+
+#
+
+#
+
+# b
+.
+<section id="a">
+<h2>a</h2>
+</section>
+<section id="s-1">
+<h1></h1>
+</section>
+<section id="s-2">
+<h1></h1>
+</section>
+<section id="b">
+<h1>b</h1>
+</section>
+````
+
+An empty reference definition `[]:` is a definition, as djot.js.
+````
+[]:
+
+x
+.
+<p>x</p>
+````
+
+A code fence's info string is one word without a backtick, as djot.js.
+````
+``` a`b
+code
+```
+.
+<p><code> a`b
+code
+</code></p>
+````
+
+A thematic break may have tabs between its marks, as djot.js.
+````
+- -	-
+.
+<hr>
+````
+
+Block attributes before a footnote definition go on the footnote, as djot.js.
+```` a
+{.a}
+[^n]: note
+
+para[^n]
+.
+doc
+  para
+    str text="para"
+    footnote_reference text="n"
+  footnote label="n" class="a"
+    para
+      str text="note"
 ````

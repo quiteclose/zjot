@@ -34,11 +34,12 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 }
 
 /// As `render`, over what `r` yields: the input need not be resident. A line is read into
-/// the reader's buffer, which must not be empty (one longer than it spills into a buffer
-/// of its own), and only what the parser keeps of it outlives the next line, so memory
-/// follows the blocks, not the document. A read failure is `error.ReadFailed`; the reader
-/// says why.
+/// the reader's buffer (one longer than it spills into a buffer of its own), and only what
+/// the parser keeps of it outlives the next line, so memory follows the blocks, not the
+/// document. A reader without a buffer cannot be read a line at a time:
+/// `error.UnbufferedReader`. A read failure is `error.ReadFailed`; the reader says why.
 pub fn renderReader(a: Allocator, r: *std.Io.Reader, w: *std.Io.Writer, opts: RenderOpts) !void {
+    if (r.buffer.len == 0) return error.UnbufferedReader;
     return renderLines(a, Lines.fromReader(a, r), w, opts);
 }
 
@@ -47,9 +48,10 @@ fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) 
     defer doc_arena.deinit();
     const da = doc_arena.allocator();
 
-    var defs = document.Definitions{ .a = da };
-    var ids = document.Ids{ .a = da, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
-    defer ids.scratch.deinit();
+    var defs = document.Definitions{ .a = da, .gpa = a };
+    defer defs.deinit();
+    var ids = document.Ids{ .a = da, .gpa = a, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
+    defer ids.deinit();
     var parser = try Parser.init(a, da, lines, &defs);
     defer parser.deinit();
     parser.track_pos = opts.sourcepos;
@@ -408,9 +410,10 @@ test "a block is written as it arrives unless a reference-style link holds it" {
     defer written.deinit();
 
     const input = "one\n\ntwo [x][r]\n\nthree\n\n[r]: /u\n";
-    var defs = document.Definitions{ .a = da };
-    var ids = document.Ids{ .a = da, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
-    defer ids.scratch.deinit();
+    var defs = document.Definitions{ .a = da, .gpa = a };
+    defer defs.deinit();
+    var ids = document.Ids{ .a = da, .gpa = a, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
+    defer ids.deinit();
     var parser = try Parser.init(a, da, Lines.fromSlice(input), &defs);
     defer parser.deinit();
     var out = Output{ .a = a, .w = &written.writer, .mode = .html, .hold_sections = false, .parser = &parser, .resolver = .{ .defs = &defs, .ids = &ids }, .footnotes = .{ .a = da }, .scratch = std.heap.ArenaAllocator.init(a) };
