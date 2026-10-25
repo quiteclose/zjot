@@ -248,9 +248,9 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
             continue;
         } else if (try self.tryDefinitionList()) |dl| {
             node = dl;
-        } else if (try self.tryBulletList()) |bl| {
+        } else if (try self.tryList(.bullet)) |bl| {
             node = bl;
-        } else if (try self.tryOrderedList()) |ol| {
+        } else if (try self.tryList(.ordered)) |ol| {
             node = ol;
         } else if (try self.tryTable()) |tbl| {
             node = tbl;
@@ -860,26 +860,58 @@ fn updateListTightness(is_tight: *bool, saw_blank_between: *bool, content: *cons
     if (content.item_saw_blank and content.blocks.lines.items.len == 0) saw_blank_between.* = true;
 }
 
-fn tryBulletList(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const first_info = parseBulletMarker(line) orelse return null;
-    const list_indent = first_info.indent;
-    const marker_char = first_info.marker;
-    const list_start_line = self.pos;
+const ListKind = enum { bullet, ordered };
 
+/// The number styles an ordered list may still be, narrowed by each item's marker, as
+/// djot.js (`1.` is decimal; `i.` is roman or alpha until a later item decides).
+const OrderedStyles = struct {
+    possible: [2]?ListStyle,
+    n: u2,
+
+    /// Whether `m` continues the list: its styles share one with the list's, which then
+    /// narrow to the shared ones. The first item is always accepted.
+    fn accept(self: *OrderedStyles, m: Marker, first: bool) bool {
+        var shared: [2]?ListStyle = .{ null, null };
+        var n_shared: u2 = 0;
+        for (0..self.n) |pi| {
+            const ps = self.possible[pi] orelse continue;
+            for (0..m.n_styles) |si| {
+                if (m.styles[si] == ps) {
+                    shared[n_shared] = ps;
+                    n_shared += 1;
+                    break;
+                }
+            }
+        }
+        if (first) return true;
+        if (n_shared == 0) return false;
+        self.possible = shared;
+        self.n = n_shared;
+        return true;
+    }
+};
+
+/// A bullet or ordered list: consecutive items whose markers continue the first one's
+/// (bullets: the same character, task or plain alike; ordered: a shared number style).
+fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
+    const first = parseMarker(kind, self.lines[self.pos]) orelse return null;
+    const list_indent = first.indent;
+    const list_start_line = self.pos;
     // A task item after plain items, or the reverse, starts a new list, as djot.js.
-    const list_is_task = isTaskItem(first_info.rest);
+    const list_is_task = kind == .bullet and isTaskItem(first.rest);
+    var styles = OrderedStyles{ .possible = first.styles, .n = first.n_styles };
 
     var items: std.ArrayList(Node) = .empty;
     var is_tight = true;
     var saw_blank_between = false;
 
     while (self.pos < self.lines.len) {
-        const cur = self.lines[self.pos];
-        const cur_li = parseBulletMarker(cur) orelse break;
-        if (cur_li.indent != list_indent or cur_li.marker != marker_char) break;
-        const is_task = isTaskItem(cur_li.rest);
-        if (is_task != list_is_task) break;
+        const m = parseMarker(kind, self.lines[self.pos]) orelse break;
+        if (m.indent != list_indent) break;
+        switch (kind) {
+            .bullet => if (m.bullet != first.bullet or isTaskItem(m.rest) != list_is_task) break,
+            .ordered => if (!styles.accept(m, items.items.len == 0)) break,
+        }
 
         if (saw_blank_between) is_tight = false;
         saw_blank_between = false;
@@ -887,132 +919,58 @@ fn tryBulletList(self: *Parser) !?Node {
         const item_start_line = self.pos;
         // A task item's content starts after the checkbox and the space that follows
         // it, as djot.js; a bare checkbox opens no paragraph.
-        var first_rest = cur_li.rest;
-        var first_col = cur_li.content_col;
-        if (is_task) {
-            const after_box = std.mem.trimStart(u8, cur_li.rest[@min(4, cur_li.rest.len)..], " \t");
-            first_col += cur_li.rest.len - after_box.len;
+        var first_rest = m.rest;
+        var first_col = m.content_col;
+        if (list_is_task) {
+            const after_box = std.mem.trimStart(u8, m.rest[@min(4, m.rest.len)..], " \t");
+            first_col += m.rest.len - after_box.len;
             first_rest = after_box;
         }
-        const task_checked = is_task and cur_li.rest[1] != ' ';
-        const content = try self.collectItemContent(cur_li.content_col, first_col, list_indent, first_rest);
-
+        const content = try self.collectItemContent(m.content_col, first_col, list_indent, first_rest);
         const inner_blocks = try self.parseItemContent(&content);
-        const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) self.stopBefore() else null;
-
-        if (is_task) {
-            try items.append(self.a, .{ .tag = .task_list_item, .children = inner_blocks, .checked = task_checked, .start_pos = item_sp, .end_pos = item_ep });
-        } else {
-            try items.append(self.a, .{ .tag = .list_item, .children = inner_blocks, .start_pos = item_sp, .end_pos = item_ep });
-        }
+        try items.append(self.a, .{
+            .tag = if (list_is_task) .task_list_item else .list_item,
+            .children = inner_blocks,
+            .checked = if (list_is_task) m.rest[1] != ' ' else null,
+            .start_pos = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null,
+            .end_pos = if (self.track_pos) self.stopBefore() else null,
+        });
 
         updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
     }
 
-    const list_tag: Tag = if (list_is_task) .task_list else .bullet_list;
-    const list_sp = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null;
-    const list_ep = if (self.track_pos) self.containerEnd() else null;
-    const marker_str: []const u8 = switch (marker_char) {
-        '-' => "-",
-        '+' => "+",
-        '*' => "*",
-        else => "-",
-    };
-    return .{
-        .tag = list_tag,
+    var list = Node{
+        .tag = switch (kind) {
+            .bullet => if (list_is_task) .task_list else .bullet_list,
+            .ordered => .ordered_list,
+        },
         .children = try items.toOwnedSlice(self.a),
         .tight = is_tight,
-        .style = marker_str,
-        .start_pos = list_sp,
-        .end_pos = list_ep,
+        .start_pos = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null,
+        .end_pos = if (self.track_pos) self.containerEnd() else null,
     };
+    switch (kind) {
+        .bullet => list.style = switch (first.bullet) {
+            '+' => "+",
+            '*' => "*",
+            else => "-",
+        },
+        .ordered => {
+            const style = styles.possible[0] orelse .decimal;
+            const start = getListStart(first.marker_text, style);
+            var attrs: std.ArrayList(Attr) = .empty;
+            if (start != 1) try attrs.append(self.a, .{ .key = "start", .value = try std.fmt.allocPrint(self.a, "{d}", .{start}) });
+            if (style.htmlType()) |t| try attrs.append(self.a, .{ .key = "type", .value = t });
+            list.attrs = try attrs.toOwnedSlice(self.a);
+        },
+    }
+    return list;
 }
 
-fn tryOrderedList(self: *Parser) !?Node {
-    const line = self.lines[self.pos];
-    const first_info = parseOrderedMarker(line) orelse return null;
-    const list_indent = first_info.indent;
-    const list_start_line = self.pos;
-
-    var possible_styles: [2]?ListStyle = first_info.styles;
-    var n_possible: u2 = first_info.n_styles;
-
-    var items: std.ArrayList(Node) = .empty;
-    var is_tight = true;
-    var saw_blank_between = false;
-
-    while (self.pos < self.lines.len) {
-        const cur = self.lines[self.pos];
-        const cur_ol = parseOrderedMarker(cur) orelse break;
-        if (cur_ol.indent != list_indent) break;
-
-        var compatible = false;
-        for (0..cur_ol.n_styles) |si| {
-            const s = cur_ol.styles[si] orelse continue;
-            for (0..n_possible) |pi| {
-                if (possible_styles[pi] == s) {
-                    compatible = true;
-                    break;
-                }
-            }
-            if (compatible) break;
-        }
-        if (!compatible and items.items.len > 0) break;
-
-        if (items.items.len > 0) {
-            var new_styles: [2]?ListStyle = .{ null, null };
-            var new_n: u2 = 0;
-            for (0..n_possible) |pi| {
-                const ps = possible_styles[pi] orelse continue;
-                for (0..cur_ol.n_styles) |si| {
-                    if (cur_ol.styles[si] == ps) {
-                        new_styles[new_n] = ps;
-                        new_n += 1;
-                        break;
-                    }
-                }
-            }
-            if (new_n > 0) {
-                possible_styles = new_styles;
-                n_possible = new_n;
-            }
-        }
-
-        if (saw_blank_between and items.items.len > 0) is_tight = false;
-        saw_blank_between = false;
-
-        const item_start_line = self.pos;
-        const content = try self.collectItemContent(cur_ol.content_col, cur_ol.content_col, list_indent, cur_ol.rest);
-        const inner_blocks = try self.parseItemContent(&content);
-
-        const item_sp = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null;
-        const item_ep = if (self.track_pos) self.stopBefore() else null;
-        try items.append(self.a, .{ .tag = .list_item, .children = inner_blocks, .start_pos = item_sp, .end_pos = item_ep });
-
-        updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
-    }
-
-    const final_style = possible_styles[0] orelse .decimal;
-    const resolved_start = getListStart(first_info.marker_text, final_style);
-    var ol_attrs: std.ArrayList(Attr) = .empty;
-    if (resolved_start != 1) {
-        var start_buf: [20]u8 = undefined;
-        const start_str = std.fmt.bufPrint(&start_buf, "{}", .{resolved_start}) catch "1";
-        try ol_attrs.append(self.a, .{ .key = "start", .value = try self.a.dupe(u8, start_str) });
-    }
-    if (final_style.htmlType()) |t| {
-        try ol_attrs.append(self.a, .{ .key = "type", .value = t });
-    }
-    const list_sp = if (self.track_pos) self.makePos(list_start_line, @intCast(list_indent + 1)) else null;
-    const list_ep = if (self.track_pos) self.containerEnd() else null;
-    return .{
-        .tag = .ordered_list,
-        .children = try items.toOwnedSlice(self.a),
-        .tight = is_tight,
-        .attrs = try ol_attrs.toOwnedSlice(self.a),
-        .start_pos = list_sp,
-        .end_pos = list_ep,
+fn parseMarker(comptime kind: ListKind, line: []const u8) ?Marker {
+    return switch (kind) {
+        .bullet => parseBulletMarker(line),
+        .ordered => parseOrderedMarker(line),
     };
 }
 
@@ -1503,7 +1461,18 @@ fn mergeBlockAttrs(a: Allocator, existing: ?BlockAttrs, new_attrs: BlockAttrs) !
     return new_attrs;
 }
 
-const BulletInfo = struct { rest: []const u8, indent: usize, content_col: usize, marker: u8 };
+/// A list marker opening an item: where its content starts, and what the list reads to
+/// accept the next item (the bullet character; an ordered marker's text and the number
+/// styles it may be).
+const Marker = struct {
+    rest: []const u8,
+    indent: usize,
+    content_col: usize,
+    bullet: u8 = 0,
+    marker_text: []const u8 = "",
+    styles: [2]?ListStyle = .{ null, null },
+    n_styles: u2 = 0,
+};
 
 /// Whether an item's first line opens with a checkbox: `[ ]`, `[x]` or `[X]` followed by
 /// whitespace or nothing.
@@ -1513,7 +1482,7 @@ fn isTaskItem(rest: []const u8) bool {
     return rest.len == 3 or rest[3] == ' ' or rest[3] == '\t';
 }
 
-fn parseBulletMarker(line: []const u8) ?BulletInfo {
+fn parseBulletMarker(line: []const u8) ?Marker {
     var indent: usize = 0;
     while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
     const trimmed = line[indent..];
@@ -1525,7 +1494,7 @@ fn parseBulletMarker(line: []const u8) ?BulletInfo {
         if (isThematicBreak(line)) return null;
     }
     const rest = if (trimmed.len > 1) trimmed[2..] else "";
-    return .{ .rest = rest, .indent = indent, .content_col = indent + 2, .marker = trimmed[0] };
+    return .{ .rest = rest, .indent = indent, .content_col = indent + 2, .bullet = trimmed[0] };
 }
 
 const ListStyle = enum {
@@ -1546,18 +1515,7 @@ const ListStyle = enum {
     }
 };
 
-const OrderedInfo = struct {
-    rest: []const u8,
-    indent: usize,
-    content_col: usize,
-    start: usize,
-    style: ListStyle,
-    styles: [2]?ListStyle,
-    n_styles: u2,
-    marker_text: []const u8,
-};
-
-fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
+fn parseOrderedMarker(line: []const u8) ?Marker {
     var indent: usize = 0;
     while (indent < line.len and line[indent] == ' ') : (indent += 1) {}
     const trimmed = line[indent..];
@@ -1578,8 +1536,7 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
         const delim = after_paren[i];
         if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
             const marker_len = start + i + 1;
-            const num = std.fmt.parseInt(usize, after_paren[0..i], 10) catch 1;
-            return finishMarker(trimmed, indent, marker_len, num, .decimal, .decimal, after_paren[0..i]);
+            return finishMarker(trimmed, indent, marker_len, .decimal, .decimal, after_paren[0..i]);
         }
     }
 
@@ -1590,9 +1547,9 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanLower(c)) {
-                    return finishMarker(trimmed, indent, marker_len, romanToNumber(&.{c}), .lower_roman, .lower_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_alpha, after_paren[0..1]);
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, @as(usize, c - 'a') + 1, .lower_alpha, .lower_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_alpha, .lower_alpha, after_paren[0..1]);
                 }
             }
         }
@@ -1601,9 +1558,9 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanUpper(c)) {
-                    return finishMarker(trimmed, indent, marker_len, romanToNumber(&.{c}), .upper_roman, .upper_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_alpha, after_paren[0..1]);
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, @as(usize, c - 'A') + 1, .upper_alpha, .upper_alpha, after_paren[0..1]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_alpha, .upper_alpha, after_paren[0..1]);
                 }
             }
         }
@@ -1614,8 +1571,7 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    const num = romanToNumber(after_paren[0..j]);
-                    return finishMarker(trimmed, indent, marker_len, num, .lower_roman, .lower_roman, after_paren[0..j]);
+                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_roman, after_paren[0..j]);
                 }
             }
         }
@@ -1626,8 +1582,7 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    const num = romanToNumber(after_paren[0..j]);
-                    return finishMarker(trimmed, indent, marker_len, num, .upper_roman, .upper_roman, after_paren[0..j]);
+                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_roman, after_paren[0..j]);
                 }
             }
         }
@@ -1636,12 +1591,16 @@ fn parseOrderedMarker(line: []const u8) ?OrderedInfo {
     return null;
 }
 
-fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, num: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8) ?OrderedInfo {
-    if (marker_len >= trimmed.len) {
-        return .{ .rest = "", .indent = indent, .content_col = indent + marker_len + 1, .start = num, .style = style1, .styles = .{ style1, if (style1 != style2) style2 else null }, .n_styles = if (style1 != style2) 2 else 1, .marker_text = marker_text };
-    }
-    if (trimmed[marker_len] != ' ' and trimmed[marker_len] != '\t') return null;
-    return .{ .rest = trimmed[marker_len + 1 ..], .indent = indent, .content_col = indent + marker_len + 1, .start = num, .style = style1, .styles = .{ style1, if (style1 != style2) style2 else null }, .n_styles = if (style1 != style2) 2 else 1, .marker_text = marker_text };
+fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8) ?Marker {
+    if (marker_len < trimmed.len and trimmed[marker_len] != ' ' and trimmed[marker_len] != '\t') return null;
+    return .{
+        .rest = if (marker_len < trimmed.len) trimmed[marker_len + 1 ..] else "",
+        .indent = indent,
+        .content_col = indent + marker_len + 1,
+        .marker_text = marker_text,
+        .styles = .{ style1, if (style1 != style2) style2 else null },
+        .n_styles = if (style1 != style2) 2 else 1,
+    };
 }
 
 fn getListStart(marker_text: []const u8, style: ListStyle) usize {
