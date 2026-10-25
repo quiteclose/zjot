@@ -192,7 +192,7 @@ pub const Sections = struct {
     depth: usize = 0,
     events: [8]Event = undefined,
     /// Where every section ends when positions are wanted: djot.js closes them all at
-    /// the end of the document, whatever heading or input end closed them.
+    /// its last block event, whatever heading or input end closed them (`root.render`).
     doc_end: ?SourcePos = null,
 
     pub const Event = union(enum) {

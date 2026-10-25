@@ -6386,3 +6386,84 @@ doc
     para (3:1:15-4:0:16)
       str (3:1:15-3:1:15) text="z"
 ````
+
+
+Sections end at the document's last block event, as djot.js: the last block's end, or the input's end after trailing blank lines or a div.
+
+A last heading with trailing whitespace ends its section one past its text.
+```` ap
+{#h}
+# H  
+.
+doc
+  section (2:1:5-2:4:8) id="h"
+    heading (2:1:5-2:4:8) level=1
+      str (2:3:7-2:3:7) text="H"
+````
+
+A code block closed on the last line ends the section on its fence.
+```` ap
+{#a}
+# A
+```
+x
+```  
+.
+doc
+  section (2:1:5-5:3:17) id="a"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="A"
+    code_block (3:1:9-5:3:17) text="x\n"
+````
+
+Nested sections both end at the last paragraph's content.
+```` ap
+{#a}
+# A
+{#b}
+## B
+text  
+.
+doc
+  section (2:1:5-5:5:23) id="a"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="A"
+    section (4:1:14-5:5:23) id="b"
+      heading (4:1:14-5:5:23) level=2
+        str (4:4:17-4:4:17) text="B"
+        soft_break (5:0:18-5:0:18)
+        str (5:1:19-5:4:22) text="text"
+````
+
+A div last: the section ends at the input's end.
+```` ap
+{#h}
+# H
+::: d
+x
+:::
+.
+doc
+  section (2:1:5-6:0:20) id="h"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="H"
+    div (3:1:9-5:3:19) class="d"
+      para (4:1:15-5:0:16)
+        str (4:1:15-4:1:15) text="x"
+````
+
+Trailing blank lines: the section ends at the input's end.
+```` ap
+{#h}
+# H
+
+para
+
+.
+doc
+  section (2:1:5-6:0:15) id="h"
+    heading (2:1:5-3:0:8) level=1
+      str (2:3:7-2:3:7) text="H"
+    para (4:1:10-5:0:14)
+      str (4:1:10-4:4:13) text="para"
+````
