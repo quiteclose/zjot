@@ -99,6 +99,17 @@ djot.js, the file's header records the difference instead of a case pinning it. 
 version is pinned in the header; re-checking against a newer djot.js is a deliberate act
 (CI has no npm).
 
+`test/tools/` holds the two local tools behind the generated expectations (both need
+`npx`, so CI never runs them):
+
+- `djot2ast.py` renders djot.js's `-t ast -p` JSON in the `.test` files' AST text form; every
+  `ap` case in `zjot.test` was made with it (`python3 test/tools/djot2ast.py -p < input.dj`).
+- `diff-djot.sh` runs zjot and djot.js over every `test/cli/*.dj` and `test/tools/corpus/*.dj`
+  (a nested-container corpus) in HTML and `--ast --sourcepos`, prints a unified diff per
+  divergence and exits 1 if there was one, so a divergence is one command away. The
+  deliberate differences in the `zjot.test` header are the only expected output. Run it
+  after `zig build`; pass file paths to check a subset.
+
 ### CLI goldens
 
 `zig build cli-test` runs the binary against `test/cli/`: one fixture per block family
