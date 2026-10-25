@@ -6492,3 +6492,160 @@ doc
     symb (1:3:2-1:7:6) alias="sym" id="i" class="a" k="v"
     str (1:19:18-1:20:19) text=" b"
 ````
+
+
+An item's lines are one window: sublists keep their indentation past the marker, and blank lines belong to the innermost open list.
+
+A sublist's content indented past its marker after a blank is the sublist's, in an ordered list.
+```` ap
+1. a
+
+   - b
+
+     c
+   d
+.
+doc
+  ordered_list (1:1:0-7:0:25) tight=true
+    list_item (1:1:0-7:0:25)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+      bullet_list (3:4:9-7:0:25) tight=false style="-"
+        list_item (3:4:9-7:0:25)
+          para (3:6:11-4:0:12)
+            str (3:6:11-3:6:11) text="b"
+          para (5:6:19-7:0:25)
+            str (5:6:19-5:6:19) text="c"
+            soft_break (6:0:20-6:0:20)
+            str (6:4:24-6:4:24) text="d"
+````
+
+A wide ordered marker: the sublist marker sits left of the content column and its content right of it.
+```` ap
+10. a
+
+  - b
+
+    c
+.
+doc
+  ordered_list (1:1:0-6:0:19) tight=true
+    list_item (1:1:0-6:0:19)
+      para (1:5:4-2:0:5)
+        str (1:5:4-1:5:4) text="a"
+      bullet_list (3:3:9-6:0:19) tight=false style="-"
+        list_item (3:3:9-6:0:19)
+          para (3:5:11-4:0:12)
+            str (3:5:11-3:5:11) text="b"
+          para (5:5:18-6:0:19)
+            str (5:5:18-5:5:18) text="c"
+````
+
+A blank line between a sublist's items keeps the outer list tight and makes the sublist loose.
+```` ap
+- - q
+
+  - r
+.
+doc
+  bullet_list (1:1:0-4:0:12) tight=true style="-"
+    list_item (1:1:0-4:0:12)
+      bullet_list (1:3:2-4:0:12) tight=false style="-"
+        list_item (1:3:2-3:2:8)
+          para (1:5:4-2:0:5)
+            str (1:5:4-1:5:4) text="q"
+        list_item (3:3:9-4:0:12)
+          para (3:5:11-4:0:12)
+            str (3:5:11-3:5:11) text="r"
+````
+
+A blank after a sublist, then the outer item's paragraph: tight, and the sublist ends where the paragraph starts.
+```` ap
+- - > q
+
+  p
+.
+doc
+  bullet_list (1:1:0-4:0:12) tight=true style="-"
+    list_item (1:1:0-4:0:12)
+      bullet_list (1:3:2-3:3:11) tight=true style="-"
+        list_item (1:3:2-3:2:10)
+          block_quote (1:5:4-3:0:8)
+            para (1:7:6-2:0:7)
+              str (1:7:6-1:7:6) text="q"
+      para (3:3:11-4:0:12)
+        str (3:3:11-3:3:11) text="p"
+````
+
+A blank between an outer item's sublist and its paragraph is the sublist's.
+```` ap
+- - q
+
+  p
+.
+doc
+  bullet_list (1:1:0-4:0:10) tight=true style="-"
+    list_item (1:1:0-4:0:10)
+      bullet_list (1:3:2-3:3:9) tight=true style="-"
+        list_item (1:3:2-3:2:8)
+          para (1:5:4-2:0:5)
+            str (1:5:4-1:5:4) text="q"
+      para (3:3:9-4:0:10)
+        str (3:3:9-3:3:9) text="p"
+````
+
+A blank after a sublist before the next item is the sublist's.
+```` ap
+- a
+
+  - b
+
+- c
+.
+doc
+  bullet_list (1:1:0-6:0:15) tight=true style="-"
+    list_item (1:1:0-5:0:11)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+      bullet_list (3:3:7-5:1:12) tight=true style="-"
+        list_item (3:3:7-5:0:11)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+    list_item (5:1:12-6:0:15)
+      para (5:3:14-6:0:15)
+        str (5:3:14-5:3:14) text="c"
+````
+
+A blank before an item that starts with a sublist keeps the list tight.
+```` ap
+- a
+
+- - b
+.
+doc
+  bullet_list (1:1:0-4:0:10) tight=true style="-"
+    list_item (1:1:0-3:0:4)
+      para (1:3:2-2:0:3)
+        str (1:3:2-1:3:2) text="a"
+    list_item (3:1:5-4:0:10)
+      bullet_list (3:3:7-4:0:10) tight=true style="-"
+        list_item (3:3:7-4:0:10)
+          para (3:5:9-4:0:10)
+            str (3:5:9-3:5:9) text="b"
+````
+
+An unindented line after an item's closed code block is not lazy text.
+````
+- ```
+  code
+  ```
+after
+.
+<ul>
+<li>
+<pre><code>code
+</code></pre>
+</li>
+</ul>
+<p>after</p>
+````

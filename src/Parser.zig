@@ -60,6 +60,9 @@ defs: *Definitions,
 /// parser stands (`tryFencedDiv`); the child's blocks end past it or on it.
 closing_fence: ?usize = null,
 track_pos: bool = false,
+/// Whether blank lines separate the block `nextBlock` last returned from the one before
+/// it (list tightness); a blank first line precedes no block and does not count.
+blank_before: bool = false,
 /// Pass one: parse only the inlines the survey reads. Heading text makes ids and implicit
 /// references, and an inline attribute may claim an id (`[x]{#Foo}` before `# Foo` gives
 /// the heading `Foo-1`, as djot.js); every other block's inlines are parsed once, in pass two.
@@ -215,11 +218,13 @@ fn parseBlocks(self: *Parser) anyerror![]const Node {
 /// the next.
 pub fn nextBlock(self: *Parser) anyerror!?Node {
     var pending_attrs: ?BlockAttrs = null;
+    self.blank_before = false;
 
     while (self.pos < self.lines.len) {
         const line = self.lines[self.pos];
 
         if (isBlank(line)) {
+            if (self.pos > 0) self.blank_before = true;
             self.pos += 1;
             pending_attrs = null;
             continue;
@@ -706,99 +711,105 @@ fn tryFootnoteDef(self: *Parser) !?void {
     return {};
 }
 
-/// An item's lines: its paragraph's, then, after the first blank line, its blocks'.
+/// An item's lines after its marker, as one window, and whether blank lines ended it.
 const ItemContent = struct {
-    para: Window,
-    blocks: Window,
-    item_saw_blank: bool,
+    window: Window,
+    trailing_blank: bool,
 };
 
 /// Collects an item's lines: `first_rest` is the first line's content, starting at
-/// column `first_col`; `content_col` is where continuation lines must start.
+/// column `first_col`; `content_col` is where continuation lines are expected. After the
+/// first line come lines indented past the list's marker (content), unindented text
+/// continuing an open paragraph (lazy) and blank lines, up to a line that is none of
+/// these. Content lines all lose the same prefix: the content column, or less when one is
+/// indented less (a sublist's marker may sit anywhere past this list's marker, as
+/// djot.js), so a sublist's items and their content keep their relative indentation.
 fn collectItemContent(self: *Parser, content_col: usize, first_col: usize, list_indent: usize, first_rest: []const u8) !ItemContent {
-    var content = ItemContent{ .para = .{ .first = self.pos }, .blocks = .{ .first = self.pos }, .item_saw_blank = false };
-
-    // A bare marker's line is shorter than its content column.
-    try content.para.addSlice(self, self.pos, @min(first_col, self.lines[self.pos].len), first_rest);
+    const Kind = enum { first, content, lazy, blank };
+    var kinds: std.ArrayList(Kind) = .empty;
+    const first_line = self.pos;
+    try kinds.append(self.a, .first);
     self.pos += 1;
-    var para_open = first_rest.len > 0;
-
-    while (self.pos < self.lines.len and !content.item_saw_blank) {
-        const next = self.lines[self.pos];
-        if (isBlank(next)) {
-            content.item_saw_blank = true;
-            self.pos += 1;
-            content.blocks.first = self.pos;
-            continue;
-        }
-        if (parseBulletMarker(next)) |m| {
-            if (m.indent <= list_indent) break;
-        }
-        if (parseOrderedMarker(next)) |m| {
-            if (m.indent <= list_indent) break;
-        }
-        const next_indent = countIndent(next);
-        // An unindented line is lazy text for an open paragraph; an empty item has none.
-        if (next_indent <= list_indent and (!para_open or try self.isBlockStartAt(self.pos))) break;
-        const strip = if (next_indent >= content_col) content_col else next_indent;
-        try content.para.add(self, self.pos, strip);
-        para_open = true;
-        self.pos += 1;
-    }
-
+    var strip = content_col;
     var paragraph = OpenParagraph{};
-    while (self.pos < self.lines.len and content.item_saw_blank) {
+    try paragraph.feed(self.a, first_rest);
+
+    while (self.pos < self.lines.len) {
         const next = self.lines[self.pos];
         if (isBlank(next)) {
-            try content.blocks.addBlank(self, self.pos);
+            try kinds.append(self.a, .blank);
             try paragraph.feed(self.a, "");
             self.pos += 1;
             continue;
         }
+        // A marker at or left of this list's ends the item, lazy or not.
+        if (parseBulletMarker(next)) |m| if (m.indent <= list_indent) break;
+        if (parseOrderedMarker(next)) |m| if (m.indent <= list_indent) break;
         const next_indent = countIndent(next);
         if (next_indent > list_indent) {
-            const is_marker = parseBulletMarker(next) != null or parseOrderedMarker(next) != null;
-            const strip = if (is_marker)
-                @min(next_indent, list_indent + 1)
-            else
-                @min(next_indent, content_col);
-            try content.blocks.add(self, self.pos, strip);
-            try paragraph.feed(self.a, next[strip..]);
+            try kinds.append(self.a, .content);
+            strip = @min(strip, next_indent);
+            try paragraph.feed(self.a, next[@min(next_indent, content_col)..]);
             self.pos += 1;
             continue;
         }
         if (paragraph.open and !(try self.isBlockStartAt(self.pos))) {
-            const lazy = std.mem.trimStart(u8, next, " \t");
-            try content.blocks.add(self, self.pos, next.len - lazy.len);
-            try paragraph.feed(self.a, lazy);
+            try kinds.append(self.a, .lazy);
+            try paragraph.feed(self.a, std.mem.trimStart(u8, next, " \t"));
             self.pos += 1;
             continue;
         }
         break;
     }
 
-    while (content.blocks.lines.items.len > 0 and isBlank(content.blocks.lines.items[content.blocks.lines.items.len - 1])) content.blocks.pop();
-
-    return content;
+    var trailing_blank = false;
+    while (kinds.items[kinds.items.len - 1] == .blank) {
+        _ = kinds.pop();
+        trailing_blank = true;
+    }
+    var w = Window{ .first = first_line };
+    for (kinds.items, first_line..) |kind, line_idx| {
+        const line = self.lines[line_idx];
+        switch (kind) {
+            // A bare marker's line is shorter than its content column.
+            .first => try w.addSlice(self, line_idx, @min(first_col, line.len), first_rest),
+            .content => try w.add(self, line_idx, strip),
+            .lazy => try w.add(self, line_idx, line.len - std.mem.trimStart(u8, line, " \t").len),
+            .blank => try w.addBlank(self, line_idx),
+        }
+    }
+    return .{ .window = w, .trailing_blank = trailing_blank };
 }
 
-fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
-    var inner_blocks: std.ArrayList(Node) = .empty;
+const ItemBlocks = struct {
+    blocks: []const Node,
+    /// A blank line separated two of the blocks, which makes the list loose.
+    loose: bool,
+};
 
-    // The paragraph window's blocks end where the item's content resumes after the blank
-    // line, so this parser stands there, not where the item stopped, while they parse.
-    const stop = self.pos;
-    if (content.blocks.lines.items.len > 0) self.pos = content.blocks.first;
-    var para_parser = self.child(self.a, content.para, self.survey_only);
-    for (try para_parser.parseBlocks()) |b| try inner_blocks.append(self.a, b);
-    self.pos = stop;
+fn isList(node: Node) bool {
+    return switch (node.tag) {
+        .bullet_list, .ordered_list, .task_list, .definition_list => true,
+        else => false,
+    };
+}
 
-    if (content.blocks.lines.items.len > 0) {
-        var block_parser = self.child(self.a, content.blocks, self.survey_only);
-        for (try block_parser.parseBlocks()) |b| try inner_blocks.append(self.a, b);
+fn parseItemContent(self: *Parser, content: *const ItemContent) !ItemBlocks {
+    var blocks: std.ArrayList(Node) = .empty;
+    var loose = false;
+    var parser = self.child(self.a, content.window, self.survey_only);
+    while (try parser.nextBlock()) |block| {
+        // As djot.js, a blank line belongs to the innermost list open when it came, and
+        // makes it loose unless a list follows it: a blank after a sublist is the
+        // sublist's, discarded when it closes; one before a sublist is reset by its start.
+        const after_list = blocks.items.len > 0 and isList(blocks.items[blocks.items.len - 1]);
+        if (parser.blank_before and !after_list and !isList(block)) loose = true;
+        try blocks.append(self.a, block);
     }
-
-    return inner_blocks.toOwnedSlice(self.a);
+    // A blank followed only by definitions counts too: they are events, not blocks.
+    const after_list = blocks.items.len > 0 and isList(blocks.items[blocks.items.len - 1]);
+    if (parser.blank_before and !after_list) loose = true;
+    return .{ .blocks = try blocks.toOwnedSlice(self.a), .loose = loose };
 }
 
 /// Where a container ends, as djot.js: where the next block's content starts on the line
@@ -848,22 +859,6 @@ fn fenceEnd(self: *const Parser, line_idx: usize) SourcePos {
     const rest = std.mem.trimStart(u8, line, " \t");
     const run = countLeadingChar(rest, rest[0]);
     return self.makePos(line_idx, @intCast(line.len - rest.len + run));
-}
-
-fn updateListTightness(is_tight: *bool, saw_blank_between: *bool, content: *const ItemContent, inner_blocks: []const Node) void {
-    if (content.item_saw_blank and content.blocks.lines.items.len > 0) {
-        // A blank line before anything but a sublist makes the list loose, as djot.js;
-        // only the block right after the blank counts, a definition list is a list
-        // there too, and a definition, which leaves no block behind, counts as "anything".
-        const lead: usize = if (content.para.lines.items.len > 0 and content.para.lines.items[0].len > 0) 1 else 0;
-        if (inner_blocks.len <= lead) {
-            is_tight.* = false;
-        } else switch (inner_blocks[lead].tag) {
-            .bullet_list, .ordered_list, .task_list, .definition_list => {},
-            else => is_tight.* = false,
-        }
-    }
-    if (content.item_saw_blank and content.blocks.lines.items.len == 0) saw_blank_between.* = true;
 }
 
 const ListKind = enum { bullet, ordered };
@@ -919,9 +914,6 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
             .ordered => if (!styles.accept(m, items.items.len == 0)) break,
         }
 
-        if (saw_blank_between) is_tight = false;
-        saw_blank_between = false;
-
         const item_start_line = self.pos;
         // A task item's content starts after the checkbox and the space that follows
         // it, as djot.js; a bare checkbox opens no paragraph.
@@ -933,7 +925,14 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
             first_rest = after_box;
         }
         const content = try self.collectItemContent(m.content_col, first_col, list_indent, first_rest);
-        const inner_blocks = try self.parseItemContent(&content);
+        const parsed = try self.parseItemContent(&content);
+        const inner_blocks = parsed.blocks;
+        // Blank lines between items make the list loose, unless a sublist absorbs them: the
+        // one ending the item before, or the one this item starts with, as djot.js.
+        const starts_with_list = inner_blocks.len > 0 and isList(inner_blocks[0]);
+        const ends_with_list = inner_blocks.len > 0 and isList(inner_blocks[inner_blocks.len - 1]);
+        if (parsed.loose or (saw_blank_between and !starts_with_list)) is_tight = false;
+        saw_blank_between = content.trailing_blank and !ends_with_list;
         try items.append(self.a, .{
             .tag = if (list_is_task) .task_list_item else .list_item,
             .children = inner_blocks,
@@ -941,8 +940,6 @@ fn tryList(self: *Parser, comptime kind: ListKind) !?Node {
             .start_pos = if (self.track_pos) self.makePos(item_start_line, @intCast(list_indent + 1)) else null,
             .end_pos = if (self.track_pos) self.stopBefore() else null,
         });
-
-        updateListTightness(&is_tight, &saw_blank_between, &content, inner_blocks);
     }
 
     var list = Node{
