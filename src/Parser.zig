@@ -27,8 +27,6 @@ pub const Definitions = struct {
     /// appearing again: the later definition replaces the earlier (djot.js), and the
     /// survey visits it where it stands.
     footnote_log: std.ArrayList([]const u8) = .empty,
-    /// Whether stored footnote content carries positions.
-    sourcepos: bool = false,
     /// Set by a consumer that parses the input a second time: definitions are then
     /// consumed from the input but not recorded again.
     sealed: bool = false,
@@ -696,9 +694,8 @@ fn tryFootnoteDef(self: *Parser) !?void {
     // with the definitions' allocator rather than the current block's, and in full; they
     // are positioned like any container's, which is why pass one tracks positions too.
     var inner_parser = self.child(self.defs.a, w, false);
-    inner_parser.track_pos = self.defs.sourcepos;
     var stored = FootnoteDef{ .blocks = try inner_parser.parseBlocks() };
-    if (self.defs.sourcepos) {
+    if (self.track_pos) {
         stored.start_pos = self.makePos(def_line, self.contentCol(def_line));
         stored.end_pos = self.definitionEnd();
     }

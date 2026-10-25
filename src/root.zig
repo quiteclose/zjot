@@ -7,6 +7,7 @@ const document = @import("document.zig");
 const html = @import("html.zig");
 const ast = @import("ast.zig");
 const Node = @import("node.zig").Node;
+const SourcePos = @import("node.zig").SourcePos;
 
 pub const Mode = enum { html, ast };
 
@@ -32,25 +33,36 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     const ba = block_arena.allocator();
 
     const index = try Parser.indexLines(da, input);
-    var defs = Parser.Definitions{ .a = da, .sourcepos = opts.sourcepos };
+    var defs = Parser.Definitions{ .a = da };
     var survey = document.Survey{ .a = da };
+    // Where djot.js ends every section: at its last block event, which is the last
+    // top-level block's end, except that trailing blank lines and a div's closing fence
+    // emit events to the input's end. Pass one tracks positions to find it, and so that
+    // footnote content, stored then, carries them.
+    var sections_end: ?SourcePos = null;
     {
         var parser = Parser.initIndexed(ba, input, index, &defs);
         parser.survey_only = true;
+        parser.track_pos = opts.sourcepos;
+        var last_is_div = false;
         while (try parser.nextBlock()) |block| {
             // Definitions met before this block come first in the id sequence.
             try survey.visitFootnotes(&defs);
             try survey.visit(block);
+            sections_end = block.end_pos;
+            last_is_div = block.tag == .div;
             _ = block_arena.reset(.retain_capacity);
         }
         try survey.visitFootnotes(&defs);
+        const last_line_blank = index.lines.len > 0 and Parser.isBlank(index.lines[index.lines.len - 1]);
+        if (opts.sourcepos and (sections_end == null or last_is_div or last_line_blank)) sections_end = parser.doc_end;
     }
     defs.sealed = true;
 
     var resolver = document.Resolver{ .defs = &defs, .survey = &survey };
     var parser = Parser.initIndexed(ba, input, index, &defs);
     parser.track_pos = opts.sourcepos;
-    var sections = document.Sections{ .doc_end = if (opts.sourcepos) parser.doc_end else null };
+    var sections = document.Sections{ .doc_end = sections_end };
     var out = Emitter{ .w = w, .mode = opts.mode, .footnotes = .{ .a = da } };
     try out.root(ba);
     while (try parser.nextBlock()) |block| {
