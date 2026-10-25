@@ -167,12 +167,29 @@ pub fn isTableRow(line: []const u8) bool {
     return ends_with_pipe;
 }
 
+/// A separator row: `|`, then cells of `:?-+:?`, each ending at its pipe, spaces allowed
+/// around the dashes.
 pub fn isTableSep(line: []const u8) bool {
-    const trimmed = std.mem.trim(u8, line, " \t|");
-    for (trimmed) |c| {
-        if (c != '-' and c != ':' and c != '|' and c != ' ') return false;
+    const t = std.mem.trim(u8, line, " \t");
+    if (t.len < 2 or t[0] != '|') return false;
+    var i: usize = 1;
+    var cells: usize = 0;
+    while (i < t.len) {
+        // Each cell: `:?-+:?` with spaces around it, then its pipe. (djot.js allows
+        // the spaces before the dashes only past the first cell; see the `zjot.test`
+        // header.)
+        while (i < t.len and (t[i] == ' ' or t[i] == '\t')) i += 1;
+        if (i < t.len and t[i] == ':') i += 1;
+        const dashes = countLeadingChar(t[i..], '-');
+        if (dashes == 0) return false;
+        i += dashes;
+        if (i < t.len and t[i] == ':') i += 1;
+        while (i < t.len and (t[i] == ' ' or t[i] == '\t')) i += 1;
+        if (i >= t.len or t[i] != '|') return false;
+        cells += 1;
+        i += 1;
     }
-    return trimmed.len > 0;
+    return cells > 0;
 }
 
 pub fn parseSepAligns(a: Allocator, line: []const u8) ![]const CellAlign {
