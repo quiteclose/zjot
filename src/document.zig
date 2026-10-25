@@ -216,7 +216,9 @@ pub const Resolver = struct {
                     var new_kids: std.ArrayList(Node) = .empty;
                     for (block.children) |child| try new_kids.append(ba, child);
                     try new_kids.append(ba, backlink);
-                    try fn_children.append(ba, .{ .tag = .para, .children = try new_kids.toOwnedSlice(ba) });
+                    var para = block; // keeps the paragraph's position and attributes
+                    para.children = try new_kids.toOwnedSlice(ba);
+                    try fn_children.append(ba, para);
                 } else {
                     try fn_children.append(ba, block);
                 }
