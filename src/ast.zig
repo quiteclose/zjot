@@ -53,7 +53,23 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
             try out.appendSlice(a, " style=");
             try appendJsonStr(a, out, &.{l.marker});
         },
-        .ordered_list => |l| try out.appendSlice(a, if (l.tight) " tight=true" else " tight=false"),
+        .ordered_list => |l| {
+            try out.appendSlice(a, if (l.tight) " tight=true" else " tight=false");
+            // The marker's form, as djot.js's JSON has it: the first number in the style
+            // with its delimiter.
+            const number: []const u8 = switch (l.style) {
+                .decimal => "1",
+                .lower_alpha => "a",
+                .upper_alpha => "A",
+                .lower_roman => "i",
+                .upper_roman => "I",
+            };
+            try out.appendSlice(a, " style=\"");
+            if (l.delim == .parens) try out.append(a, '(');
+            try out.appendSlice(a, number);
+            try out.append(a, if (l.delim == .period) '.' else ')');
+            try out.appendSlice(a, "\"");
+        },
         .task_list_item => |item| try out.appendSlice(a, if (item.checked) " checked=true" else " checked=false"),
         .link, .image => |l| {
             if (l.destination) |dest| {

@@ -10,7 +10,7 @@ doc
         list_item (4:3:15-6:0:24)
           para (4:5:17-5:0:23)
             str (4:5:17-4:10:22) text="nested"
-  ordered_list (6:1:25-9:1:45) tight=true
+  ordered_list (6:1:25-9:1:45) tight=true style="1."
     list_item (6:1:25-7:0:33)
       para (6:4:28-7:0:33)
         str (6:4:28-6:8:32) text="first"

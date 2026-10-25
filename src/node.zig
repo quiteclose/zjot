@@ -59,6 +59,9 @@ pub const Tag = enum {
 
 pub const CellAlign = enum { default, left, right, center };
 
+/// How an ordered list's markers are written: `1.`, `1)` or `(1)`; a list keeps one, as djot.js.
+pub const Delim = enum { period, paren, parens };
+
 /// The numbering of an ordered list, from its markers; `htmlType` is the `type` it renders.
 pub const ListStyle = enum {
     decimal,
@@ -110,7 +113,7 @@ pub const Payload = union(Tag) {
     div: []const Node,
     /// `marker`: the bullet character.
     bullet_list: struct { marker: u8, tight: bool, children: []const Node },
-    ordered_list: struct { style: ListStyle, start: u64, tight: bool, children: []const Node },
+    ordered_list: struct { style: ListStyle, delim: Delim, start: u64, tight: bool, children: []const Node },
     task_list: struct { tight: bool, children: []const Node },
     definition_list: []const Node,
     list_item: []const Node,

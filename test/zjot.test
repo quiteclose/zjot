@@ -58,9 +58,9 @@ converter renders it, so no `ap` case can pin it:
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
 
-Ordered lists in the AST text form print neither `start` nor `type`, as djot.js's text
-form (its JSON has `start` and `style`); the HTML renders both from the list's markers,
-before any attributes. Attributes print as id, class, then the rest in source order, as
+Ordered lists in the AST text form print their `style` as djot.js's JSON has it, the first
+number with its delimiter (`1.`, `1)`, `(1)`, `a.`, `i.`), and no `start`; the HTML renders
+`start` and `type` from the list's markers, before any attributes. Attributes print as id, class, then the rest in source order, as
 djot.js's text form (the HTML keeps source order, see the HTML difference below).
 
 Footnotes in the AST text form: a reference prints its label, and every footnote
@@ -4224,7 +4224,7 @@ An ordered item is never a task item.
 1. [ ] x
 .
 doc
-  ordered_list (1:1:0-2:0:8) tight=true
+  ordered_list (1:1:0-2:0:8) tight=true style="1."
     list_item (1:1:0-2:0:8)
       para (1:4:3-2:0:8)
         str (1:4:3-1:8:7) text="[ ] x"
@@ -4610,7 +4610,7 @@ A nested list in an ordered item.
 2. c
 .
 doc
-  ordered_list (1:1:0-5:0:17) tight=true
+  ordered_list (1:1:0-5:0:17) tight=true style="1."
     list_item (1:1:0-4:0:12)
       para (1:4:3-2:0:4)
         str (1:4:3-1:4:3) text="a"
@@ -6353,7 +6353,7 @@ ii. b
 c. d
 .
 doc
-  ordered_list (1:1:0-4:0:15) tight=true
+  ordered_list (1:1:0-4:0:15) tight=true style="i."
     list_item (1:1:0-2:0:4)
       para (1:4:3-2:0:4)
         str (1:4:3-1:4:3) text="a"
@@ -6373,14 +6373,14 @@ Parenthesised alpha markers and a start of 5: the AST prints no start.
 5) z
 .
 doc
-  ordered_list (1:1:0-4:1:13) tight=true
+  ordered_list (1:1:0-4:1:13) tight=true style="(a)"
     list_item (1:1:0-2:0:5)
       para (1:5:4-2:0:5)
         str (1:5:4-1:5:4) text="x"
     list_item (2:1:6-4:0:12)
       para (2:5:10-3:0:11)
         str (2:5:10-2:5:10) text="y"
-  ordered_list (4:1:13-5:0:17) tight=true
+  ordered_list (4:1:13-5:0:17) tight=true style="1)"
     list_item (4:1:13-5:0:17)
       para (4:4:16-5:0:17)
         str (4:4:16-4:4:16) text="z"
@@ -6507,7 +6507,7 @@ A sublist's content indented past its marker after a blank is the sublist's, in 
    d
 .
 doc
-  ordered_list (1:1:0-7:0:25) tight=true
+  ordered_list (1:1:0-7:0:25) tight=true style="1."
     list_item (1:1:0-7:0:25)
       para (1:4:3-2:0:4)
         str (1:4:3-1:4:3) text="a"
@@ -6530,7 +6530,7 @@ A wide ordered marker: the sublist marker sits left of the content column and it
     c
 .
 doc
-  ordered_list (1:1:0-6:0:19) tight=true
+  ordered_list (1:1:0-6:0:19) tight=true style="1."
     list_item (1:1:0-6:0:19)
       para (1:5:4-2:0:5)
         str (1:5:4-1:5:4) text="a"
@@ -7504,4 +7504,98 @@ A div's closing fence that ends an item counts as a blank line for tightness, as
 <p>c</p>
 </li>
 </ul>
+````
+
+Ordered lists print their marker's form as djot.js's JSON has it: the number style's first
+mark with its delimiter, whatever number the list starts at.
+```` ap
+1. a
+2. b
+.
+doc
+  ordered_list (1:1:0-3:0:9) tight=true style="1."
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+    list_item (2:1:5-3:0:9)
+      para (2:4:8-3:0:9)
+        str (2:4:8-2:4:8) text="b"
+````
+
+```` ap
+1) a
+.
+doc
+  ordered_list (1:1:0-2:0:4) tight=true style="1)"
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+````
+
+```` ap
+(1) a
+.
+doc
+  ordered_list (1:1:0-2:0:5) tight=true style="(1)"
+    list_item (1:1:0-2:0:5)
+      para (1:5:4-2:0:5)
+        str (1:5:4-1:5:4) text="a"
+````
+
+```` ap
+a. x
+.
+doc
+  ordered_list (1:1:0-2:0:4) tight=true style="a."
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="x"
+````
+
+```` ap
+i. x
+ii. y
+.
+doc
+  ordered_list (1:1:0-3:0:10) tight=true style="i."
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="x"
+    list_item (2:1:5-3:0:10)
+      para (2:5:9-3:0:10)
+        str (2:5:9-2:5:9) text="y"
+````
+
+```` ap
+A) x
+.
+doc
+  ordered_list (1:1:0-2:0:4) tight=true style="A)"
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="x"
+````
+
+```` ap
+(I) x
+.
+doc
+  ordered_list (1:1:0-2:0:5) tight=true style="(I)"
+    list_item (1:1:0-2:0:5)
+      para (1:5:4-2:0:5)
+        str (1:5:4-1:5:4) text="x"
+````
+
+```` ap
+3. a
+4. b
+.
+doc
+  ordered_list (1:1:0-3:0:9) tight=true style="1."
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+    list_item (2:1:5-3:0:9)
+      para (2:4:8-3:0:9)
+        str (2:4:8-2:4:8) text="b"
 ````
