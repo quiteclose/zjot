@@ -6686,3 +6686,38 @@ y
 </li>
 </ul>
 ````
+
+
+Marked closers: an empty marked opener closes nothing and ends the search; a braced closer with nothing marked open is text.
+
+An empty marked opener inside a marked span: the inner closer is text, the outer span closes later.
+````
+{_a {__} b_}
+
+{=a {==} b=}
+
+{"a {""} b"}
+
+{^a {^^} b^}
+.
+<p>{_a <em>_} b</em></p>
+<p>{=a <mark>=} b</mark></p>
+<p>“a “” b”</p>
+<p>{^a <sup>^} b</sup></p>
+````
+
+A braced closer with no marked opener is text and closes no bare delimiter.
+````
+a^b^} c
+
+a~b~} c
+
+x {^b^} y
+
+_e_} f
+.
+<p>a^b^} c</p>
+<p>a~b~} c</p>
+<p>x <sup>b</sup> y</p>
+<p>_e_} f</p>
+````
