@@ -9,6 +9,15 @@ pub fn build(b: *std.Build) void {
         .target = target,
     });
 
+    // The block parser being rewritten builds beside the current one until it passes
+    // every case; `-Dtally` makes the test runner report pass counts per file instead of
+    // failing, so each step of the rewrite shows its progress.
+    const ParserChoice = enum { windows, stack };
+    const options = b.addOptions();
+    options.addOption(ParserChoice, "parser", b.option(ParserChoice, "parser", "Block parser: windows (current) or stack (in progress)") orelse .windows);
+    options.addOption(bool, "tally", b.option(bool, "tally", "Print pass counts per .test file instead of failing") orelse false);
+    mod.addImport("build_options", options.createModule());
+
     const exe = b.addExecutable(.{
         .name = "zjot",
         .root_module = b.createModule(.{
