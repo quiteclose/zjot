@@ -332,7 +332,16 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</a>");
             },
             .symb => {
-                try out.appendSlice(a, "<span class=\"symbol\">");
+                // zjot's rendering (djot.js prints the `:alias:` text): the node's class
+                // joins the intrinsic one and its other attributes follow, as for math.
+                try out.appendSlice(a, "<span class=\"symbol");
+                if (nodeClass(node)) |cls| {
+                    try out.append(a, ' ');
+                    try appendAttrEscaped(a, out, cls);
+                }
+                try out.appendSlice(a, "\"");
+                try renderFilteredAttrs(a, out, node, true);
+                try out.appendSlice(a, ">");
                 try appendEscaped(a, out, node.text);
                 try out.appendSlice(a, "</span>");
             },
