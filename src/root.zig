@@ -36,6 +36,7 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     var survey = document.Survey{ .a = da };
     {
         var parser = blockParser(ba, input, index, &defs, opts);
+        parser.survey_only = true;
         while (try parser.nextBlock()) |block| {
             // Definitions met before this block come first in the id sequence.
             try survey.visitFootnotes(&defs);
