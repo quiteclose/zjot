@@ -61,8 +61,10 @@ defs: *Definitions,
 closing_fence: ?usize = null,
 track_pos: bool = false,
 /// Whether blank lines separate the block `nextBlock` last returned from the one before
-/// it (list tightness); a blank first line precedes no block and does not count.
+/// it (list tightness); a blank first line precedes no block and does not count. A div's
+/// closing fence counts as one, as djot.js (which emits a blank line event after it).
 blank_before: bool = false,
+fence_closed: bool = false,
 /// Pass one: parse only the inlines the survey reads. Heading text makes ids and implicit
 /// references, and an inline attribute may claim an id (`[x]{#Foo}` before `# Foo` gives
 /// the heading `Foo-1`, as djot.js); every other block's inlines are parsed once, in pass two.
@@ -214,6 +216,8 @@ fn parseBlocks(self: *Parser) anyerror![]const Node {
 /// the next.
 pub fn nextBlock(self: *Parser) anyerror!?Node {
     var pending_attrs: ?BlockAttrs = null;
+    const after_fence = self.fence_closed;
+    self.fence_closed = false;
     self.blank_before = false;
 
     while (self.pos < self.lines.len) {
@@ -265,6 +269,7 @@ pub fn nextBlock(self: *Parser) anyerror!?Node {
         }
 
         if (pending_attrs) |ba| node = try inline_mod.applyBlockAttrsToNode(self.a, node, ba);
+        if (after_fence) self.blank_before = true;
         return node;
     }
 
@@ -559,6 +564,7 @@ fn tryFencedDiv(self: *Parser) !?Node {
         node.end_pos = if (close) |l| self.fenceEnd(l) else self.containerEnd();
     }
     if (close != null) self.pos += 1;
+    self.fence_closed = close != null;
     return node;
 }
 
@@ -1303,7 +1309,8 @@ const OpenParagraph = struct {
     open: bool = false,
     heading: bool = false,
     fence: ?FenceInfo = null,
-    divs: usize = 0,
+    /// The fence lengths of the open divs, outermost first, as the parser sees them.
+    div_fences: std.ArrayList(usize) = .empty,
     quote: ?*OpenParagraph = null,
     in_quote: bool = false,
 
@@ -1339,19 +1346,26 @@ const OpenParagraph = struct {
             return;
         }
         if (self.open and !(self.heading and endsHeading(a, line))) {
-            if (isFencedDivStart(line)) |div| {
-                if (self.divs > 0 and div.class == null) {
-                    self.divs -= 1;
+            // A closing fence ends the paragraph with its div; an opener is text here.
+            if (isFencedDivStart(line)) |div| if (div.class == null) {
+                if (self.closingDiv(div.fence.len)) |depth| {
+                    self.div_fences.items.len = depth;
                     self.open = false;
                     self.heading = false;
                 }
-            }
+            };
             return;
         }
         self.open = false;
         self.heading = false;
         if (isFencedDivStart(line)) |div| {
-            if (self.divs > 0 and div.class == null) self.divs -= 1 else self.divs += 1;
+            if (div.class == null) {
+                if (self.closingDiv(div.fence.len)) |depth| {
+                    self.div_fences.items.len = depth;
+                    return;
+                }
+            }
+            try self.div_fences.append(a, div.fence.len);
             return;
         }
         if (isCodeFence(line)) |f| {
@@ -1374,6 +1388,15 @@ const OpenParagraph = struct {
         if (isThematicBreak(line) or isTableRow(line) or attrs_mod.tryParseBlockAttr(a, line) != null) return;
         self.open = true;
         self.heading = headingLevel(std.mem.trimStart(u8, line, " \t")) != null;
+    }
+
+    /// The depth a bare fence of `len` colons closes to: that of the outermost open div
+    /// whose fence it fits, as `tryFencedDiv` (`divClose`); null when it opens a div.
+    fn closingDiv(self: *const OpenParagraph, len: usize) ?usize {
+        for (self.div_fences.items, 0..) |fence, depth| {
+            if (fence <= len) return depth;
+        }
+        return null;
     }
 
     /// What `tryHeading` stops at.
