@@ -200,12 +200,11 @@ test "a line longer than the reader's buffer spills, with or without a final new
     }
 }
 
-test "both backends agree with the line index over the corpus" {
+test "both backends agree over the corpus, and the end is djot.js's" {
     const io = std.testing.io;
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const a = arena.allocator();
-    const Parser = @import("Parser.zig");
     var buffer: [16]u8 = undefined;
     for ([_][]const u8{ "test/cli", "test/tools/corpus" }) |dir_name| {
         var dir = try std.Io.Dir.openDir(std.Io.Dir.cwd(), io, dir_name, .{ .iterate = true });
@@ -219,13 +218,21 @@ test "both backends agree with the line index over the corpus" {
             var slice = Lines.fromSlice(input);
             const from_slice = try takeAll(a, &slice);
             try expectSame(from_slice, try takeAllBuffered(a, input, &buffer));
-            const index = try Parser.indexLines(a, input);
-            try std.testing.expectEqual(index.lines.len, from_slice.lines.len);
-            for (index.lines, index.offsets, from_slice.lines) |bytes, offset, line| {
-                try std.testing.expectEqualStrings(bytes, line.bytes);
+            // Lines and offsets reproduce the input; the end is on the final newline, or
+            // one past the last character when there is none.
+            var offset: u32 = 0;
+            for (from_slice.lines) |line| {
                 try std.testing.expectEqual(offset, line.pos.offset);
+                const nl = std.mem.indexOfScalarPos(u8, input, offset, '\n') orelse input.len;
+                try std.testing.expectEqualStrings(std.mem.trimEnd(u8, input[offset..nl], "\r"), line.bytes);
+                offset = line.eol.offset + 1;
             }
-            try std.testing.expectEqual(Parser.inputEnd(index, input), from_slice.end);
+            const n: u32 = @intCast(from_slice.lines.len);
+            if (input.len == 0 or input[input.len - 1] == '\n') {
+                try std.testing.expectEqual(SourcePos{ .line = n + 1, .col = 0, .offset = @intCast(input.len -| 1) }, from_slice.end);
+            } else {
+                try std.testing.expectEqual(SourcePos{ .line = n, .col = @intCast(from_slice.lines[n - 1].bytes.len + 1), .offset = @intCast(input.len) }, from_slice.end);
+            }
         }
         try std.testing.expect(seen > 0);
     }

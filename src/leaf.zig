@@ -8,31 +8,16 @@ const Allocator = std.mem.Allocator;
 const node_mod = @import("node.zig");
 const CellAlign = node_mod.CellAlign;
 const ListStyle = node_mod.ListStyle;
-const BlockAttrs = @import("attributes.zig").BlockAttrs;
 
-pub fn isBlank(line: []const u8) bool {
+fn isBlank(line: []const u8) bool {
     for (line) |c| {
         if (c != ' ' and c != '\t' and c != '\r') return false;
     }
     return true;
 }
 
-/// Visual indent width. Tabs count as 4 spaces per the djot spec.
-/// See also `countIndent` which counts only space characters.
-pub fn indentOf(line: []const u8) usize {
-    var n: usize = 0;
-    for (line) |c| {
-        if (c == ' ') {
-            n += 1;
-        } else if (c == '\t') {
-            n += 4;
-        } else break;
-    }
-    return n;
-}
-
 /// Leading spaces and tabs, one column each, as djot.js's `skipSpace`.
-pub fn countIndent(line: []const u8) usize {
+fn countIndent(line: []const u8) usize {
     var n: usize = 0;
     while (n < line.len and (line[n] == ' ' or line[n] == '\t')) : (n += 1) {}
     return n;
@@ -112,15 +97,6 @@ pub fn startsBlockQuote(line: []const u8) bool {
     return trimmed[1] == ' ' or trimmed[1] == '\t';
 }
 
-pub fn stripBlockQuotePrefix(line: []const u8) []const u8 {
-    const trimmed = std.mem.trimStart(u8, line, " ");
-    if (trimmed.len == 0) return "";
-    if (trimmed[0] != '>') return line;
-    if (trimmed.len == 1) return "";
-    if (trimmed[1] == ' ' or trimmed[1] == '\t') return trimmed[2..];
-    return trimmed[1..];
-}
-
 pub const DivInfo = struct { fence: []const u8, class: ?[]const u8 };
 
 pub fn isFencedDivStart(line: []const u8) ?DivInfo {
@@ -131,21 +107,18 @@ pub fn isFencedDivStart(line: []const u8) ?DivInfo {
     return .{ .fence = trimmed[0..colons], .class = if (after.len > 0) after else null };
 }
 
-pub fn mergeBlockAttrs(a: Allocator, existing: ?BlockAttrs, new_attrs: BlockAttrs) !BlockAttrs {
-    if (existing) |ex| return ex.merge(new_attrs, a);
-    return new_attrs;
-}
-
-pub fn closesDiv(line: []const u8, fence: []const u8) bool {
+/// Whether `line` is a bare fence of at least `fence_len` colons, which closes a div.
+pub fn closesDiv(line: []const u8, fence_len: usize) bool {
     const trimmed = std.mem.trimStart(u8, line, " \t");
-    return countLeadingChar(trimmed, ':') >= fence.len and isBlank(std.mem.trimStart(u8, trimmed, ":"));
+    return countLeadingChar(trimmed, ':') >= fence_len and isBlank(std.mem.trimStart(u8, trimmed, ":"));
 }
 
 /// `rest_col` is the number of bytes before `rest` on its line.
 pub const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_col: u32, is_footnote: bool };
 
 /// `[label]:` or `[^label]:` opening a reference or footnote definition: space
-/// indentation only, a label of at least one character, and what follows the colon.
+/// indentation only, a label of at least one character (as written, `^` included), and
+/// what follows the colon.
 pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const trimmed = std.mem.trimStart(u8, line, " ");
     if (trimmed.len < 4 or trimmed[0] != '[') return null;
@@ -158,23 +131,16 @@ pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const rest = std.mem.trim(u8, after_colon, " \t");
     const rest_lead = after_colon.len - std.mem.trimStart(u8, after_colon, " \t").len;
     return .{
-        .label = if (is_footnote) label[1..] else label,
+        .label = label,
         .rest = rest,
         .rest_col = @intCast(line.len - after_colon.len + rest_lead),
         .is_footnote = is_footnote,
     };
 }
 
-/// The text of a caption line (`^ ` and what follows, trimmed), or null for any other line.
-pub fn captionContent(line: []const u8) ?[]const u8 {
-    const t = std.mem.trimStart(u8, line, " \t");
-    if (t.len > 1 and t[0] == '^' and t[1] == ' ') return std.mem.trim(u8, t[2..], " \t");
-    return null;
-}
-
 /// Advance past a backtick run and its matching closing run.
 /// Returns the index past the closing backticks, or past end of text if no close found.
-pub fn skipBacktickSpan(text: []const u8, start: usize) usize {
+fn skipBacktickSpan(text: []const u8, start: usize) usize {
     var run: usize = 0;
     var j = start;
     while (j < text.len and text[j] == '`') : (j += 1) run += 1;
@@ -249,7 +215,7 @@ pub fn parseSepAligns(a: Allocator, line: []const u8) ![]const CellAlign {
     return result.toOwnedSlice(a);
 }
 
-pub fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
+fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
     var result: std.ArrayList([]const u8) = .empty;
     var i: usize = 0;
     var cell_start: usize = 0;
@@ -278,8 +244,6 @@ pub fn rowCells(a: Allocator, line: []const u8) ![]const []const u8 {
     if (content.len > 0 and content[content.len - 1] == '|') content = content[0 .. content.len - 1];
     return splitTableCells(a, content);
 }
-
-pub const ListKind = enum { bullet, ordered };
 
 /// The number styles an ordered list may still be, narrowed by each item's marker, as
 /// djot.js (`1.` is decimal; `i.` is roman or alpha until a later item decides).
@@ -490,11 +454,4 @@ fn romanToNumber(s: []const u8) usize {
         prev = n;
     }
     return if (total > 0) total else 1;
-}
-
-pub fn parseMarker(comptime kind: ListKind, line: []const u8) ?Marker {
-    return switch (kind) {
-        .bullet => parseBulletMarker(line),
-        .ordered => parseOrderedMarker(line),
-    };
 }

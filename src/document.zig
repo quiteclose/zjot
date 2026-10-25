@@ -66,55 +66,59 @@ pub const Ids = struct {
     /// The next suffix to try for each base id already taken, so a repeated heading
     /// text costs one lookup instead of a search from `-1` (quadratic over a document).
     next_suffix: std.StringArrayHashMapUnmanaged(usize) = .{},
-    scratch: std.ArrayList(u8) = .empty,
+    /// For a heading's text and label while its id is made, and the candidate ids tried.
+    scratch: std.heap.ArenaAllocator,
     /// Headings assigned so far, in the parser's count (`Definitions.headings_parsed`).
     assigned_headings: usize = 0,
     assigned_footnotes: usize = 0,
 
     /// Assigns the footnote definitions logged but not yet assigned that stand before the
     /// next heading: the ones no more headings were parsed before than have been assigned.
-    /// Their trees are rebuilt in the definitions' allocator. Called before each heading
-    /// and after each block, so after the last block it assigns every definition left.
+    /// Called before each heading and after each block, so after the last block it
+    /// assigns every definition left.
     pub fn assignFootnotes(self: *Ids) Allocator.Error!void {
         const log = self.defs.footnote_log.items;
         while (self.assigned_footnotes < log.len and log[self.assigned_footnotes].headings_before <= self.assigned_headings) {
             const def = log[self.assigned_footnotes].def;
             self.assigned_footnotes += 1;
-            const blocks = try self.defs.a.alloc(Node, def.blocks.len);
-            for (def.blocks, blocks) |block, *out| out.* = try self.assignNode(self.defs.a, block);
-            def.blocks = blocks;
+            // The parser built these blocks for the definition alone.
+            for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block);
         }
     }
 
-    /// `block` with every heading's id set and its implicit reference claimed, the
-    /// footnote definitions that stand among its headings assigned where they stand; the
-    /// tree is rebuilt in `a` along the way.
-    pub fn assign(self: *Ids, a: Allocator, block: Node) !Node {
-        const assigned = try self.assignNode(a, block);
+    /// Sets every heading's id in `block` and claims its implicit reference, assigning
+    /// the footnote definitions that stand among its headings where they stand. Writes
+    /// into the tree, which the parser built for this block alone. Returns whether the
+    /// block holds a link or image by reference, which the definitions may still change
+    /// until the input ends (what `Resolver.resolve` fills in).
+    pub fn assign(self: *Ids, block: *Node) Allocator.Error!bool {
+        const by_reference = try self.assignNode(block);
         try self.assignFootnotes();
-        return assigned;
+        return by_reference;
     }
 
-    fn assignNode(self: *Ids, a: Allocator, node: Node) Allocator.Error!Node {
-        var n = node;
-        if (n.id) |id| try self.ids_used.put(self.a, try self.a.dupe(u8, id), {});
+    fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
+        if (n.id) |id| {
+            const seen = try self.ids_used.getOrPut(self.a, id);
+            if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
+        }
+        var by_reference = (n.tag == .link or n.tag == .image) and n.reference != null and n.destination == null;
         if (n.tag == .heading) {
             try self.assignFootnotes();
             self.assigned_headings += 1;
-            const text = try inline_mod.getPlainText(a, n);
+            _ = self.scratch.reset(.retain_capacity);
+            const text = try inline_mod.getPlainText(self.scratch.allocator(), n.*);
             if (n.id == null) n.id = try self.generate(text);
-            const label = try inline_mod.normalizeLabel(a, text);
+            const label = try inline_mod.normalizeLabel(self.scratch.allocator(), text);
             if (!self.auto_refs.contains(label)) {
                 const dest = try std.fmt.allocPrint(self.a, "#{s}", .{n.id.?});
                 try self.auto_refs.put(self.a, try self.a.dupe(u8, label), dest);
             }
         }
-        if (n.children.len > 0) {
-            const children = try a.alloc(Node, n.children.len);
-            for (n.children, children) |child, *out| out.* = try self.assignNode(a, child);
-            n.children = children;
+        for (@constCast(n.children)) |*child| {
+            if (try self.assignNode(child)) by_reference = true;
         }
-        return n;
+        return by_reference;
     }
 
     fn generate(self: *Ids, text: []const u8) ![]const u8 {
@@ -145,18 +149,14 @@ pub const Ids = struct {
 
         // Ids are only ever added, so the first free suffix is never below the last
         // one handed out for this base; the search resumes there. Candidates are built
-        // in a scratch buffer and only the accepted one is kept.
+        // in scratch and only the accepted one is kept.
         const next = try self.next_suffix.getOrPut(self.a, base_id);
         if (!next.found_existing) next.value_ptr.* = 1;
         var counter = next.value_ptr.*;
         while (true) : (counter += 1) {
-            self.scratch.clearRetainingCapacity();
-            try self.scratch.appendSlice(self.a, base_id);
-            try self.scratch.append(self.a, '-');
-            var digits: [20]u8 = undefined;
-            try self.scratch.appendSlice(self.a, std.fmt.bufPrint(&digits, "{d}", .{counter}) catch unreachable); // 20 digits hold any usize
-            if (!self.ids_used.contains(self.scratch.items)) {
-                const id = try self.a.dupe(u8, self.scratch.items);
+            const candidate = try std.fmt.allocPrint(self.scratch.allocator(), "{s}-{d}", .{ base_id, counter });
+            if (!self.ids_used.contains(candidate)) {
+                const id = try self.a.dupe(u8, candidate);
                 try self.ids_used.put(self.a, id, {});
                 next.value_ptr.* = counter + 1;
                 return id;
@@ -172,14 +172,6 @@ pub const Ids = struct {
 pub const Resolver = struct {
     defs: *const Definitions,
     ids: *const Ids,
-
-    /// Whether `resolve` would change `node`: it holds a link or image by reference, which
-    /// a definition may still change until the input ends.
-    pub fn touches(node: Node) bool {
-        if ((node.tag == .link or node.tag == .image) and node.reference != null and node.destination == null) return true;
-        for (node.children) |child| if (touches(child)) return true;
-        return false;
-    }
 
     pub fn resolve(self: *const Resolver, ba: Allocator, block: Node) !Node {
         return self.resolveNode(ba, block);
@@ -278,7 +270,8 @@ test "heading ids: the next free suffix per base, found without a search" {
     var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
     defer arena.deinit();
     const defs = Definitions{ .a = arena.allocator() };
-    var ids = Ids{ .a = arena.allocator(), .defs = &defs };
+    var ids = Ids{ .a = arena.allocator(), .defs = &defs, .scratch = .init(std.testing.allocator) };
+    defer ids.scratch.deinit();
     try std.testing.expectEqualStrings("x", try ids.generate("x"));
     try ids.ids_used.put(ids.a, "x-2", {}); // an explicit id in the way
     try std.testing.expectEqualStrings("x-1", try ids.generate("x"));

@@ -7312,3 +7312,92 @@ doc
     para (4:1:10-5:0:14)
       str (4:1:10-4:4:13) text="text"
 ````
+
+A div opener's class is one word, as djot.js: with more, the line is a paragraph.
+````
+::: foo bar
+x
+:::
+.
+<p>::: foo bar
+x
+:::</p>
+````
+
+A marker of the list's style continues the list whatever its indent, as djot.js.
+````
+ - a
+- b
+.
+<ul>
+<li>
+a
+</li>
+<li>
+b
+</li>
+</ul>
+````
+
+`[^n]:` with no space after the colon is a reference definition labelled `^n`, as djot.js;
+the footnote reference finds no definition.
+````
+[^n]:x
+
+q[^n]
+.
+<p>q<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A caption with no table before it is dropped, as djot.js.
+````
+^ alone
+
+para
+.
+<p>para</p>
+````
+
+````
+para
+
+^ cap
+.
+<p>para</p>
+````
+
+A caption joins the table before it across a reference definition, as djot.js.
+````
+| a |
+[x]: y
+^ cap
+
+[x]
+.
+<table>
+<caption>cap</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>[x]</p>
+````
+
+A reference definition's destination runs to the end of the line: trailing whitespace
+makes the line a paragraph, as djot.js.
+````
+[r]: /u 
+
+[r]
+.
+<p>[r]: /u</p>
+<p>[r]</p>
+````
