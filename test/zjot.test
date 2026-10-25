@@ -48,11 +48,6 @@ Deliberate differences from djot.js 0.3.2:
    head row, as djot.js's own README writes its tables. djot.js 0.3.2 matches a separator
    cell only right after its pipe, so there it is an ordinary row of em dashes; its test
    suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
-8. An explicit id counts where it lands on a node: an `{#id}` written before a footnote
-   or reference definition (kept for the footnote or the link) or overridden by a later
-   attribute line on the same block (`{#a}` then `{#b}`) is not registered, so a later
-   heading with that text keeps the bare id; djot.js registers every `{#id}` as it reads
-   it, whether it lands or not, and gives the heading `a-1`. Decided 2026-10-25.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -7944,6 +7939,229 @@ use[^a]
 <p><span id="Foo">x</span></p>
 <h1 id="Foo-1">Foo</h1>
 <p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A row of a lone colon is a row, not a separator, as djot.js: a separator cell has dashes.
+````
+| a |
+|:|
+.
+<table>
+<tr>
+<td>a</td>
+</tr>
+<tr>
+<td>:</td>
+</tr>
+</table>
+````
+
+A row whose dashes are split by a space is a row, not a separator, as djot.js.
+````
+| a |
+|-- --|
+.
+<table>
+<tr>
+<td>a</td>
+</tr>
+<tr>
+<td>– –</td>
+</tr>
+</table>
+````
+
+A row with an empty cell beside a dash is a row, not a separator, as djot.js.
+````
+| a | b |
+|-| |
+.
+<table>
+<tr>
+<td>a</td>
+<td>b</td>
+</tr>
+<tr>
+<td>-</td>
+<td></td>
+</tr>
+</table>
+````
+
+A separator may have spaces after its dashes and before the next cell, as djot.js.
+````
+| a | b |
+|--- | --- |
+| 1 | 2 |
+.
+<table>
+<tr>
+<th>a</th>
+<th>b</th>
+</tr>
+<tr>
+<td>1</td>
+<td>2</td>
+</tr>
+</table>
+````
+
+A heading without text takes the first free `s-N`, past one an explicit id took, as djot.js.
+````
+{#s-1}
+# Taken
+
+#
+.
+<section id="s-1">
+<h1>Taken</h1>
+</section>
+<section id="s-2">
+<h1></h1>
+</section>
+````
+
+A footnote definition's own id, from the block attributes before it, is registered where it is written, as djot.js.
+````
+{#Foo}
+[^n]: note
+
+# Foo
+
+use[^n]
+.
+<section id="Foo-1">
+<h1>Foo</h1>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A reference definition's own id, from the block attributes before it, is registered where it is written, as djot.js.
+````
+{#x}
+[r]: /u
+
+# x
+
+[y][r]
+.
+<section id="x-1">
+<h1>x</h1>
+<p><a href="/u" id="x">y</a></p>
+</section>
+````
+
+An id a later attribute line on the same block overrides is still registered, as djot.js.
+````
+{#a}
+{#b}
+# x
+
+# a
+
+# b
+.
+<section id="b">
+<h1>x</h1>
+</section>
+<section id="a-1">
+<h1>a</h1>
+</section>
+<section id="b-1">
+<h1>b</h1>
+</section>
+````
+
+A caption replaced by a later one keeps the ids counted on it registered, and a footnote definition between the captions takes its ids where it stands.
+````
+| a |
+^ [x]{#gone}
+
+^ cap
+
+[^n]: # Foo
+
+use[^n] [Foo][]
+.
+<table>
+<caption>cap</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a href="#Foo">Foo</a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A caption replaced by a later one keeps the id on it registered, as djot.js registers every id it reads.
+````
+| a |
+^ [x]{#Foo}
+
+^ cap
+
+# Foo
+.
+<table>
+<caption>cap</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+Many footnote definitions with headings before the first block: each takes its ids where it stands.
+````
+[^a]: # H
+
+[^b]: # H
+
+[^c]: # H
+
+# H
+
+use[^a][^b][^c]
+.
+<section id="H-3">
+<h1>H</h1>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a><a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="H">H</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<h1 id="H-1">H</h1>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<h1 id="H-2">H</h1>
+<p><a href="#fnref3" role="doc-backlink">↩︎</a></p>
 </li>
 </ol>
 </section>

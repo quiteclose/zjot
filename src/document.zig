@@ -36,11 +36,17 @@ pub const Definitions = struct {
     /// djot.js registers a block attribute) and on inline nodes (as a leaf closes),
     /// footnote content included: the ids `Ids` claims, in its order.
     ids_parsed: usize = 0,
+    /// Explicit ids read off any node, counted in `ids_parsed` where they were read and
+    /// claimed by `Ids` before the block after them: a caption's, once a later caption
+    /// replaced it; a reference definition's; one a later attribute line on the same block
+    /// overrode. djot.js registers every id it reads, whether it lands or not.
+    loose_ids: std.ArrayList([]const u8) = .empty,
 
     pub fn deinit(self: *Definitions) void {
         self.ref_defs.deinit(self.gpa);
         self.footnote_defs.deinit(self.gpa);
         self.footnote_log.deinit(self.gpa);
+        self.loose_ids.deinit(self.gpa);
     }
 };
 
@@ -53,10 +59,12 @@ pub const FootnoteDef = struct {
     end_pos: ?SourcePos = null,
 };
 
-/// `headings_before` and `ids_before`: the headings and explicit ids parsed before the
-/// definition started, so `Ids` assigns its headings after those and before the next, as
-/// djot.js's event order has it; `assigned` once it has.
-pub const LoggedFootnote = struct { label: []const u8, def: *FootnoteDef, headings_before: usize, ids_before: usize, assigned: bool = false };
+/// Logged as the definition opens, so the log is in the order the definitions start and
+/// what is due is a prefix of it; `def` once it has closed (null while its content is
+/// parsed). `headings_before` and `ids_before`: the headings and explicit ids parsed before
+/// it started, so `Ids` assigns its headings after those and before the next, as djot.js's
+/// event order has it.
+pub const LoggedFootnote = struct { label: []const u8, def: ?*FootnoteDef = null, headings_before: usize, ids_before: usize };
 
 pub const RefDef = struct {
     url: []const u8,
@@ -84,14 +92,14 @@ pub const Ids = struct {
     next_suffix: std.StringArrayHashMapUnmanaged(usize) = .{},
     /// For a heading's text and label while its id is made, and the candidate ids tried.
     scratch: std.heap.ArenaAllocator,
-    /// Headings whose text gave no id so far: they are numbered `s-1`, `s-2`, ... (djot.js).
-    empty_ids: usize = 0,
     /// Headings assigned so far, in the parser's count (`Definitions.headings_parsed`).
     assigned_headings: usize = 0,
     /// Explicit ids claimed so far, in the parser's count (`Definitions.ids_parsed`).
     assigned_ids: usize = 0,
-    /// The log's first entry not yet assigned.
-    first_unassigned: usize = 0,
+    /// The log's first entry not yet assigned: those before it are.
+    cursor: usize = 0,
+    /// How many of `Definitions.loose_ids` are claimed.
+    claimed_loose: usize = 0,
 
     pub fn deinit(self: *Ids) void {
         self.ids_used.deinit(self.gpa);
@@ -100,27 +108,59 @@ pub const Ids = struct {
         self.scratch.deinit();
     }
 
-    /// Assigns the footnote definitions logged but not yet assigned that stand before the
-    /// next heading and the next explicit id: those no more headings and explicit ids were
-    /// parsed before than have been assigned. Called before each block, each heading and
-    /// each explicit id, and after the last block, so a definition's headings claim their
-    /// ids where the definition stands, as djot.js assigns in source order, and nothing is
-    /// left. The log holds a footnote defined inside another's
-    /// content before the one around it (it closed first), so every unassigned entry is
-    /// looked at, and one assigned may make another due.
+    /// Assigns the footnote definitions that are due: the log is in the order they open,
+    /// so those due are a prefix of it, up to the first still open or the first standing
+    /// after a heading or an explicit id not yet assigned (no more headings and explicit
+    /// ids were parsed before a due one than have been assigned). Called before each
+    /// block, each heading and each explicit id, so a definition's headings claim their
+    /// ids where the definition stands, as djot.js assigns in source order; `finish` takes
+    /// what is left at the end. Each entry is looked at once as it comes due, however many
+    /// headings a document's definitions hold.
     pub fn assignFootnotes(self: *Ids) Allocator.Error!void {
         const log = self.defs.footnote_log.items;
-        var progress = true;
-        while (progress) {
-            progress = false;
-            while (self.first_unassigned < log.len and log[self.first_unassigned].assigned) self.first_unassigned += 1;
-            for (log[self.first_unassigned..]) |*entry| {
-                if (entry.assigned or entry.headings_before > self.assigned_headings or entry.ids_before > self.assigned_ids) continue;
-                entry.assigned = true;
-                progress = true;
-                // The parser built these blocks for the definition alone.
-                for (@constCast(entry.def.blocks)) |*block| _ = try self.assignNode(block);
-            }
+        while (self.cursor < log.len) {
+            const entry = log[self.cursor];
+            const def = entry.def orelse break; // still open: what follows is inside it
+            if (entry.headings_before > self.assigned_headings or entry.ids_before > self.assigned_ids) break;
+            self.cursor += 1;
+            try self.assignDef(def);
+        }
+    }
+
+    /// A definition's own id (the block attributes written before it, which djot.js
+    /// registers where they stand), then its blocks, which the parser built for it alone.
+    fn assignDef(self: *Ids, def: *FootnoteDef) Allocator.Error!void {
+        if (def.attrs) |attrs| {
+            if (attrs.id) |id| try self.claim(id);
+        }
+        for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block);
+    }
+
+    /// Claims the ids the parser read off any node (`Definitions.loose_ids`), before the
+    /// block after them, where they were counted.
+    fn claimLoose(self: *Ids) Allocator.Error!void {
+        const loose = self.defs.loose_ids.items;
+        while (self.claimed_loose < loose.len) : (self.claimed_loose += 1) try self.claim(loose[self.claimed_loose]);
+    }
+
+    /// An explicit id, seen: the definitions before it in the source claim theirs first.
+    fn claim(self: *Ids, id: []const u8) Allocator.Error!void {
+        try self.assignFootnotes();
+        self.assigned_ids += 1;
+        const seen = try self.ids_used.getOrPut(self.gpa, id);
+        if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
+    }
+
+    /// After the last block: every loose id and every definition left, in log order,
+    /// whatever the counts say (every definition has closed, so none may be left).
+    pub fn finish(self: *Ids) Allocator.Error!void {
+        try self.claimLoose();
+        try self.assignFootnotes();
+        const log = self.defs.footnote_log.items;
+        while (self.cursor < log.len) {
+            const def = log[self.cursor].def.?;
+            self.cursor += 1;
+            try self.assignDef(def);
         }
     }
 
@@ -130,19 +170,15 @@ pub const Ids = struct {
     /// block holds a link or image by reference, which the definitions may still change
     /// until the input ends (what `Resolver.resolve` fills in).
     pub fn assign(self: *Ids, block: *Node) Allocator.Error!bool {
-        // The definitions that closed before this block stand before it in the source.
+        // The ids read off any node and the definitions that closed before this block
+        // stand before it in the source.
+        try self.claimLoose();
         try self.assignFootnotes();
         return self.assignNode(block);
     }
 
     fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
-        if (n.id) |id| {
-            // The definitions before this id in the source claim theirs first.
-            try self.assignFootnotes();
-            self.assigned_ids += 1;
-            const seen = try self.ids_used.getOrPut(self.gpa, id);
-            if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
-        }
+        if (n.id) |id| try self.claim(id);
         var by_reference = switch (n.data) {
             .link, .image => |l| l.reference != null and l.destination == null,
             else => false,
@@ -181,13 +217,12 @@ pub const Ids = struct {
         }
         while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '-') _ = buf.pop();
 
-        var base_id = try buf.toOwnedSlice(self.a);
-        if (base_id.len == 0) {
-            self.empty_ids += 1;
-            base_id = try std.fmt.allocPrint(self.a, "s-{d}", .{self.empty_ids});
-        }
+        var base_id: []const u8 = try buf.toOwnedSlice(self.a);
+        // No text: `s-1`, `s-2`, ..., the first free, as djot.js (never `s` itself).
+        const empty = base_id.len == 0;
+        if (empty) base_id = "s";
 
-        if (!self.ids_used.contains(base_id)) {
+        if (!empty and !self.ids_used.contains(base_id)) {
             try self.ids_used.put(self.gpa, base_id, {});
             return base_id;
         }

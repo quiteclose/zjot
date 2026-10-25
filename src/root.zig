@@ -79,7 +79,7 @@ fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) 
         try out.block(node, block.arena, by_reference);
         last_end = block.last;
     }
-    try ids.assignFootnotes();
+    try ids.finish();
     // Where djot.js ends the sections still open at the end: at its last block event,
     // which is the last top-level block's end, except that whatever follows the last
     // block (blank lines, a div's closing fence, definitions, attributes) emits events
@@ -292,6 +292,16 @@ const Output = struct {
         }
         if (self.head == self.queue.items.len) {
             self.queue.clearRetainingCapacity();
+            self.head = 0;
+        } else if (self.head >= self.queue.items.len - self.head) {
+            // The written prefix is at least half the queue: its slots are taken back, so
+            // a section open that waits for its closing heading (`--ast --sourcepos`)
+            // keeps the queue the size of what waits, not of every block written before
+            // it. Each move is no longer than what was written since the last.
+            const rest = self.queue.items.len - self.head;
+            std.mem.copyForwards(Pending, self.queue.items[0..rest], self.queue.items[self.head..]);
+            self.queue.shrinkRetainingCapacity(rest);
+            for (self.open_sections.items) |*index| index.* -= self.head;
             self.head = 0;
         }
     }
