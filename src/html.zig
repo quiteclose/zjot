@@ -4,19 +4,18 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Node = @import("node.zig").Node;
 
-/// Footnote numbering, as djot.js's HTML renderer: labels in order of first reference,
-/// kept for the document (the labels are duped into `a`).
+/// Footnote numbering, as djot.js's HTML renderer: labels in order of first reference
+/// (`order.keys()`), kept for the document in `a`, since a reference's text lives only
+/// as long as its block.
 pub const Footnotes = struct {
     a: Allocator,
-    order: std.ArrayList([]const u8) = .empty,
+    order: std.StringArrayHashMapUnmanaged(void) = .{},
 
     /// The 1-based number of `label`, assigned on its first reference.
     pub fn number(self: *Footnotes, label: []const u8) !usize {
-        for (self.order.items, 1..) |existing, n| {
-            if (std.mem.eql(u8, existing, label)) return n;
-        }
-        try self.order.append(self.a, try self.a.dupe(u8, label));
-        return self.order.items.len;
+        const entry = try self.order.getOrPut(self.a, label);
+        if (!entry.found_existing) entry.key_ptr.* = try self.a.dupe(u8, label);
+        return entry.index + 1;
     }
 };
 

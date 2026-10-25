@@ -22,6 +22,12 @@ pub const Definitions = struct {
     a: Allocator,
     ref_defs: std.StringArrayHashMapUnmanaged(RefDef) = .{},
     footnote_defs: std.StringArrayHashMapUnmanaged(FootnoteDef) = .{},
+    /// Every footnote definition's label in document order, a label defined again
+    /// appearing again: the later definition replaces the earlier (djot.js), and the
+    /// survey visits it where it stands.
+    footnote_log: std.ArrayList([]const u8) = .empty,
+    /// Whether stored footnote content carries positions.
+    sourcepos: bool = false,
     /// Set by a consumer that parses the input a second time: definitions are then
     /// consumed from the input but not recorded again.
     sealed: bool = false,
@@ -573,7 +579,7 @@ fn divClose(self: *Parser, open_line: usize, fence: []const u8) !?usize {
 }
 
 fn closesDiv(line: []const u8, fence: []const u8) bool {
-    const trimmed = std.mem.trimStart(u8, line, " ");
+    const trimmed = std.mem.trimStart(u8, line, " \t");
     return countLeadingChar(trimmed, ':') >= fence.len and isBlank(std.mem.trimStart(u8, trimmed, ":"));
 }
 
@@ -689,13 +695,16 @@ fn tryFootnoteDef(self: *Parser) !?void {
     // with the definitions' allocator rather than the current block's, and in full; they
     // are positioned like any container's, which is why pass one tracks positions too.
     var inner_parser = self.child(self.defs.a, w, false);
+    inner_parser.track_pos = self.defs.sourcepos;
     var stored = FootnoteDef{ .blocks = try inner_parser.parseBlocks() };
-    if (self.track_pos) {
+    if (self.defs.sourcepos) {
         stored.start_pos = self.makePos(def_line, self.contentCol(def_line));
         stored.end_pos = self.definitionEnd();
     }
     const da = self.defs.a;
-    try self.defs.footnote_defs.put(da, try da.dupe(u8, label), stored);
+    const key = try da.dupe(u8, label);
+    try self.defs.footnote_defs.put(da, key, stored);
+    try self.defs.footnote_log.append(da, key);
     return {};
 }
 
@@ -778,8 +787,13 @@ fn collectItemContent(self: *Parser, content_col: usize, first_col: usize, list_
 fn parseItemContent(self: *Parser, content: *const ItemContent) ![]const Node {
     var inner_blocks: std.ArrayList(Node) = .empty;
 
+    // The paragraph window's blocks end where the item's content resumes after the blank
+    // line, so this parser stands there, not where the item stopped, while they parse.
+    const stop = self.pos;
+    if (content.blocks.lines.items.len > 0) self.pos = content.blocks.first;
     var para_parser = self.child(self.a, content.para, self.survey_only);
     for (try para_parser.parseBlocks()) |b| try inner_blocks.append(self.a, b);
+    self.pos = stop;
 
     if (content.blocks.lines.items.len > 0) {
         var block_parser = self.child(self.a, content.blocks, self.survey_only);
@@ -824,13 +838,7 @@ fn stopBefore(self: *const Parser) SourcePos {
 /// Where a block quote or table ends, as djot.js: on the newline of the blank line at
 /// `line_idx` that follows it, in this parser or the enclosing one; else at `containerEnd`.
 fn endAtBlank(self: *const Parser, line_idx: usize) SourcePos {
-    if (line_idx >= self.lines.len) {
-        if (self.enclosing) |p| {
-            const after = self.afterInEnclosing();
-            if (after < p.lines.len and isBlank(p.lines[after])) return p.makePos(after + 1, 0);
-        }
-        return self.containerEnd();
-    }
+    if (line_idx >= self.lines.len) return if (self.enclosing) |p| p.endAtBlank(self.afterInEnclosing()) else self.containerEnd();
     if (isBlank(self.lines[line_idx])) return self.makePos(line_idx + 1, 0);
     return self.containerEnd();
 }
@@ -839,7 +847,7 @@ fn endAtBlank(self: *const Parser, line_idx: usize) SourcePos {
 /// not count.
 fn fenceEnd(self: *const Parser, line_idx: usize) SourcePos {
     const line = self.lines[line_idx];
-    const rest = std.mem.trimStart(u8, line, " ");
+    const rest = std.mem.trimStart(u8, line, " \t");
     const run = countLeadingChar(rest, rest[0]);
     return self.makePos(line_idx, @intCast(line.len - rest.len + run));
 }

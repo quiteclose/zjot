@@ -32,10 +32,10 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     const ba = block_arena.allocator();
 
     const index = try Parser.indexLines(da, input);
-    var defs = Parser.Definitions{ .a = da };
+    var defs = Parser.Definitions{ .a = da, .sourcepos = opts.sourcepos };
     var survey = document.Survey{ .a = da };
     {
-        var parser = blockParser(ba, input, index, &defs, opts);
+        var parser = Parser.initIndexed(ba, input, index, &defs);
         parser.survey_only = true;
         while (try parser.nextBlock()) |block| {
             // Definitions met before this block come first in the id sequence.
@@ -48,7 +48,8 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
     defs.sealed = true;
 
     var resolver = document.Resolver{ .defs = &defs, .survey = &survey };
-    var parser = blockParser(ba, input, index, &defs, opts);
+    var parser = Parser.initIndexed(ba, input, index, &defs);
+    parser.track_pos = opts.sourcepos;
     var sections = document.Sections{ .doc_end = if (opts.sourcepos) parser.doc_end else null };
     var out = Emitter{ .w = w, .mode = opts.mode, .footnotes = .{ .a = da } };
     try out.root(ba);
@@ -65,14 +66,6 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
         _ = block_arena.reset(.retain_capacity);
     }
     try out.finish();
-}
-
-/// A block parser over the whole input; both passes use one, because footnote content
-/// is stored in pass one and must carry positions when `opts.sourcepos` asks for them.
-fn blockParser(ba: Allocator, input: []const u8, index: Parser.LineIndex, defs: *Parser.Definitions, opts: RenderOpts) Parser {
-    var parser = Parser.initIndexed(ba, input, index, defs);
-    parser.track_pos = opts.sourcepos;
-    return parser;
 }
 
 /// Writes section events as output, one rendered block per write, so nothing larger
@@ -128,7 +121,7 @@ const Emitter = struct {
     /// `n`-th defined, since the AST prints every definition, as djot.js's JSON holds them.
     fn footnoteLabel(self: *Emitter, defs: *const Parser.Definitions, n: usize) ?[]const u8 {
         const labels = switch (self.mode) {
-            .html => self.footnotes.order.items,
+            .html => self.footnotes.order.keys(),
             .ast => defs.footnote_defs.keys(),
         };
         return if (n < labels.len) labels[n] else null;
@@ -149,7 +142,7 @@ const Emitter = struct {
     }
 
     fn finish(self: *Emitter) !void {
-        if (self.mode == .html and self.footnotes.order.items.len > 0) try self.w.writeAll(html.endnotes_close);
+        if (self.mode == .html and self.footnotes.order.count() > 0) try self.w.writeAll(html.endnotes_close);
     }
 };
 
