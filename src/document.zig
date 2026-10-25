@@ -43,15 +43,16 @@ pub const Survey = struct {
     }
 
     /// Visits the footnote definitions recorded since the last call, in the order they
-    /// were met, so their heading ids are generated where the definitions stand.
+    /// were met, so their heading ids are generated where the definitions stand; a label
+    /// defined again starts its ids over with the definition that replaced the earlier one.
     pub fn visitFootnotes(self: *Survey, defs: *const Definitions) !void {
-        while (self.visited_footnotes < defs.footnote_defs.count()) : (self.visited_footnotes += 1) {
-            const label = defs.footnote_defs.keys()[self.visited_footnotes];
+        while (self.visited_footnotes < defs.footnote_log.items.len) : (self.visited_footnotes += 1) {
+            const label = defs.footnote_log.items[self.visited_footnotes];
             const ids = try self.footnote_heading_ids.getOrPut(self.a, label);
-            if (!ids.found_existing) ids.value_ptr.* = .empty;
+            ids.value_ptr.* = .empty;
             self.current_footnote = label;
             defer self.current_footnote = null;
-            for (defs.footnote_defs.values()[self.visited_footnotes].blocks) |block| try self.visitNode(block, .footnote);
+            for (defs.footnote_defs.get(label).?.blocks) |block| try self.visitNode(block, .footnote);
         }
     }
 

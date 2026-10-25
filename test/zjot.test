@@ -6210,3 +6210,79 @@ doc
   para (5:1:18-6:0:22)
     str (5:1:18-5:4:21) text="para"
 ````
+
+
+Review fixes after the window rewrite.
+
+A footnote defined twice: the later definition replaces the earlier, and its headings get their ids where it stands.
+````
+a[^x]
+
+[^x]: first
+
+b
+
+[^x]: ## H
+
+c
+.
+<p>a<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<p>b</p>
+<p>c</p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h2 id="H">H</h2>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote defined twice without a block between: the later wins.
+````
+a[^x]
+
+[^x]: first
+
+[^x]: second
+.
+<p>a<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>second<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A tab-indented closing fence closes the div.
+````
+::: a
+x
+	:::
+y
+.
+<div class="a">
+<p>x</p>
+</div>
+<p>y</p>
+````
+
+The div closed by a tab-indented fence ends after its colons.
+```` ap
+::: a
+x
+	:::
+y
+.
+doc
+  div (1:1:0-3:4:11) class="a"
+    para (2:1:6-3:0:7)
+      str (2:1:6-2:1:6) text="x"
+  para (4:1:13-5:0:14)
+    str (4:1:13-4:1:13) text="y"
+````
