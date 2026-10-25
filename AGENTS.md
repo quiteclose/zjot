@@ -20,7 +20,7 @@ src/
   root.zig           Library root: public API (render, toHtml, toAst, toAstOpts)
   main.zig           CLI binary (--ast, --sourcepos, file/stdin)
   node.zig           Node, Tag, Attr, SourcePos, CellAlign
-  Parser.zig         Block parsing, sub-parser coordination, list helpers
+  Parser.zig         Block parsing, container windows, list helpers
   document.zig       Document-level state: Survey (ids, auto refs), Resolver, Sections
   inline.zig         Inline parsing (parseInlineContent + all handlers)
   attributes.zig     AttrParser state machine, BlockAttrs
@@ -38,7 +38,7 @@ test/
 
 - **root.zig** -- Public API. `render(a, input, writer, opts)` streams the document block by block: pass one surveys with `nextBlock` and a block arena reset after every block; pass two resolves, sections and writes each block the same way. Only the line index, `Definitions` and `Survey` live for the document. `toHtml`, `toAst`, `toAstOpts` are `render` into an owned slice.
 - **node.zig** -- AST types. `Tag` enum (46 tags), `Node` struct with children, text, attributes, source positions. `Attr`, `SourcePos`, `CellAlign`.
-- **Parser.zig** -- Block-level parsing, block-local: `nextBlock` yields one block at a time and never generates ids or resolves references. Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime) shared by pointer with sub-parsers. Contains `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
+- **Parser.zig** -- Block-level parsing, block-local: `nextBlock` yields one block at a time and never generates ids or resolves references. Every parser is a window onto the document's `LineIndex` (a run of lines, each with the bytes its containers stripped); a container's content is parsed by a child window (`Window`, `child`) that keeps a pointer to the parser it is inside, so positions come straight from the index (`makePos`) and a block ending at the window's end asks the enclosing parser where its container stopped (`containerEnd`, `stopBefore`, `endAtBlank`, `afterNewline`). Owns `Definitions` (ref defs and footnote defs, allocated for the document's lifetime) shared by pointer with child parsers. Contains `parseBlocks`, `try*` block functions, unified list helpers (`collectItemContent`, `parseItemContent`), and LineMap-based inline position tracking.
 - **document.zig** -- Document-level state, split by lifetime. `Survey` visits every block once and assigns heading ids (djot.js rule: document order, each generated id avoiding every id seen so far) and auto references. `Resolver` resolves one block at a time against the definitions and the survey (ids by ordinal, links by label), and a footnote definition on request. `Sections` turns headings into open/close events without allocating. `root.render` drives the three and, after the document, the footnotes: the endnotes in first-use order in HTML, every definition in the AST.
 - **inline.zig** -- Inline parsing. `parseInlineContent` runs a `Scanner` (opener stack, items, `resolveItems`) over one block's joined text; every node is made with the span of source it came from and, when the caller passes a `LineMap`, its document position. Handlers for emphasis, links, smart quotes, super/subscript, insert/delete/mark, math, symbols, raw inline, autolinks.
 - **attributes.zig** -- Attribute parsing. `AttrParser` state machine for `{#id .class key=value}` syntax. `BlockAttrs` struct. Block and inline attribute parsing entry points.
@@ -49,11 +49,11 @@ test/
 
 ### Key design decisions
 
-1. **Definitions by pointer, with their own allocator** -- Sub-parsers (for list items, blockquotes, etc.) receive a `*Definitions` pointer instead of copying hash maps in and out, so a definition inside a container is visible to the parent. Everything stored there is duped into `Definitions.a`, so definitions outlive the block that produced them whatever allocator the blocks use.
+1. **Definitions by pointer, with their own allocator** -- Child parsers (for list items, blockquotes, etc.) receive a `*Definitions` pointer instead of copying hash maps in and out, so a definition inside a container is visible to the parent. Everything stored there is duped into `Definitions.a`, so definitions outlive the block that produced them whatever allocator the blocks use.
 
 2. **The inline parser records spans; the block parser supplies the map** -- When content lines are joined for inline parsing, `Parser.buildInlineLineMap` creates a `LineMap` from the lines' original positions and hands it to `parseInlineContent`. The `Scanner` makes every node through `emit` (a span of the joined text, both ends inclusive, as djot.js reports inline positions) or `text` (a slice of it), resolving the span through the map as the node is made, so no node is positioned after the fact and none is missed. Text contiguous in the source is one `str`, as djot.js; an open bracket stays its own item because its opener's index points at it.
 
-3. **Unified list helpers** -- `collectItemContent` and `parseItemContent` are shared between bullet and ordered list parsing. `collectItemContent` handles para line collection (with sourcepos tracking arrays), block continuation after blanks (lazy continuation stops at `isBlockStartAt`, the same predicate footnote definitions use), and trailing blank trimming. `parseItemContent` creates sub-parsers with correct sourcepos propagation and returns merged inner blocks. `updateListTightness` centralizes tightness detection.
+3. **Unified list helpers** -- `collectItemContent` and `parseItemContent` are shared between bullet and ordered list parsing. `collectItemContent` handles para line collection (with sourcepos tracking arrays), block continuation after blanks (lazy continuation stops at `isBlockStartAt`, the same predicate footnote definitions use), and trailing blank trimming. `parseItemContent` parses the item's paragraph window and its block window as children and returns the merged blocks. `updateListTightness` centralizes tightness detection.
 
 4. **Proper error handling** -- Public API uses Zig error unions (`!` return types). The parser degrades gracefully on malformed input but propagates allocation failures.
 
