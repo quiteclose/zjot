@@ -15,7 +15,19 @@ const SourcePos = @import("node.zig").SourcePos;
 
 /// `eol`: the line's newline, as col 0 of the line after it (djot.js's position for a
 /// newline), or the input's end when the line has none.
-pub const Line = struct { bytes: []const u8, pos: SourcePos, eol: SourcePos };
+pub const Line = struct {
+    bytes: []const u8,
+    pos: SourcePos,
+    eol: SourcePos,
+
+    /// The offset of the newline before the line: one less than its start. A start that has
+    /// saturated puts the newline at the maximum too (a start of exactly 2^32 has it there,
+    /// a later one past it), so a position behind the ceiling never falls below it.
+    pub fn newlineBefore(self: Line) u32 {
+        const start = self.pos.offset;
+        return if (start == std.math.maxInt(u32)) start else start -| 1;
+    }
+};
 
 pub const Lines = union(enum) {
     slice: Slice,
@@ -140,9 +152,11 @@ test "positions saturate past 4 GiB of input and that many lines" {
     var count: Lines.Count = .{ .line = max - 1, .offset = max - 2 };
     const l = try count.take("abc", true);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max - 2 }, l.pos);
+    try std.testing.expectEqual(@as(u32, max - 3), l.newlineBefore());
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 0, .offset = max }, l.eol);
     const next = try count.take("", false);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, next.pos);
+    try std.testing.expectEqual(@as(u32, max), next.newlineBefore()); // not max - 1: the newline is past the ceiling too
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, count.end());
     try std.testing.expectEqual(@as(u64, max) + 2, count.offset); // the count itself goes on
 }

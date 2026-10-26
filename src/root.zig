@@ -482,6 +482,7 @@ test "renderReader with a 16-byte buffer matches render over every fixture, in b
 test {
     _ = @import("test_runner.zig");
     _ = @import("Lines.zig");
+    _ = @import("LineMap.zig");
     _ = Parser;
     _ = document;
 }

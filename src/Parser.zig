@@ -56,7 +56,7 @@ stack: std.ArrayList(Container) = .empty,
 pending_attrs: ?BlockAttrs = null,
 /// The lines of the open leaf, which is always the tip, so one set of buffers serves.
 leaf_slices: std.ArrayList([]const u8) = .empty,
-leaf_starts: std.ArrayList(SourcePos) = .empty,
+leaf_starts: std.ArrayList(LeafStart) = .empty,
 /// The newline of the open leaf's last line, where its `LineMap` ends.
 leaf_last_eol: SourcePos = undefined,
 /// Children lists of closed containers, reused by the next ones pushed.
@@ -202,7 +202,7 @@ const Cursor = struct {
     /// One position before `pos`: the byte before it, or col 0 (the previous line's
     /// newline) at the line's start.
     fn before(self: Cursor) SourcePos {
-        if (self.i == 0) return .{ .line = self.line.pos.line, .col = 0, .offset = self.line.pos.offset -| 1 };
+        if (self.i == 0) return .{ .line = self.line.pos.line, .col = 0, .offset = self.line.newlineBefore() };
         return self.at(self.i - 1);
     }
 
@@ -764,10 +764,14 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     self.tip().leaf_end = afterContent(cur.line);
 }
 
+/// Where a leaf line's content starts, and the newline before the line, which the line
+/// source places (its `LineMap` segment keeps it for the join, rather than subtract it).
+const LeafStart = struct { pos: SourcePos, newline: u32 };
+
 fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
     const slice = if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
     try self.leaf_slices.append(self.gpa, slice);
-    try self.leaf_starts.append(self.gpa, start);
+    try self.leaf_starts.append(self.gpa, .{ .pos = start, .newline = line.newlineBefore() });
     self.leaf_last_eol = line.eol;
 }
 
@@ -777,7 +781,7 @@ fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
     const segs = try a.alloc(LineMap.Segment, self.leaf_slices.items.len);
     var joined: u32 = 0;
     for (self.leaf_slices.items, self.leaf_starts.items, segs) |slice, start, *seg| {
-        seg.* = .{ .joined_start = joined, .orig_line = start.line, .orig_col = start.col, .orig_offset = start.offset };
+        seg.* = .{ .joined_start = joined, .orig_line = start.pos.line, .orig_col = start.pos.col, .orig_offset = start.pos.offset, .newline_offset = start.newline };
         joined += @intCast(slice.len + 1);
     }
     return .{ .segments = segs, .total = joined - 1, .end = self.leaf_last_eol };
