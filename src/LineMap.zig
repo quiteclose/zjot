@@ -35,16 +35,16 @@ pub fn resolve(self: LineMap, joined_offset: u32) SourcePos {
     }
     const best = lo - 1;
 
-    if (best + 1 < self.segments.len and joined_offset + 1 == self.segments[best + 1].joined_start) {
+    if (best + 1 < self.segments.len and joined_offset +| 1 == self.segments[best + 1].joined_start) {
         const next = self.segments[best + 1];
-        return .{ .line = next.orig_line, .col = 0, .offset = next.orig_offset - next.orig_col };
+        return .{ .line = next.orig_line, .col = 0, .offset = next.orig_offset -| next.orig_col };
     }
 
     const seg = self.segments[best];
     const delta = joined_offset - seg.joined_start;
     return .{
         .line = seg.orig_line,
-        .col = seg.orig_col + delta,
-        .offset = seg.orig_offset + delta,
+        .col = seg.orig_col +| delta,
+        .offset = seg.orig_offset +| delta,
     };
 }

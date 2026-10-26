@@ -50,8 +50,8 @@ const Scanner = struct {
     fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) Node {
         const map = sc.map orelse return node;
         var n = node;
-        n.start_pos = map.resolve(@intCast(start));
-        n.end_pos = map.resolve(@intCast(end));
+        n.start_pos = map.resolve(std.math.lossyCast(u32, start));
+        n.end_pos = map.resolve(std.math.lossyCast(u32, end));
         return n;
     }
 
@@ -91,7 +91,7 @@ const Scanner = struct {
         if (last.id != null or last.attrs.len > 0) return false;
         last.data.str = sofar.ptr[0 .. sofar.len + slice.len];
         if (sc.map) |m| if (sc.within(last.data.str)) {
-            last.end_pos = m.resolve(@intCast(@intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1));
+            last.end_pos = m.resolve(std.math.lossyCast(u32, @intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1));
         };
         return true;
     }
