@@ -75,8 +75,8 @@ done: ?Block = null,
 /// table), returned by the next call.
 pending: ?Block = null,
 /// Lines consumed, and the line the last top-level block ended on.
-line_count: u32 = 0,
-last_block_line: u32 = 0,
+line_count: u64 = 0,
+last_block_line: u64 = 0,
 
 const Kind = enum { para, heading, thematic_break, attributes, block_quote, list, list_item, footnote, div, code_block, table, caption, reference_definition };
 
@@ -195,7 +195,8 @@ const Cursor = struct {
 
     /// The position of byte `i` of the line.
     fn at(self: Cursor, i: usize) SourcePos {
-        return .{ .line = self.line.pos.line, .col = @intCast(i + 1), .offset = self.line.pos.offset + @as(u32, @intCast(i)) };
+        // Saturating past 4 GiB, as the line source's positions (a line that long is in memory anyway).
+        return .{ .line = self.line.pos.line, .col = std.math.lossyCast(u32, i + 1), .offset = self.line.pos.offset +| std.math.lossyCast(u32, i) };
     }
 
     /// One position before `pos`: the byte before it, or col 0 (the previous line's
@@ -800,9 +801,9 @@ fn dropLeaf(self: *Parser) void {
 
 /// One past the last non-blank character of `line`: its newline unless whitespace trails.
 fn afterContent(line: Line) SourcePos {
-    const content: u32 = @intCast(std.mem.trimEnd(u8, line.bytes, " \t").len);
+    const content = std.math.lossyCast(u32, std.mem.trimEnd(u8, line.bytes, " \t").len);
     if (content == line.bytes.len) return line.eol;
-    return .{ .line = line.pos.line, .col = content + 1, .offset = line.pos.offset + content };
+    return .{ .line = line.pos.line, .col = content +| 1, .offset = line.pos.offset +| content };
 }
 
 /// Where a paragraph or heading ends, as djot.js: after its last non-blank character, or

@@ -4,7 +4,9 @@
 //! starts. The newline
 //! after the last line yields no empty line, so line counts match the visible content,
 //! and `end` says where the input ended, as djot.js reports it: on its final newline, or
-//! one past the last character when there is none.
+//! one past the last character when there is none. The counts are 64-bit, so the input has
+//! no size limit; a position is 32-bit (`SourcePos`) and saturates past 4 GiB of input,
+//! that many lines, or a line that long, which only `--sourcepos` output can show.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -30,11 +32,11 @@ pub const Lines = union(enum) {
     /// The running counters, from which positions and the end are made.
     const Count = struct {
         /// Lines yielded so far.
-        line: u32 = 0,
+        line: u64 = 0,
         /// Bytes consumed so far, newlines and carriage returns included.
-        offset: u32 = 0,
+        offset: u64 = 0,
         /// The last line's bytes, carriage return stripped.
-        last_len: u32 = 0,
+        last_len: u64 = 0,
         /// Whether the input consumed so far ends with a newline (empty input does).
         newline: bool = true,
 
@@ -43,16 +45,21 @@ pub const Lines = union(enum) {
             // end of the input, with no newline after it, is content like any other.
             const bytes = if (newline and raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
             self.line += 1;
-            const pos: SourcePos = .{ .line = self.line, .col = 1, .offset = self.offset };
-            self.offset += @intCast(raw.len + @intFromBool(newline));
-            self.last_len = @intCast(bytes.len);
+            const pos: SourcePos = .{ .line = sat(self.line), .col = 1, .offset = sat(self.offset) };
+            self.offset += raw.len + @intFromBool(newline);
+            self.last_len = bytes.len;
             self.newline = newline;
             return .{ .bytes = bytes, .pos = pos, .eol = self.end() };
         }
 
         fn end(self: Count) SourcePos {
-            if (self.newline) return .{ .line = self.line + 1, .col = 0, .offset = self.offset -| 1 };
-            return .{ .line = self.line, .col = self.last_len + 1, .offset = self.offset };
+            if (self.newline) return .{ .line = sat(self.line + 1), .col = 0, .offset = sat(self.offset -| 1) };
+            return .{ .line = sat(self.line), .col = sat(self.last_len + 1), .offset = sat(self.offset) };
+        }
+
+        /// A count as a position's 32-bit field: the largest value once past it.
+        fn sat(v: u64) u32 {
+            return std.math.lossyCast(u32, v);
         }
     };
 
@@ -126,6 +133,18 @@ pub const Lines = union(enum) {
         };
     }
 };
+
+test "positions saturate past 4 GiB of input and that many lines" {
+    const max = std.math.maxInt(u32);
+    var count: Lines.Count = .{ .line = max - 1, .offset = max - 2 };
+    const l = count.take("abc", true);
+    try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max - 2 }, l.pos);
+    try std.testing.expectEqual(SourcePos{ .line = max, .col = 0, .offset = max }, l.eol);
+    const next = count.take("", false);
+    try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, next.pos);
+    try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, count.end());
+    try std.testing.expectEqual(@as(u64, max) + 2, count.offset); // the count itself goes on
+}
 
 /// Every line of `input` through `lines`, with the end, for comparison.
 const Taken = struct { lines: []const Line, end: SourcePos };
