@@ -37,8 +37,9 @@ Deliberate differences from djot.js 0.3.2:
 
 5. A bare carriage return is content: `a\rb` is one line, where djot.js 0.3.2 ends a
    line at any `\r` (an old Mac line end) and makes a soft break. Only `\r\n` ends a line
-   in zjot (the `\r` dropped, as the CRLF note below). The `.test` format cannot carry a
-   bare `\r`, so this is documented, not pinned. Decided 2026-10-25.
+   in zjot (the `\r` dropped, as the CRLF note below); a `\r` ending the input with no
+   `\n` after it is content too (`a\r` renders it, djot.js drops it). The `.test` format
+   cannot carry a bare `\r`, so this is documented, not pinned. Decided 2026-10-25.
 
 6. An ordered list whose first marker's number does not fit 64 bits starts at 1 (and a
    marker longer than 32 bytes is not kept); djot.js prints JavaScript's float for it
@@ -8278,6 +8279,124 @@ use[^n]
 <ol>
 <li id="fn1">
 <h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A table's rows claim their ids before its caption, which stands after them: a footnote definition between the table and its caption takes its ids there, as djot.js.
+````
+| [x]{#Foo} |
+
+[^n]: # Foo
+
+^ [y]{#Bar}
+
+use[^n]
+.
+<table>
+<caption><span id="Bar">y</span></caption>
+<tr>
+<td><span id="Foo">x</span></td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A caption's own id, from the attribute line before it, is registered after the rows' ids and after a footnote definition between, as djot.js.
+````
+| [x]{#Foo} |
+
+[^n]: # Foo
+
+{#Bar}
+^ cap
+
+use[^n]
+.
+<table>
+<caption id="Bar">cap</caption>
+<tr>
+<td><span id="Foo">x</span></td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A footnote definition between a table and its caption: its headings take their ids after the rows' and before the caption's, as djot.js.
+````
+| [x]{#Foo} |
+
+[^n]: # Foo
+
+    # Bar
+
+^ [y]{#Bar}
+
+use[^n]
+.
+<table>
+<caption><span id="Bar">y</span></caption>
+<tr>
+<td><span id="Foo">x</span></td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<h1 id="Bar">Bar</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A table's rows claim their ids before its caption inside a block quote too, as djot.js.
+````
+> | [x]{#Foo} |
+>
+> [^n]: # Foo
+>
+> ^ [y]{#Bar}
+>
+> use[^n]
+.
+<blockquote>
+<table>
+<caption><span id="Bar">y</span></caption>
+<tr>
+<td><span id="Foo">x</span></td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</blockquote>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
 <p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
 </li>
 </ol>

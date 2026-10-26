@@ -39,7 +39,9 @@ pub const Lines = union(enum) {
         newline: bool = true,
 
         fn take(self: *Count, raw: []const u8, newline: bool) Line {
-            const bytes = if (raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
+            // The one carriage return a CRLF ending puts before the newline goes; one at the
+            // end of the input, with no newline after it, is content like any other.
+            const bytes = if (newline and raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
             self.line += 1;
             const pos: SourcePos = .{ .line = self.line, .col = 1, .offset = self.offset };
             self.offset += @intCast(raw.len + @intFromBool(newline));
@@ -164,7 +166,7 @@ test "lines, positions and the end: CRLF, no final newline, empty input, both ba
         .{ .input = "a\nbc\n", .lines = &.{ "a", "bc" }, .offsets = &.{ 0, 2 }, .end = .{ .line = 3, .col = 0, .offset = 4 } },
         .{ .input = "a\nbc", .lines = &.{ "a", "bc" }, .offsets = &.{ 0, 2 }, .end = .{ .line = 2, .col = 3, .offset = 4 } },
         .{ .input = "-\r\n- b\r\n", .lines = &.{ "-", "- b" }, .offsets = &.{ 0, 3 }, .end = .{ .line = 3, .col = 0, .offset = 7 } },
-        .{ .input = "a\r", .lines = &.{"a"}, .offsets = &.{0}, .end = .{ .line = 1, .col = 2, .offset = 2 } },
+        .{ .input = "a\r", .lines = &.{"a\r"}, .offsets = &.{0}, .end = .{ .line = 1, .col = 3, .offset = 2 } },
         .{ .input = "a\r\r\nb", .lines = &.{ "a\r", "b" }, .offsets = &.{ 0, 4 }, .end = .{ .line = 2, .col = 2, .offset = 5 } },
         .{ .input = "\n\nx", .lines = &.{ "", "", "x" }, .offsets = &.{ 0, 1, 2 }, .end = .{ .line = 3, .col = 2, .offset = 3 } },
     };
