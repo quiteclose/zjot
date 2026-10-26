@@ -114,7 +114,7 @@ const Container = struct {
         /// makes it loose.
         list: struct { style: ListStyle, indent: usize, marker: [32]u8, marker_len: u8, blanklines: bool = false, tight: bool = true },
         list_item: struct { indent: usize, checked: ?bool },
-        /// `log_index`: its entry in `Definitions.footnote_log`, made as it opened.
+        /// `log_index`: its entry in `Definitions.log`, made as it opened.
         footnote: struct { label: []const u8, indent: usize, log_index: usize },
         /// `end`: the closing fence's last colon, once met.
         div: struct { fence_len: usize, class: ?[]const u8, end: ?SourcePos = null },
@@ -519,10 +519,10 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
             // attributes waiting for it, counts next (djot.js registers it where it is
             // written), then its content's.
             const label = try self.defs.a.dupe(u8, def.label[1..]);
-            try self.defs.footnote_log.append(self.defs.gpa, .{
-                .label = label,
+            try self.defs.log.append(self.defs.gpa, .{
                 .headings_before = self.defs.headings_parsed,
                 .ids_before = self.defs.ids_parsed,
+                .what = .{ .footnote = null },
             });
             if (self.attrsSlot().*) |ba| {
                 if (ba.id != null) self.defs.ids_parsed += 1;
@@ -530,7 +530,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
             try self.push(.{ .footnote = .{
                 .label = label,
                 .indent = cur.indent,
-                .log_index = self.defs.footnote_log.items.len - 1,
+                .log_index = self.defs.log.items.len - 1,
             } }, cur.pos());
             self.footnote_depth += 1;
             cur.i += def.rest_col;
@@ -686,17 +686,21 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
     try self.stack.append(self.gpa, c);
 }
 
-/// Registers `id`, read off any node, where it stands: counted now, claimed before the
-/// block after it (`Definitions.loose_ids`).
+/// Registers `id`, read off any node, where it stands: counted now and logged with the
+/// counts before it, so `Ids` takes it there (`Definitions.log`).
 fn looseId(self: *Parser, id: []const u8) Error!void {
-    try self.defs.loose_ids.append(self.defs.gpa, try self.defs.a.dupe(u8, id));
+    try self.defs.log.append(self.defs.gpa, .{
+        .headings_before = self.defs.headings_parsed,
+        .ids_before = self.defs.ids_parsed,
+        .what = .{ .id = try self.defs.a.dupe(u8, id) },
+    });
     self.defs.ids_parsed += 1;
 }
 
 /// Keeps the explicit ids on `node` and its descendants registered as the node is
-/// dropped: they were counted when it was parsed.
+/// dropped, logged where they are counted now (the caller uncounted them first).
 fn looseIds(self: *Parser, node: Node) Error!void {
-    if (node.id) |id| try self.defs.loose_ids.append(self.defs.gpa, try self.defs.a.dupe(u8, id));
+    if (node.id) |id| try self.looseId(id);
     for (node.children()) |child| try self.looseIds(child);
 }
 
@@ -917,7 +921,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             };
             slot.* = null;
             try self.defs.footnote_defs.put(self.defs.gpa, f.label, stored);
-            self.defs.footnote_log.items[f.log_index].def = stored;
+            self.defs.log.items[f.log_index].what = .{ .footnote = stored };
             return;
         },
         .div => |dv| .{
@@ -960,6 +964,12 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 self.dropLeaf();
                 return;
             };
+            // A caption this one replaces is dropped with the ids counted on it as it
+            // closed, which stay registered where they were counted (djot.js registers
+            // every id it reads): uncounted, then logged in their place, before this one's
+            // (only an attribute line can stand between two captions).
+            self.defs.ids_parsed -= countIds(t.data.table[0..1]);
+            try self.looseIds(t.data.table[0]);
             const has_text = self.leaf_slices.items.len > 0;
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, 0, stand);
@@ -972,9 +982,6 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 n = try inline_mod.applyBlockAttrsToNode(ta, n, if (self.stack.items.len == 0) try ba.dupe(ta) else ba);
             }
             slot.* = null;
-            // A caption this one replaces is dropped with the ids counted on it, which
-            // stay registered (djot.js registers every id it reads).
-            try self.looseIds(t.data.table[0]);
             @constCast(t.data.table)[0] = n; // the placeholder, made with the table
             if (self.stack.items.len == 0) {
                 self.pending.?.last = n.end_pos;
