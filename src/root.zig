@@ -37,7 +37,8 @@ pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOp
 /// the reader's buffer (one longer than it spills into a buffer of its own), and only what
 /// the parser keeps of it outlives the next line, so memory follows the blocks, not the
 /// document. A reader without a buffer cannot be read a line at a time:
-/// `error.UnbufferedReader`. A read failure is `error.ReadFailed`; the reader says why.
+/// `error.UnbufferedReader`. A read failure is `error.ReadFailed`; the reader says why. An
+/// input of 2^64 bytes or lines is `error.InputTooLarge`.
 pub fn renderReader(a: Allocator, r: *std.Io.Reader, w: *std.Io.Writer, opts: RenderOpts) !void {
     if (r.buffer.len == 0) return error.UnbufferedReader;
     return renderLines(a, Lines.fromReader(a, r), w, opts);

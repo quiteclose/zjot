@@ -4,9 +4,10 @@
 //! starts. The newline
 //! after the last line yields no empty line, so line counts match the visible content,
 //! and `end` says where the input ended, as djot.js reports it: on its final newline, or
-//! one past the last character when there is none. The counts are 64-bit, so the input has
-//! no size limit; a position is 32-bit (`SourcePos`) and saturates past 4 GiB of input,
-//! that many lines, or a line that long, which only `--sourcepos` output can show.
+//! one past the last character when there is none. The counts are 64-bit, and an input of
+//! 2^64 bytes or lines is `error.InputTooLarge`, the one size limit; a position is 32-bit
+//! (`SourcePos`) and saturates past 4 GiB of input, that many lines, or a line that long,
+//! which only `--sourcepos` output can show.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -20,7 +21,7 @@ pub const Lines = union(enum) {
     slice: Slice,
     reader: Reader,
 
-    pub const Error = error{ OutOfMemory, ReadFailed };
+    pub const Error = error{ OutOfMemory, ReadFailed, InputTooLarge };
 
     /// Over resident input: zero-copy lines that stay valid for the document.
     const Slice = struct { rest: []const u8, count: Count = .{} };
@@ -40,20 +41,20 @@ pub const Lines = union(enum) {
         /// Whether the input consumed so far ends with a newline (empty input does).
         newline: bool = true,
 
-        fn take(self: *Count, raw: []const u8, newline: bool) Line {
+        fn take(self: *Count, raw: []const u8, newline: bool) error{InputTooLarge}!Line {
             // The one carriage return a CRLF ending puts before the newline goes; one at the
             // end of the input, with no newline after it, is content like any other.
             const bytes = if (newline and raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
-            self.line += 1;
+            self.line = std.math.add(u64, self.line, 1) catch return error.InputTooLarge;
             const pos: SourcePos = .{ .line = sat(self.line), .col = 1, .offset = sat(self.offset) };
-            self.offset += raw.len + @intFromBool(newline);
+            self.offset = std.math.add(u64, self.offset, @as(u64, raw.len) + @intFromBool(newline)) catch return error.InputTooLarge;
             self.last_len = bytes.len;
             self.newline = newline;
             return .{ .bytes = bytes, .pos = pos, .eol = self.end() };
         }
 
         fn end(self: Count) SourcePos {
-            if (self.newline) return .{ .line = sat(self.line + 1), .col = 0, .offset = sat(self.offset -| 1) };
+            if (self.newline) return .{ .line = sat(self.line +| 1), .col = 0, .offset = sat(self.offset -| 1) };
             return .{ .line = sat(self.line), .col = sat(self.last_len + 1), .offset = sat(self.offset) };
         }
 
@@ -93,10 +94,10 @@ pub const Lines = union(enum) {
                 if (s.rest.len == 0) return null;
                 if (std.mem.indexOfScalar(u8, s.rest, '\n')) |nl| {
                     defer s.rest = s.rest[nl + 1 ..];
-                    return s.count.take(s.rest[0..nl], true);
+                    return try s.count.take(s.rest[0..nl], true);
                 }
                 defer s.rest = s.rest[s.rest.len..];
-                return s.count.take(s.rest, false);
+                return try s.count.take(s.rest, false);
             },
             .reader => |*rd| {
                 const r = rd.r;
@@ -107,7 +108,7 @@ pub const Lines = union(enum) {
                         const rest = r.buffered();
                         if (rest.len == 0) return null;
                         r.toss(rest.len);
-                        return rd.count.take(rest, false);
+                        return try rd.count.take(rest, false);
                     },
                     // Longer than the buffer: streamed up to the newline, or to the end.
                     error.StreamTooLong => {
@@ -118,10 +119,10 @@ pub const Lines = union(enum) {
                             error.WriteFailed => return error.OutOfMemory,
                         };
                         if (newline) r.toss(1);
-                        return rd.count.take(rd.spill.written(), newline);
+                        return try rd.count.take(rd.spill.written(), newline);
                     },
                 };
-                return rd.count.take(taken[0 .. taken.len - 1], true);
+                return try rd.count.take(taken[0 .. taken.len - 1], true);
             },
         }
     }
@@ -137,13 +138,25 @@ pub const Lines = union(enum) {
 test "positions saturate past 4 GiB of input and that many lines" {
     const max = std.math.maxInt(u32);
     var count: Lines.Count = .{ .line = max - 1, .offset = max - 2 };
-    const l = count.take("abc", true);
+    const l = try count.take("abc", true);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max - 2 }, l.pos);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 0, .offset = max }, l.eol);
-    const next = count.take("", false);
+    const next = try count.take("", false);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, next.pos);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, count.end());
     try std.testing.expectEqual(@as(u64, max) + 2, count.offset); // the count itself goes on
+}
+
+test "an input of 2^64 bytes or lines is error.InputTooLarge" {
+    const max = std.math.maxInt(u64);
+    var lines: Lines.Count = .{ .line = max - 1 };
+    const last = try lines.take("", true); // the last line there can be
+    try std.testing.expectEqual(SourcePos{ .line = std.math.maxInt(u32), .col = 0, .offset = 0 }, last.eol);
+    try std.testing.expectError(error.InputTooLarge, lines.take("", true));
+    var bytes: Lines.Count = .{ .offset = max - 3 };
+    try std.testing.expectError(error.InputTooLarge, bytes.take("abc", true)); // four with the newline
+    _ = try bytes.take("abc", false); // three: the last bytes there can be
+    try std.testing.expectEqual(max, bytes.offset);
 }
 
 /// Every line of `input` through `lines`, with the end, for comparison.

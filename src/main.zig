@@ -105,6 +105,10 @@ pub fn main(init: std.process.Init) !u8 {
             try printErr(init.io, "zjot: {s}: {t}\n", .{ name, r.err orelse error.ReadFailed });
             return 1;
         },
+        error.InputTooLarge => {
+            try printErr(init.io, "zjot: {s}: input exceeds 2^64 - 1 bytes or lines\n", .{name});
+            return 1;
+        },
         else => |e| return e,
     };
     w.interface.flush() catch return writeFailed(init.io);
