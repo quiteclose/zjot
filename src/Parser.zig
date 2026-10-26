@@ -28,7 +28,7 @@ const Line = lines_mod.Line;
 
 const Parser = @This();
 
-pub const Error = Allocator.Error || error{ReadFailed};
+pub const Error = Allocator.Error || error{ ReadFailed, InputTooLarge };
 
 /// A top-level block and the arena its nodes live in, which the consumer gives back
 /// through `recycle` once the block is written. `last` is where the block's last event
