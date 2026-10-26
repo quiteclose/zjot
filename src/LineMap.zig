@@ -18,6 +18,10 @@ pub const Segment = struct {
     orig_line: u32,
     orig_col: u32,
     orig_offset: u32,
+    /// The newline before the line, as the line source placed it: where the join before this
+    /// segment resolves. Kept rather than derived, since a saturated offset cannot be
+    /// subtracted from.
+    newline_offset: u32,
 };
 
 /// Resolve a byte offset in the joined text to a source position. The newline joining
@@ -37,7 +41,7 @@ pub fn resolve(self: LineMap, joined_offset: u32) SourcePos {
 
     if (best + 1 < self.segments.len and joined_offset +| 1 == self.segments[best + 1].joined_start) {
         const next = self.segments[best + 1];
-        return .{ .line = next.orig_line, .col = 0, .offset = next.orig_offset -| next.orig_col };
+        return .{ .line = next.orig_line, .col = 0, .offset = next.newline_offset };
     }
 
     const seg = self.segments[best];
@@ -47,4 +51,15 @@ pub fn resolve(self: LineMap, joined_offset: u32) SourcePos {
         .col = seg.orig_col +| delta,
         .offset = seg.orig_offset +| delta,
     };
+}
+
+test "the join between lines resolves to the newline the line source placed, past the ceiling too" {
+    const max = std.math.maxInt(u32);
+    const map: LineMap = .{ .segments = &.{
+        .{ .joined_start = 0, .orig_line = 1, .orig_col = 1, .orig_offset = 10, .newline_offset = 9 },
+        .{ .joined_start = 4, .orig_line = 2, .orig_col = 3, .orig_offset = max, .newline_offset = max },
+    }, .total = 7, .end = .{ .line = 3, .col = 0, .offset = max } };
+    try std.testing.expectEqual(SourcePos{ .line = 1, .col = 2, .offset = 11 }, map.resolve(1));
+    try std.testing.expectEqual(SourcePos{ .line = 2, .col = 0, .offset = max }, map.resolve(3)); // not max - 3
+    try std.testing.expectEqual(SourcePos{ .line = 2, .col = 4, .offset = max }, map.resolve(5));
 }
