@@ -8166,3 +8166,120 @@ use[^a][^b][^c]
 </ol>
 </section>
 ````
+
+A reference definition's id after a heading in the same block quote is registered after it, as djot.js: the heading keeps its text's id.
+````
+> # Foo
+>
+> {#Foo}
+> [r]: /u
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+</blockquote>
+````
+
+A reference definition's id after a heading in the same list item is registered after it, as djot.js.
+````
+- # Foo
+
+  {#Foo}
+  [r]: /u
+.
+<ul>
+<li>
+<h1 id="Foo">Foo</h1>
+</li>
+</ul>
+````
+
+A reference definition's id between two headings in a block quote is registered between them, as djot.js: the second heading takes the suffix.
+````
+> # Foo
+>
+> {#Foo}
+> [r]: /u
+>
+> # Foo
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+<h1 id="Foo-1">Foo</h1>
+</blockquote>
+````
+
+An id a later attribute line overrides, after a heading in the same block quote, is registered after the heading, as djot.js.
+````
+> # Foo
+>
+> {#Foo}
+> {#bar}
+> para
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+<p id="bar">para</p>
+</blockquote>
+````
+
+A caption replaced inside a block quote keeps its ids registered where it stood, after a heading before it, as djot.js.
+````
+> # Foo
+>
+> | a |
+> ^ [x]{#Foo}
+>
+> ^ cap
+.
+<blockquote>
+<h1 id="Foo">Foo</h1>
+<table>
+<caption>cap</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+</blockquote>
+````
+
+A reference definition's id inside a footnote definition is registered before the heading after it there, as djot.js.
+````
+[^n]: {#Foo}
+    [r]: /u
+
+    # Foo
+
+use[^n]
+.
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A reference definition's id inside a footnote definition after a heading there is registered after it, as djot.js: the heading keeps its text's id.
+````
+[^n]: # Foo
+
+    {#Foo}
+    [r]: /u
+
+use[^n]
+.
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
