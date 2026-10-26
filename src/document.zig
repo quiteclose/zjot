@@ -203,6 +203,16 @@ pub const Ids = struct {
                 try self.auto_refs.put(self.gpa, try self.a.dupe(u8, label), dest);
             }
         }
+        // A table holds its caption first, as it is written, but the caption stands after
+        // the rows in the source, where the parser counted its ids: the rows claim theirs first.
+        if (n.data == .table and n.data.table.len > 0) {
+            const t = @constCast(n.data.table);
+            for (t[1..]) |*row| {
+                if (try self.assignNode(row)) by_reference = true;
+            }
+            if (try self.assignNode(&t[0])) by_reference = true;
+            return by_reference;
+        }
         for (@constCast(n.children())) |*child| {
             if (try self.assignNode(child)) by_reference = true;
         }
