@@ -230,17 +230,25 @@ doc
 
 A thematic break in a list item.
 ````
-- ***
+-
+  ***
 .
+<ul>
+<li>
 <hr>
+</li>
+</ul>
 ````
 
 A thematic break in a list item.
 ```` ap
-- ***
+-
+  ***
 .
 doc
-  thematic_break (1:1:0-2:0:5)
+  bullet_list (1:1:0-3:0:7) tight=true style="-"
+    list_item (1:1:0-3:0:7)
+      thematic_break (2:3:4-3:0:7)
 ````
 
 A code block bare.
