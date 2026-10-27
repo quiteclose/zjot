@@ -475,6 +475,12 @@ test "nesting deeper than max_nesting levels is error.TooDeep, before any walker
     try render(a, short, &written.writer, .{});
     try std.testing.expect(written.written().len > 0);
     written.clearRetainingCapacity();
+    // No container opens past the limit, a footnote definition's among them: their
+    // content nests where they stand, and a line is matched against at most the limit.
+    try std.testing.expectError(error.TooDeep, render(a, ("[^n]: " ** max_nesting) ++ "x\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    try render(a, ("[^n]: " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
+    written.clearRetainingCapacity();
     try render(a, ("> " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
     try std.testing.expect(written.written().len > 0);
 }

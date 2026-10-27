@@ -759,6 +759,9 @@ fn divClass(class: ?[]const u8) bool {
 }
 
 fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Error!void {
+    // Bounded as it is built: past the limit no container opens, so a line costs at most
+    // the limit to match and the tree walk's own check is never deeper than this.
+    if (self.stack.items.len >= document.max_nesting) return error.TooDeep;
     self.listEvent(data == .list, data == .list_item);
     const c = Container{
         .start = start,
@@ -1046,7 +1049,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                     // (djot.js registers it).
                     if (existing.id != null and attrs.writesId()) try self.looseId(existing.id.?);
                 }
-                slot.* = if (slot.*) |existing| try existing.merge(attrs, self.nodeAllocator()) else attrs;
+                if (slot.*) |*existing| try existing.apply(attrs, self.nodeAllocator()) else slot.* = attrs;
                 self.dropLeaf();
                 return;
             }
