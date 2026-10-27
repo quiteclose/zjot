@@ -88,11 +88,13 @@ Deliberate differences from djot.js 0.3.2:
     (`{.a`, indented blank, blank, `  .b}` is one paragraph there, two here). Decided
     2026-10-26.
 
-15. An unfinished block attribute whose line fails anywhere but at a line end (`{.a`,
-    `  x`; `{.a`, `  !!`) is a paragraph; djot.js 0.3.2 keeps it an attribute, renders
+15. An unfinished block attribute whose line fails anywhere but right before a line end
+    (`{.a`, `  !!`), or at its line end with the input's end or a non-blank line after it
+    (`{.a`, `  x`), is a paragraph here; djot.js 0.3.2 keeps it an attribute, renders
     nothing for it at the input's end and, at a container's end, gives the attributes
-    parsed so far to the next block (`> {.a`, `>   !!`, blank, `para` is
-    `<p class="a">para</p>` there). Decided 2026-10-26.
+    parsed so far to the next block (`> {.a`, `>   x`, `para` and `> {.a`, `>   !!`,
+    blank, `para` both give `<p class="a">para</p>` there). With a blank line after `x`
+    it is a paragraph in both. Decided 2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -9632,6 +9634,63 @@ A blank line that fails a block attribute in a list item is the paragraph's, not
 </li>
 <li>
 b
+</li>
+</ul>
+````
+
+A block attribute that fails at its line end becomes a paragraph on the blank line after it, which is then the list's blank line: the list is loose, as djot.js.
+````
+- {.a
+    x
+
+- b
+.
+<ul>
+<li>
+<p>{.a
+x</p>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
+The blank line after an attribute that failed at its line end counts even when indented past the opener, as djot.js.
+```` ap
+- {.a
+    x
+   
+- b
+.
+doc
+  bullet_list (1:1:0-5:0:19) tight=false style="-"
+    list_item (1:1:0-4:0:15)
+      para (1:3:2-3:0:11)
+        str (1:3:2-1:5:4) text="{.a"
+        soft_break (2:0:5-2:0:5)
+        str (2:5:10-2:5:10) text="x"
+    list_item (4:1:16-5:0:19)
+      para (4:3:18-5:0:19)
+        str (4:3:18-4:3:18) text="b"
+````
+
+Text after that blank line is a second paragraph, as djot.js.
+````
+- {.a
+    x
+
+  y
+- b
+.
+<ul>
+<li>
+<p>{.a
+x</p>
+<p>y</p>
+</li>
+<li>
+<p>b</p>
 </li>
 </ul>
 ````

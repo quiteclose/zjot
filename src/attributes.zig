@@ -398,6 +398,16 @@ pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
 /// Whether `src` holds a complete block attribute with text after its `}`: such a line
 /// is a paragraph, not a block attribute, as djot.js opens one only when the `}` ends
 /// the line (what follows is read as inline attributes there).
+/// Whether `src`, an unfinished block attribute's lines so far, fails right at its line
+/// end: fed with the newline after it, the parser fails on that newline (a bare key, say).
+/// djot.js converts such an attribute to a paragraph as soon as a blank line follows.
+pub fn failsAtLineEnd(a: Allocator, src: []const u8) !bool {
+    const with_newline = try std.mem.concat(a, u8, &.{ src, "\n" });
+    var parser = AttrParser.init(a, with_newline);
+    const result = try parser.feed(0, with_newline.len - 1);
+    return result.status == .fail and result.position == src.len;
+}
+
 pub fn textAfterAttr(a: Allocator, src: []const u8) !bool {
     if (src.len < 2 or src[0] != '{') return false;
     var parser = AttrParser.init(a, src);

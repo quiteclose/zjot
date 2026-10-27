@@ -125,7 +125,13 @@ const Container = struct {
         },
         thematic_break: struct { end: SourcePos },
         /// `attrs`: parsed when the lines so far form a complete block attribute.
-        attributes: struct { indent: usize, attrs: ?BlockAttrs = null },
+        attributes: struct {
+            indent: usize,
+            attrs: ?BlockAttrs = null,
+            /// Whether the lines so far fail right at the line end: then a blank line next
+            /// makes the paragraph (djot.js), and counts as a blank line for the list.
+            failed_eol: bool = false,
+        },
         block_quote: void,
         /// `blanklines` and `tight` as `parse.js` keeps them: a blank line marks the list
         /// and the next event that is not a blank line, a list start or a list or item end
@@ -392,6 +398,12 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
         .thematic_break => return false,
         .attributes => |*at| {
             if (at.attrs != null) return false;
+            // Failed at its line end, a blank line makes it a paragraph that ends here, and
+            // the line is the list's blank line too (djot.js converts on the failing line).
+            if (at.failed_eol and cur.atEol()) {
+                c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+                return false;
+            }
             // Lines indented past the opener keep the attribute going until it parses.
             if (cur.indent > at.indent) { // a blank line indented past the opener keeps it going too (djot.js)
                 // Stored with its trailing tab, content should it become a paragraph.
@@ -400,12 +412,15 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 // (djot.js: one past the newline before it, its own a dropped soft break).
                 c.leaf_end = if (cur.atEol()) cur.line.pos else afterContent(cur.line);
                 const a = self.nodeAllocator();
-                at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t"));
+                const joined = std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t");
+                at.attrs = try attrs_mod.parseAttrsFromStr(a, joined);
+                if (at.attrs == null) at.failed_eol = try attrs_mod.failsAtLineEnd(a, joined);
                 cur.i = cur.line.bytes.len;
                 return true;
             }
             // It never parsed: its lines are a paragraph, and this line continues it or
-            // not as a paragraph's would.
+            // not as a paragraph's would; a blank line that ends it here was the attribute's
+            // (djot.js converts on it and fires no blank line for the list around).
             c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
             self.blank_taken = cur.atEol();
             return !cur.atEol();
