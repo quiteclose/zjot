@@ -9889,3 +9889,101 @@ doc
   para (4:1:15-5:0:19) class="a b"
     str (4:1:15-4:4:18) text="next"
 ````
+
+A class before a heading stays on the heading; only the generated id goes to the section, as djot.js.
+````
+{.a .b}
+# h
+
+para
+.
+<section id="h">
+<h1 class="a b">h</h1>
+<p>para</p>
+</section>
+````
+
+A written id before a heading takes the written attributes with it onto the section, as djot.js.
+````
+{#x .a}
+# h
+
+para
+.
+<section id="x" class="a">
+<h1>h</h1>
+<p>para</p>
+</section>
+````
+
+A key before a heading stays on the heading, as djot.js.
+````
+{k=v}
+## h
+.
+<section id="h">
+<h2 k="v">h</h2>
+</section>
+````
+
+Nested sections: each heading keeps its own written attributes unless they hold an id, as djot.js.
+````
+{.a}
+# h
+
+{.b}
+## h2
+
+{#z .c}
+### h3
+.
+<section id="h">
+<h1 class="a">h</h1>
+<section id="h2">
+<h2 class="b">h2</h2>
+<section id="z" class="c">
+<h3>h3</h3>
+</section>
+</section>
+</section>
+````
+
+Two headings of one text keep their own classes; the second's id is generated apart, as djot.js.
+````
+{.a}
+# h
+{.b}
+# h
+.
+<section id="h">
+<h1 class="a">h</h1>
+</section>
+<section id="h-1">
+<h1 class="b">h</h1>
+</section>
+````
+
+In a block quote no section opens, so the heading keeps its generated id and its class, as djot.js.
+````
+> {.a}
+> # h
+.
+<blockquote>
+<h1 id="h" class="a">h</h1>
+</blockquote>
+````
+
+The AST prints the class on the heading and the generated id on the section.
+```` ap
+{.a}
+# h
+
+para
+.
+doc
+  section (2:1:5-5:0:14) id="h"
+    heading (2:1:5-3:0:8) level=1 class="a"
+      str (2:3:7-2:3:7) text="h"
+    para (4:1:10-5:0:14)
+      str (4:1:10-4:4:13) text="para"
+````
