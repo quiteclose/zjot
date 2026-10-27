@@ -32,8 +32,11 @@ const OpenerInfo = struct {
 /// attribute is read before `attrs_from` (the text of a failed block attribute). An id read
 /// but attached to no node, or overridden by a later attribute's, goes to `dropped`: djot.js
 /// registers it all the same.
-pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8)) Allocator.Error![]const Node {
-    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from, .dropped = dropped };
+/// `ends_line` says whether a line end follows `src` (a table cell's does not), which is
+/// where a backslash ending it is a hard break (djot.js ends a block's subject with a
+/// newline, a cell's not).
+pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8), ends_line: bool) Allocator.Error![]const Node {
+    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from, .dropped = dropped, .ends_line = ends_line };
     try sc.run();
     return sc.resolveItems(sc.items.items);
 }
@@ -47,6 +50,7 @@ const Scanner = struct {
     map: ?LineMap,
     attrs_from: usize = 0,
     dropped: *std.ArrayList([]const u8),
+    ends_line: bool,
     items: std.ArrayList(InlineItem) = .empty,
     openers: std.ArrayList(OpenerInfo) = .empty,
 
@@ -124,9 +128,14 @@ const Scanner = struct {
                 '\\' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 >= src.len) {
-                        // A backslash ending the block is a hard break on its newline, as djot.js.
-                        sc.stripTrailingSpacesFromLastStr();
-                        try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
+                        // A backslash ending the block is a hard break on its newline, as
+                        // djot.js; ending a cell, which has none, it is text.
+                        if (sc.ends_line) {
+                            sc.stripTrailingSpacesFromLastStr();
+                            try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
+                        } else {
+                            try sc.text(src[pos .. pos + 1]);
+                        }
                         pos += 1;
                     } else {
                         const next = src[pos + 1];
@@ -137,7 +146,7 @@ const Scanner = struct {
                         } else if (next == ' ' or next == '\t') {
                             var skip = pos + 1;
                             while (skip < src.len and (src[skip] == ' ' or src[skip] == '\t')) skip += 1;
-                            if (skip >= src.len or src[skip] == '\n') {
+                            if ((skip < src.len and src[skip] == '\n') or (skip >= src.len and sc.ends_line)) {
                                 // A hard break, at the input's end too (djot.js ends its
                                 // subject with a newline); it spans from the backslash on.
                                 sc.stripTrailingSpacesFromLastStr();
@@ -513,7 +522,7 @@ const Scanner = struct {
                         // any other label, blanks only included, is keyed as written.
                         const raw_label = src[next + 1 .. close_ref];
                         const ref_label = if (raw_label.len == 0)
-                            try normalizeLabel(sc.a, try getPlainText(sc.a, .{ .data = .{ .span = children } }))
+                            try normalizeLabel(sc.a, try getLabelText(sc.a, .{ .data = .{ .span = children } }))
                         else
                             try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label));
                         try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
@@ -666,7 +675,7 @@ const Scanner = struct {
 
         if (!marked and p + 1 < src.len and src[p + 1] == '}') {
             if (!try sc.closeMarked(char, if (char == '"') .double_quoted else .single_quoted, p)) {
-                const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201d}";
+                const curly: []const u8 = if (char == '\'') right_single else right_double;
                 try sc.emit(.{ .data = .{ .str = curly } }, p, p + 1);
             }
             pos.* = p + 2;
@@ -710,7 +719,7 @@ const Scanner = struct {
             // Can't open or close: emit a typographic quote as literal text.
             // Single quote becomes right curly (') for apostrophe contexts;
             // double quote becomes left curly (") as the more common standalone form.
-            const curly: []const u8 = if (char == '\'') "\u{2019}" else "\u{201c}";
+            const curly: []const u8 = if (char == '\'') right_single else left_double;
             try sc.emit(.{ .data = .{ .str = curly } }, p, p);
         }
         pos.* = p + 1;
@@ -734,9 +743,9 @@ const Scanner = struct {
     fn openerNode(sc: *const Scanner, op: OpenerInfo) Node {
         if (op.char == '\'' or op.char == '"') {
             const curly: []const u8 = if (op.marked)
-                (if (op.char == '\'') "\u{2018}" else "\u{201c}")
+                (if (op.char == '\'') left_single else left_double)
             else
-                (if (op.char == '\'') "\u{2019}" else "\u{201c}");
+                (if (op.char == '\'') right_single else left_double);
             return sc.positioned(.{ .data = .{ .str = curly } }, op.src_pos, op.src_pos + @as(usize, if (op.marked) 1 else 0));
         }
         const len: usize = if (op.marked) 2 else 1;
@@ -1077,18 +1086,45 @@ pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
 /// reference labels are made from it.
 pub fn getPlainText(a: Allocator, node: Node) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    try addPlainText(a, &buf, node);
+    try addPlainText(a, &buf, node, false);
     return buf.toOwnedSlice(a);
 }
 
-fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node) !void {
+/// As `getPlainText`, with a footnote reference's label, as djot.js keys a `[]` label
+/// (the heading-id exclusion is deliberate difference 2).
+pub fn getLabelText(a: Allocator, node: Node) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try addPlainText(a, &buf, node, true);
+    return buf.toOwnedSlice(a);
+}
+
+/// The quotes smart punctuation makes, one slice each, so that the text behind a node is
+/// known to be the source's `'` or `"` and not a curly quote written as such.
+const left_single = "\u{2018}";
+const right_single = "\u{2019}";
+const left_double = "\u{201c}";
+const right_double = "\u{201d}";
+
+fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node, footnote_labels: bool) !void {
     switch (node.data) {
-        .symb, .footnote_reference => {},
+        .symb => {},
+        .footnote_reference => |label| if (footnote_labels) try buf.appendSlice(a, label),
         .soft_break, .hard_break => try buf.append(a, '\n'),
+        // Smart punctuation reads as its source, as djot.js's `getStringContent`.
+        .ellipsis => try buf.appendSlice(a, "..."),
+        .em_dash => try buf.appendSlice(a, "---"),
+        .en_dash => try buf.appendSlice(a, "--"),
+        .str => |text| if (text.ptr == left_single.ptr or text.ptr == right_single.ptr) {
+            try buf.append(a, '\'');
+        } else if (text.ptr == left_double.ptr or text.ptr == right_double.ptr) {
+            try buf.append(a, '"');
+        } else {
+            try buf.appendSlice(a, text);
+        },
         else => if (node.text().len > 0) {
             try buf.appendSlice(a, node.text());
         } else for (node.children()) |child| {
-            try addPlainText(a, buf, child);
+            try addPlainText(a, buf, child, footnote_labels);
         },
     }
 }

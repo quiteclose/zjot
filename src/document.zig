@@ -242,19 +242,41 @@ pub const Ids = struct {
         };
     }
 
+    /// The length of the separator at `i` of `text`, 0 when none: djot.js's punctuation
+    /// set and what JavaScript's `\s` matches, the ASCII blanks and, in UTF-8, U+00A0,
+    /// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF.
+    fn separatorLen(text: []const u8, i: usize) usize {
+        const c = text[i];
+        if (isIdSeparator(c) or c == 0x0B or c == 0x0C) return 1;
+        const rest = text[i..];
+        if (rest.len >= 2 and c == 0xC2 and rest[1] == 0xA0) return 2;
+        if (rest.len >= 3) {
+            if (c == 0xE1 and rest[1] == 0x9A and rest[2] == 0x80) return 3;
+            if (c == 0xE2 and rest[1] == 0x80 and ((rest[2] >= 0x80 and rest[2] <= 0x8A) or rest[2] == 0xA8 or rest[2] == 0xA9 or rest[2] == 0xAF)) return 3;
+            if (c == 0xE2 and rest[1] == 0x81 and rest[2] == 0x9F) return 3;
+            if (c == 0xE3 and rest[1] == 0x80 and rest[2] == 0x80) return 3;
+            if (c == 0xEF and rest[1] == 0xBB and rest[2] == 0xBF) return 3;
+        }
+        return 0;
+    }
+
     /// As djot.js's `getUniqueIdentifier`: a run of separators (its punctuation set and
     /// whitespace) becomes one `-`, none at either end; every other byte stays, `_`, `:`,
     /// `-` and non-ASCII included.
     fn generate(self: *Ids, text: []const u8) ![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
         var separated = false;
-        for (text) |c| {
-            if (isIdSeparator(c)) {
+        var i: usize = 0;
+        while (i < text.len) {
+            const n = separatorLen(text, i);
+            if (n > 0) {
                 separated = true;
+                i += n;
             } else {
                 if (separated and buf.items.len > 0) try buf.append(self.a, '-');
                 separated = false;
-                try buf.append(self.a, c);
+                try buf.append(self.a, text[i]);
+                i += 1;
             }
         }
 

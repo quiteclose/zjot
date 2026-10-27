@@ -270,18 +270,39 @@ pub const AttrParser = struct {
             }
             if (self.current_key) |key| {
                 const raw = try self.value_buf.toOwnedSlice(self.a);
-                const value = try self.processEscapes(raw);
+                const value = try self.processEscapes(try self.collapseBlanks(raw));
                 try self.attrs_list.append(self.a, .{ .key = key, .value = value });
                 self.current_key = null;
             }
         } else if (self.begin) |b| {
-            const value = try self.processEscapes(self.src[b + 1 .. pos]);
+            const value = try self.processEscapes(try self.collapseBlanks(self.src[b + 1 .. pos]));
             if (self.current_key) |key| {
                 try self.attrs_list.append(self.a, .{ .key = key, .value = value });
                 self.current_key = null;
             }
         }
         self.begin = null;
+    }
+
+    /// A quoted value's runs of spaces and line ends are one space (djot.js's `[ \r\n]+`);
+    /// `raw` itself when it has none.
+    fn collapseBlanks(self: *AttrParser, raw: []const u8) ![]const u8 {
+        const needs = for (raw, 0..) |c, i| {
+            if (c == '\r' or c == '\n' or (c == ' ' and i + 1 < raw.len and raw[i + 1] == ' ')) break true;
+        } else false;
+        if (!needs) return raw;
+        var buf = try std.ArrayList(u8).initCapacity(self.a, raw.len);
+        var in_run = false;
+        for (raw) |c| {
+            if (c == ' ' or c == '\r' or c == '\n') {
+                if (!in_run) buf.appendAssumeCapacity(' ');
+                in_run = true;
+            } else {
+                buf.appendAssumeCapacity(c);
+                in_run = false;
+            }
+        }
+        return buf.items;
     }
 
     /// A backslash before one of these goes in an attribute value: djot.js's set, which
