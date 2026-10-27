@@ -40,6 +40,7 @@ pub const BlockAttrs = struct {
             obj = .{};
             try obj.list.ensureTotalCapacity(a, @max(8, 2 * (self.attrs.len + other.attrs.len)));
             obj.list.appendSliceAssumeCapacity(self.attrs);
+            try obj.indexIfLong(a); // a copied list that is long already is indexed before any key is set
         }
         for (other.attrs) |oa| try obj.set(a, oa.key, oa.value, std.mem.eql(u8, oa.key, "class"));
         const id = if (obj.find("id")) |i| obj.list.items[i].value else "";
@@ -110,14 +111,17 @@ const AttrObject = struct {
             return;
         }
         try self.list.append(a, .{ .key = key, .value = value });
-        if (self.index) |ix| {
-            try ix.put(a, key, self.list.items.len - 1);
-        } else if (self.list.items.len > index_from) {
-            const ix = try a.create(Index);
-            ix.* = .{};
-            for (self.list.items, 0..) |attr, i| try ix.put(a, attr.key, i);
-            self.index = ix;
-        }
+        if (self.index) |ix| try ix.put(a, key, self.list.items.len - 1) else try self.indexIfLong(a);
+    }
+
+    /// Builds the index once the list is past `index_from` keys, from whatever the list
+    /// holds: the key just appended, or a long list copied in.
+    fn indexIfLong(self: *AttrObject, a: Allocator) !void {
+        if (self.index != null or self.list.items.len <= index_from) return;
+        const ix = try a.create(Index);
+        ix.* = .{};
+        for (self.list.items, 0..) |attr, i| try ix.put(a, attr.key, i);
+        self.index = ix;
     }
 };
 
