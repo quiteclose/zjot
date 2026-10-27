@@ -43,7 +43,11 @@ def attributed(s): return '{.x}\n' + s
 def quoted(s): return '\n'.join(('> ' + l) if l else '>' for l in s.split('\n'))
 def in_item(s):
     lines = s.split('\n')
-    return '\n'.join(['- ' + lines[0]] + [('  ' + l) if l else '' for l in lines[1:]])
+    # A thematic break after the marker on its line is itself a thematic break (`- ***`
+    # matches the break's pattern in both parsers), so the marker stands alone above it.
+    first = '-' if set(lines[0]) <= set('*-_ ') else '- ' + lines[0]
+    rest = lines[1:] if first != '-' else lines
+    return '\n'.join([first] + [('  ' + l) if l else '' for l in rest])
 
 wrappers = [('bare', bare), ('under a block attribute', attributed), ('in a block quote', quoted), ('in a list item', in_item)]
 
