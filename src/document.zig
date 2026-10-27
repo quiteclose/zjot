@@ -62,6 +62,12 @@ pub const FootnoteDef = struct {
 /// starts, with the headings and explicit ids parsed before it, so the log is in source
 /// order and what is due is a prefix of it, as djot.js's event order has it. A definition's
 /// `footnote` is null while its content is parsed and set as it closes.
+/// How deep blocks and inline elements nest at most, the top-level block at 1. The tree
+/// walkers (`Ids.assignNode`, the resolver, the renderers) recurse once per level, and a
+/// Debug build's 16 MiB stack holds about 1250 of the largest frames; djot.js fails near
+/// 1400. Deeper is `error.TooDeep` from `Ids.assign`, before any walker runs.
+pub const max_nesting = 1000;
+
 pub const Logged = struct {
     headings_before: usize,
     ids_before: usize,
@@ -117,7 +123,7 @@ pub const Ids = struct {
     /// where they stand, as djot.js registers in source order; `finish` takes what is left
     /// at the end. Each entry is looked at once as it comes due, however many headings a
     /// document's definitions hold.
-    pub fn assignDue(self: *Ids) Allocator.Error!void {
+    pub fn assignDue(self: *Ids) Error!void {
         const log = self.defs.log.items;
         while (self.cursor < log.len) {
             const entry = log[self.cursor];
@@ -138,16 +144,16 @@ pub const Ids = struct {
 
     /// A definition's own id (the block attributes written before it, which djot.js
     /// registers where they stand), then its blocks, which the parser built for it alone.
-    fn assignDef(self: *Ids, def: *FootnoteDef) Allocator.Error!void {
+    fn assignDef(self: *Ids, def: *FootnoteDef) Error!void {
         if (def.attrs) |attrs| {
             if (attrs.id) |id| try self.claim(id);
         }
-        for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block);
+        for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block, 1);
     }
 
     /// An explicit id on a node, reached: what stands before it in the source takes its
     /// place first.
-    fn claim(self: *Ids, id: []const u8) Allocator.Error!void {
+    fn claim(self: *Ids, id: []const u8) Error!void {
         try self.assignDue();
         try self.register(id);
     }
@@ -161,7 +167,7 @@ pub const Ids = struct {
 
     /// After the last block: every entry left, in log order, whatever the counts say (every
     /// definition has closed, so none may be left).
-    pub fn finish(self: *Ids) Allocator.Error!void {
+    pub fn finish(self: *Ids) Error!void {
         try self.assignDue();
         const log = self.defs.log.items;
         while (self.cursor < log.len) {
@@ -179,13 +185,16 @@ pub const Ids = struct {
     /// into the tree, which the parser built for this block alone. Returns whether the
     /// block holds a link or image by reference, which the definitions may still change
     /// until the input ends (what `Resolver.resolve` fills in).
-    pub fn assign(self: *Ids, block: *Node) Allocator.Error!bool {
+    pub const Error = Allocator.Error || error{TooDeep};
+
+    pub fn assign(self: *Ids, block: *Node) Error!bool {
         // What is due stands before this block in the source.
         try self.assignDue();
-        return self.assignNode(block);
+        return self.assignNode(block, 1);
     }
 
-    fn assignNode(self: *Ids, n: *Node) Allocator.Error!bool {
+    fn assignNode(self: *Ids, n: *Node, depth: usize) Error!bool {
+        if (depth > max_nesting) return error.TooDeep; // before any walker recurses that far
         if (n.id) |id| try self.claim(id);
         var by_reference = switch (n.data) {
             .link, .image => |l| l.reference != null and l.destination == null,
@@ -208,13 +217,13 @@ pub const Ids = struct {
         if (n.data == .table and n.data.table.len > 0) {
             const t = @constCast(n.data.table);
             for (t[1..]) |*row| {
-                if (try self.assignNode(row)) by_reference = true;
+                if (try self.assignNode(row, depth + 1)) by_reference = true;
             }
-            if (try self.assignNode(&t[0])) by_reference = true;
+            if (try self.assignNode(&t[0], depth + 1)) by_reference = true;
             return by_reference;
         }
         for (@constCast(n.children())) |*child| {
-            if (try self.assignNode(child)) by_reference = true;
+            if (try self.assignNode(child, depth + 1)) by_reference = true;
         }
         return by_reference;
     }

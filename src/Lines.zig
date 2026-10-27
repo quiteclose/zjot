@@ -19,6 +19,8 @@ pub const Line = struct {
     bytes: []const u8,
     pos: SourcePos,
     eol: SourcePos,
+    /// Whether a newline ended it: only the input's last line can lack one.
+    newline: bool,
 
     /// The offset of the newline before the line: one less than its start. A start that has
     /// saturated puts the newline at the maximum too (a start of exactly 2^32 has it there,
@@ -62,7 +64,7 @@ pub const Lines = union(enum) {
             self.offset = std.math.add(u64, self.offset, @as(u64, raw.len) + @intFromBool(newline)) catch return error.InputTooLarge;
             self.last_len = bytes.len;
             self.newline = newline;
-            return .{ .bytes = bytes, .pos = pos, .eol = self.end() };
+            return .{ .bytes = bytes, .pos = pos, .eol = self.end(), .newline = newline };
         }
 
         fn end(self: Count) SourcePos {
@@ -178,7 +180,7 @@ const Taken = struct { lines: []const Line, end: SourcePos };
 
 fn takeAll(a: Allocator, lines: *Lines) !Taken {
     var list: std.ArrayList(Line) = .empty;
-    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol });
+    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol, .newline = line.newline });
     return .{ .lines = try list.toOwnedSlice(a), .end = lines.end() };
 }
 

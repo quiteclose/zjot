@@ -19,6 +19,9 @@ pub const RenderOpts = struct {
     sourcepos: bool = false,
 };
 
+/// How deep blocks and inline elements nest at most; deeper is `error.TooDeep`.
+pub const max_nesting = document.max_nesting;
+
 /// Renders `input` to `w` one block at a time, reading the input once. Each block is
 /// parsed into an arena of its own, given its heading ids, and written as soon as nothing
 /// in it can still change: a block holding a reference-style link waits for the input's
@@ -28,7 +31,8 @@ pub const RenderOpts = struct {
 /// so the output after the first reference-style link is buffered to the end. What lives
 /// for the whole call is the definitions (footnote content included), the ids, the trees
 /// of the blocks waiting and the text of those behind them. Output already written stays
-/// written if a later block fails.
+/// written if a later block fails. A document nested more than `max_nesting` levels deep
+/// is `error.TooDeep`.
 pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOpts) !void {
     return renderLines(a, Lines.fromSlice(input), w, opts);
 }
@@ -413,6 +417,17 @@ fn renderAlloc(a: Allocator, input: []const u8, opts: RenderOpts) ![]const u8 {
         else => |e| return e,
     };
     return out.toOwnedSlice();
+}
+
+test "nesting deeper than max_nesting levels is error.TooDeep, before any walker recurses into it" {
+    const a = std.testing.allocator;
+    var written = std.Io.Writer.Allocating.init(a);
+    defer written.deinit();
+    // The paragraph and its text are two levels under the quotes.
+    try std.testing.expectError(error.TooDeep, render(a, ("> " ** (max_nesting - 1)) ++ "x\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    try render(a, ("> " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
+    try std.testing.expect(written.written().len > 0);
 }
 
 test "a block is written as it arrives unless a reference-style link holds it" {

@@ -51,4 +51,5 @@ def convert(djot_input, sourcepos):
     return '\n'.join(out)+'\n'
 if __name__=='__main__':
     sourcepos = '-p' in sys.argv[1:]
-    sys.stdout.write(convert(sys.stdin.read(), sourcepos))
+    # Bytes in and out: the expectations hold non-ASCII, whatever the locale says.
+    sys.stdout.buffer.write(convert(sys.stdin.buffer.read().decode('utf-8'), sourcepos).encode('utf-8'))

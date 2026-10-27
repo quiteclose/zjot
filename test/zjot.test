@@ -8706,3 +8706,97 @@ more</p>
 .
 <p>[^]: # Foo</p>
 ````
+
+A reference label is keyed trimmed with each run of whitespace one space, as djot.js: a definition's double space matches a reference's single one.
+````
+[a  b]: /u
+
+[x][a b]
+.
+<p><a href="/u">x</a></p>
+````
+
+A reference label's leading and trailing spaces are trimmed, as djot.js.
+````
+[ a b ]: /u
+
+[x][a b]
+.
+<p><a href="/u">x</a></p>
+````
+
+A footnote label is keyed the same way, and the reference's label is normalized too, as djot.js.
+````
+[^e  f]: note
+
+z[^e f]
+.
+<p>z<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>note<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An empty reference label defines nothing: `[]: /u` is parsed and stored nowhere, as djot.js, so `[][]` and `![][]` resolve to nothing.
+````
+[]: /u
+
+[][]
+
+![][]
+.
+<p><a></a></p>
+<p><img alt=""></p>
+````
+
+A heading ends where its text does: a continuation line of bare markers adds nothing to its end, as djot.js.
+```` ap
+# c
+#
+.
+doc
+  section (1:1:0-2:0:3) id="c"
+    heading (1:1:0-2:0:3) level=1
+      str (1:3:2-1:3:2) text="c"
+````
+
+Trailing spaces are stripped from a paragraph's and a heading's text; a trailing tab stays, as djot.js.
+````
+a	
+
+# h	
+.
+<p>a	</p>
+<section id="h">
+<h1>h	</h1>
+</section>
+````
+
+A trailing tab keeps the space before it, and a trailing space after a tab goes, as djot.js.
+````
+a 	
+
+b	 
+.
+<p>a 	</p>
+<p>b	</p>
+````
+
+A paragraph ending in a tab ends at its newline, since the tab is content, as djot.js.
+```` ap
+a	
+
+# h	
+.
+doc
+  para (1:1:0-2:0:2)
+    str (1:1:0-1:2:1) text="a\t"
+  section (3:1:4-4:0:8) id="h"
+    heading (3:1:4-4:0:8) level=1
+      str (3:3:6-3:4:7) text="h\t"
+````

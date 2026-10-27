@@ -100,7 +100,7 @@ for hname, src, positions in holds:
     for ast in ((False, True) if positions else (False,)):
         case(f'Waiting: {hname}', src, ast)
 
-with open('test/grid.test', 'w') as f:
+with open('test/grid.test', 'w', encoding='utf-8') as f:
     f.write(''.join(out))
 print(f'test/grid.test: {total} cases, {divergent} divergent' + ('' if zjot else ' (zjot not built: nothing compared)'))
 sys.exit(1 if divergent else 0)
