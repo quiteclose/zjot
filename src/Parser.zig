@@ -381,7 +381,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
         .attributes => |*at| {
             if (at.attrs != null) return false;
             // Lines indented past the opener keep the attribute going until it parses.
-            if (!cur.atEol() and cur.indent > at.indent) {
+            if (cur.indent > at.indent) { // a blank line indented past the opener keeps it going too (djot.js)
                 // Stored with its trailing tab, content should it become a paragraph.
                 try self.addLeafSlice(std.mem.trimStart(u8, cur.rest(), " \t"), cur.pos(), cur.line);
                 c.leaf_end = afterContent(cur.line);
@@ -811,18 +811,23 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     // Trailing blanks stay: before a soft break they are content, and at the block's end
     // the inline parser trims the spaces, as djot.js.
     const text = cur.rest();
+    // A caption ends at its last line's newline, whatever follows the text (djot.js
+    // closes it at the line's end); a paragraph or heading after its last content byte.
     try self.addLeafSlice(text, cur.pos(), cur.line);
-    self.tip().leaf_end = afterContent(cur.line);
+    self.tip().leaf_end = if (self.tip().data == .caption) cur.line.eol else afterContent(cur.line);
 }
 
 /// Where a leaf line's content starts, and the newline before the line, which the line
 /// source places (its `LineMap` segment keeps it for the join, rather than subtract it).
-const LeafStart = struct { pos: SourcePos, newline: u32 };
+const LeafStart = struct { pos: SourcePos, join: SourcePos };
 
 fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
     const slice = if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
     try self.leaf_slices.append(self.gpa, slice);
-    try self.leaf_starts.append(self.gpa, .{ .pos = start, .newline = line.newlineBefore() });
+    // The join before this line is the end of the content line before it (a heading's
+    // bare `#` line between adds nothing, and djot.js breaks at the first newline).
+    const join = if (self.leaf_slices.items.len == 1) line.eol else self.leaf_last_eol;
+    try self.leaf_starts.append(self.gpa, .{ .pos = start, .join = join });
     self.leaf_last_eol = line.eol;
     self.leaf_last_newline = line.newline;
 }
@@ -833,7 +838,7 @@ fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
     const segs = try a.alloc(LineMap.Segment, self.leaf_slices.items.len);
     var joined: usize = 0;
     for (self.leaf_slices.items, self.leaf_starts.items, segs) |slice, start, *seg| {
-        seg.* = .{ .joined_start = joined, .orig_line = start.pos.line, .orig_col = start.pos.col, .orig_offset = start.pos.offset, .newline_offset = start.newline };
+        seg.* = .{ .joined_start = joined, .orig_line = start.pos.line, .orig_col = start.pos.col, .orig_offset = start.pos.offset, .join_line = start.join.line, .join_offset = start.join.offset };
         joined += slice.len + 1;
     }
     return .{ .segments = segs, .total = joined - 1, .end = self.leaf_last_eol };

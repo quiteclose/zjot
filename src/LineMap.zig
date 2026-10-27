@@ -19,10 +19,12 @@ pub const Segment = struct {
     orig_line: u32,
     orig_col: u32,
     orig_offset: u32,
-    /// The newline before the line, as the line source placed it: where the join before this
-    /// segment resolves. Kept rather than derived, since a saturated offset cannot be
-    /// subtracted from.
-    newline_offset: u32,
+    /// Where the join before this segment resolves: the end of the content line before it
+    /// (col 0 of the line after that one), as the line source placed it, which is this
+    /// line's start only when no line was skipped between (a heading's bare `#` line is).
+    /// Kept rather than derived, since a saturated offset cannot be subtracted from.
+    join_line: u32,
+    join_offset: u32,
 };
 
 /// Resolve a byte offset in the joined text to a source position. The newline joining
@@ -42,7 +44,7 @@ pub fn resolve(self: LineMap, joined_offset: usize) SourcePos {
 
     if (best + 1 < self.segments.len and joined_offset +| 1 == self.segments[best + 1].joined_start) {
         const next = self.segments[best + 1];
-        return .{ .line = next.orig_line, .col = 0, .offset = next.newline_offset };
+        return .{ .line = next.join_line, .col = 0, .offset = next.join_offset };
     }
 
     const seg = self.segments[best];
@@ -57,8 +59,8 @@ pub fn resolve(self: LineMap, joined_offset: usize) SourcePos {
 test "the join between lines resolves to the newline the line source placed, past the ceiling too" {
     const max = std.math.maxInt(u32);
     const map: LineMap = .{ .segments = &.{
-        .{ .joined_start = 0, .orig_line = 1, .orig_col = 1, .orig_offset = 10, .newline_offset = 9 },
-        .{ .joined_start = 4, .orig_line = 2, .orig_col = 3, .orig_offset = max, .newline_offset = max },
+        .{ .joined_start = 0, .orig_line = 1, .orig_col = 1, .orig_offset = 10, .join_line = 1, .join_offset = 9 },
+        .{ .joined_start = 4, .orig_line = 2, .orig_col = 3, .orig_offset = max, .join_line = 2, .join_offset = max },
     }, .total = 7, .end = .{ .line = 3, .col = 0, .offset = max } };
     try std.testing.expectEqual(SourcePos{ .line = 1, .col = 2, .offset = 11 }, map.resolve(1));
     try std.testing.expectEqual(SourcePos{ .line = 2, .col = 0, .offset = max }, map.resolve(3)); // not max - 3
@@ -70,8 +72,8 @@ test "an offset in the joined text is an index: past 4 GiB it still finds its li
     const max = std.math.maxInt(u32);
     const far: usize = 1 << 33;
     const map: LineMap = .{ .segments = &.{
-        .{ .joined_start = 0, .orig_line = 1, .orig_col = 1, .orig_offset = 0, .newline_offset = 0 },
-        .{ .joined_start = far, .orig_line = 2, .orig_col = 3, .orig_offset = max, .newline_offset = max },
+        .{ .joined_start = 0, .orig_line = 1, .orig_col = 1, .orig_offset = 0, .join_line = 1, .join_offset = 0 },
+        .{ .joined_start = far, .orig_line = 2, .orig_col = 3, .orig_offset = max, .join_line = 2, .join_offset = max },
     }, .total = far + 5, .end = .{ .line = 3, .col = 0, .offset = max } };
     try std.testing.expectEqual(SourcePos{ .line = 1, .col = max, .offset = max }, map.resolve(far - 2));
     try std.testing.expectEqual(SourcePos{ .line = 2, .col = 0, .offset = max }, map.resolve(far - 1));
