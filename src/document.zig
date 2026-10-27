@@ -201,6 +201,11 @@ pub const Ids = struct {
             else => false,
         };
         if (n.data == .heading) {
+            // Its inline ids come first, as the parser counted them (djot.js registers an
+            // attribute's id as it is read, the heading's own as the heading ends).
+            for (@constCast(n.children())) |*child| {
+                if (try self.assignNode(child, depth + 1)) by_reference = true;
+            }
             try self.assignDue();
             self.assigned_headings += 1;
             _ = self.scratch.reset(.retain_capacity);
@@ -211,6 +216,7 @@ pub const Ids = struct {
                 const dest = try std.fmt.allocPrint(self.a, "#{s}", .{n.id.?});
                 try self.auto_refs.put(self.gpa, try self.a.dupe(u8, label), dest);
             }
+            return by_reference;
         }
         // A table holds its caption first, as it is written, but the caption stands after
         // the rows in the source, where the parser counted its ids: the rows claim theirs first.

@@ -8800,3 +8800,124 @@ doc
     heading (3:1:4-4:0:8) level=1
       str (3:3:6-3:4:7) text="h\t"
 ````
+
+A caption replaced after a footnote definition holding a captioned table of its own: each table's record of its last caption is its own, so the replaced ids keep their place, as djot.js.
+````
+| a |
+^ [x]{#Foo}
+
+[^n]: | b |
+  ^ y
+
+  # Foo
+
+^ three
+
+# Foo
+
+use[^n]
+.
+<table>
+<caption>three</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<section id="Foo-2">
+<h1>Foo</h1>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<table>
+<caption>y</caption>
+<tr>
+<td>b</td>
+</tr>
+</table>
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+An inline attribute dropped in a heading's text is registered before the heading's own id, as djot.js.
+````
+# Foo {#Foo}
+
+# Foo
+.
+<section id="Foo-1">
+<h1>Foo </h1>
+</section>
+<section id="Foo-2">
+<h1>Foo</h1>
+</section>
+````
+
+An id on a span in a heading's text is registered before the heading's own, as djot.js: the heading is numbered.
+````
+# [Foo]{#Foo}
+
+# Foo
+.
+<section id="Foo-1">
+<h1><span id="Foo">Foo</span></h1>
+</section>
+<section id="Foo-2">
+<h1>Foo</h1>
+</section>
+````
+
+A footnote reference's label stays on one line: `[^a` then `b]` over a break is text, as djot.js.
+````
+q[^a
+b]
+
+[^a b]: n
+.
+<p>q[^a
+b]</p>
+````
+
+A block attribute line ending in a tab still applies, as djot.js.
+````
+{#x}	
+para
+.
+<p id="x">para</p>
+````
+
+A failed block attribute's lines keep their trailing tabs when they become a paragraph, as djot.js.
+````
+{#a
+  x	
+.
+<p>{#a
+x	</p>
+````
+
+A failed block attribute line ending in a tab keeps it as content, as djot.js.
+```` ap
+{#y	
+.
+doc
+  para (1:1:0-2:0:4)
+    str (1:1:0-1:4:3) text="{#y\t"
+````
+
+A table row ending in a tab ends one past its last pipe, as djot.js.
+```` ap
+| a |	
+|---|
+.
+doc
+  table (1:1:0-3:0:12)
+    caption
+    row (1:1:0-1:6:5) head=true
+      cell (1:1:0-1:5:4) head=true align="default"
+        str (1:3:2-1:3:2) text="a"
+````
