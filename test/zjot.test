@@ -10392,3 +10392,64 @@ doc
     heading (5:3:37-6:0:40) level=1 id=""
       str (5:5:39-5:5:39) text="h"
 ````
+
+A run of tildes or carets follows the one matched-delimiter rule: a run with blanks after it never closes and is text, as djot.js.
+````
+~~~ a b ~~~
+
+a ~~~ b
+
+use ~~~ to fence
+
+^^^ a ^^^
+.
+<p>~~~ a b ~~~</p>
+<p>a ~~~ b</p>
+<p>use ~~~ to fence</p>
+<p>^^^ a ^^^</p>
+````
+
+A run around a word nests one subscript or superscript per delimiter, as djot.js.
+````
+x ~~~y~~~ z
+
+x ^^y^^ z
+.
+<p>x <sub><sub><sub>y</sub></sub></sub> z</p>
+<p>x <sup><sup>y</sup></sup> z</p>
+````
+
+A tilde after a blank opens, it does not close: `~a ~b~ c~` nests, as djot.js.
+````
+x ~a ~b~ c~ z
+
+x ^a ^b^ c^ z
+.
+<p>x <sub>a <sub>b</sub> c</sub> z</p>
+<p>x <sup>a <sup>b</sup> c</sup> z</p>
+````
+
+Marked and bare tildes pair only with their kind, as djot.js.
+````
+x {~a~} {^b^} ~a~} {~a~ {~a ~} z
+
+x ~{~a~}~ *~a~* _^b^_ z
+.
+<p>x <sub>a</sub> <sup>b</sup> <sub>a~} {~a</sub> <sub>a </sub> z</p>
+<p>x <sub><sub>a</sub></sub> <strong><sub>a</sub></strong> <em><sup>b</sup></em> z</p>
+````
+
+Subscripts and superscripts, with their positions.
+```` ap
+H~2~O and x^2^ y^^ ^z
+.
+doc
+  para (1:1:0-2:0:21)
+    str (1:1:0-1:1:0) text="H"
+    subscript (1:2:1-1:4:3)
+      str (1:3:2-1:3:2) text="2"
+    str (1:5:4-1:11:10) text="O and x"
+    superscript (1:12:11-1:14:13)
+      str (1:13:12-1:13:12) text="2"
+    str (1:15:14-1:21:20) text=" y^^ ^z"
+````

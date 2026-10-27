@@ -205,7 +205,8 @@ const Scanner = struct {
                     pos += 1;
                     text_start = pos;
                 },
-                '*', '_' => {
+                // One rule for the four matched delimiters (djot.js's `betweenMatched`).
+                '*', '_', '~', '^' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     try sc.handleEmphDelimiter(&pos, c, false);
                     text_start = pos;
@@ -213,13 +214,13 @@ const Scanner = struct {
                 '{' => {
                     if (pos + 1 < src.len) {
                         const next = src[pos + 1];
-                        if (next == '_' or next == '*') {
+                        if (next == '_' or next == '*' or next == '~' or next == '^') {
                             if (pos > text_start) try sc.text(src[text_start..pos]);
                             pos += 1;
                             try sc.handleEmphDelimiter(&pos, next, true);
                             text_start = pos;
                             continue;
-                        } else if (next == '+' or next == '-' or next == '=' or next == '~' or next == '^') {
+                        } else if (next == '+' or next == '-' or next == '=') {
                             if (pos > text_start) try sc.text(src[text_start..pos]);
                             try sc.handleBracedSpan(&pos);
                             text_start = pos;
@@ -280,18 +281,6 @@ const Scanner = struct {
                         try sc.text(src[pos .. pos + 1]);
                         pos += 1;
                     }
-                    text_start = pos;
-                },
-                '^', '~' => {
-                    if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (pos + 1 < src.len and src[pos + 1] == '}') {
-                        // `^}` closes a marked opener or is text; it never closes a bare `^`.
-                        if (!try sc.handleBracedClose(c, pos)) try sc.text(src[pos .. pos + 2]);
-                        pos += 2;
-                        text_start = pos;
-                        continue;
-                    }
-                    try sc.handleSuperSubscript(&pos, c, if (c == '^') .superscript else .subscript);
                     text_start = pos;
                 },
                 '$' => {
@@ -432,11 +421,19 @@ const Scanner = struct {
             '-' => .delete,
             '+' => .insert,
             '=' => .mark,
-            '~' => .subscript,
-            '^' => .superscript,
             else => .span,
         };
         return sc.closeMarked(char, tag, p);
+    }
+
+    /// The node a matched delimiter makes: djot.js's `betweenMatched` annotations.
+    fn matchedTag(char: u8) Tag {
+        return switch (char) {
+            '*' => .strong,
+            '_' => .emph,
+            '~' => .subscript,
+            else => .superscript,
+        };
     }
 
     fn applyInlineAttrs(sc: *Scanner, ba: BlockAttrs) !void {
@@ -449,7 +446,7 @@ const Scanner = struct {
         const p = pos.*;
 
         if (!marked and p + 1 < src.len and src[p + 1] == '}') {
-            if (!try sc.closeMarked(char, if (char == '*') .strong else .emph, p)) try sc.text(src[p .. p + 2]);
+            if (!try sc.closeMarked(char, matchedTag(char), p)) try sc.text(src[p .. p + 2]);
             pos.* = p + 2;
             return;
         }
@@ -462,9 +459,8 @@ const Scanner = struct {
                 const op = sc.openers.items[i];
                 if (op.char == char and op.marked == marked) {
                     if (op.item_idx + 1 < sc.items.items.len) {
-                        const tag: Tag = if (char == '*') .strong else .emph;
                         const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(inlineContainer(tag, children), op.src_pos, p);
+                        try sc.emit(inlineContainer(matchedTag(char), children), op.src_pos, p);
                         sc.openers.items.len = i;
                         pos.* = p + 1;
                         return;
@@ -594,35 +590,6 @@ const Scanner = struct {
         }
 
         return false;
-    }
-
-    fn handleSuperSubscript(sc: *Scanner, pos: *usize, char: u8, tag: Tag) !void {
-        const p = pos.*;
-        var i = sc.openers.items.len;
-        while (i > 0) {
-            i -= 1;
-            const op = sc.openers.items[i];
-            if (op.char == char) {
-                if (op.item_idx + 1 < sc.items.items.len) {
-                    const children = try sc.collectChildren(op.item_idx);
-                    try sc.emit(inlineContainer(tag, children), op.src_pos, p);
-                    sc.openers.items.len = i;
-                    pos.* = p + 1;
-                    return;
-                }
-            }
-        }
-
-        if (canOpenDelim(sc.src, p)) {
-            const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = p };
-            try sc.openers.append(sc.scratch, opener);
-            try sc.items.append(sc.scratch, .{ .opener = opener });
-            pos.* = p + 1;
-            return;
-        }
-
-        try sc.text(sc.src[p .. p + 1]);
-        pos.* = p + 1;
     }
 
     fn handleSymbol(sc: *Scanner, pos: *usize) !bool {
