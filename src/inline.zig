@@ -137,10 +137,12 @@ const Scanner = struct {
                         } else if (next == ' ' or next == '\t') {
                             var skip = pos + 1;
                             while (skip < src.len and (src[skip] == ' ' or src[skip] == '\t')) skip += 1;
-                            if (skip < src.len and src[skip] == '\n') {
+                            if (skip >= src.len or src[skip] == '\n') {
+                                // A hard break, at the input's end too (djot.js ends its
+                                // subject with a newline); it spans from the backslash on.
                                 sc.stripTrailingSpacesFromLastStr();
-                                try sc.emit(.{ .data = .hard_break }, skip, skip);
-                                pos = skip + 1;
+                                try sc.emit(.{ .data = .hard_break }, pos + 1, skip);
+                                pos = @min(skip + 1, src.len);
                             } else if (next == ' ') {
                                 try sc.emit(.{ .data = .non_breaking_space }, pos + 1, pos + 1);
                                 pos += 2;
@@ -507,7 +509,13 @@ const Scanner = struct {
                 } else if (next < src.len and src[next] == '[') {
                     if (findMatchingBracket(src, next)) |close_ref| {
                         const children = try sc.collectChildren(op.item_idx);
-                        const ref_label = try normalizeLabel(sc.a, try unescapeLabel(sc.a, src[next + 1 .. close_ref])); // as djot.js prints it
+                        // An empty `[]` stands for the link's text (djot.js's `getStringContent`);
+                        // any other label, blanks only included, is keyed as written.
+                        const raw_label = src[next + 1 .. close_ref];
+                        const ref_label = if (raw_label.len == 0)
+                            try normalizeLabel(sc.a, try getPlainText(sc.a, .{ .data = .{ .span = children } }))
+                        else
+                            try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label));
                         try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
@@ -914,10 +922,19 @@ fn isEscapable(c: u8) bool {
     };
 }
 
-/// Whether a backslash before `c` goes in a label or destination: before punctuation, a
-/// space (`\ ` is a space there, djot.js) or a newline (an escaped line end).
-fn backslashGoesBefore(c: u8) bool {
-    return isEscapable(c) or c == ' ' or c == '\n';
+/// Where an escaped line end starting at `i` (the byte after the backslash) ends: the
+/// newline after any spaces and tabs, as djot.js's `[ \t]*\n`.
+fn escapedLineEnd(raw: []const u8, i: usize) ?usize {
+    var j = i;
+    while (j < raw.len and (raw[j] == ' ' or raw[j] == '\t')) j += 1;
+    return if (j < raw.len and raw[j] == '\n') j else null;
+}
+
+/// Whether the backslash at `i` goes in a label or destination: before punctuation, a
+/// space (`\ ` is a space there, djot.js) or a line end.
+fn backslashGoes(raw: []const u8, i: usize) bool {
+    if (i + 1 >= raw.len) return false;
+    return isEscapable(raw[i + 1]) or raw[i + 1] == ' ' or escapedLineEnd(raw, i + 1) != null;
 }
 
 fn countRunAt(src: []const u8, pos: usize, char: u8) usize {
@@ -994,7 +1011,7 @@ fn unescapeLabel(a: Allocator, raw: []const u8) ![]const u8 {
     var out = try std.ArrayList(u8).initCapacity(a, raw.len);
     var i: usize = 0;
     while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\\' and i + 1 < raw.len and backslashGoesBefore(raw[i + 1])) i += 1;
+        if (raw[i] == '\\' and backslashGoes(raw, i)) i += 1;
         out.appendAssumeCapacity(raw[i]);
     }
     return out.items;
@@ -1005,13 +1022,23 @@ fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
         std.mem.indexOfScalar(u8, raw, '\\') != null;
     if (!needs_processing) return raw;
     var buf: std.ArrayList(u8) = .empty;
+    var kept: usize = 0; // up to here the bytes came from escapes: never trimmed
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '\n') {
+            // A line end joins the lines, the next line's indent dropped (djot.js).
             i += 1;
             while (i < raw.len and (raw[i] == ' ' or raw[i] == '\t')) : (i += 1) {}
-        } else if (raw[i] == '\\' and i + 1 < raw.len and backslashGoesBefore(raw[i + 1])) {
-            i += 1; // the byte itself follows: a newline takes the line-end branch
+        } else if (raw[i] == '\\' and escapedLineEnd(raw, i + 1) != null) {
+            // An escaped line end takes the blanks before it too, as djot.js trims the
+            // text before a hard break (an escaped space stays); the blanks after the
+            // backslash stay, and the newline takes the line-end branch.
+            while (buf.items.len > kept and (buf.items[buf.items.len - 1] == ' ' or buf.items[buf.items.len - 1] == '\t')) buf.items.len -= 1;
+            i += 1;
+        } else if (raw[i] == '\\' and backslashGoes(raw, i)) {
+            try buf.append(a, raw[i + 1]);
+            i += 2;
+            kept = buf.items.len;
         } else {
             try buf.append(a, raw[i]);
             i += 1;

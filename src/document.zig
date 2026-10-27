@@ -234,21 +234,29 @@ pub const Ids = struct {
         return by_reference;
     }
 
+    /// djot.js's id separators: `[]~!@#$%^&*(){}`,.<>\|=+/?` and whitespace.
+    fn isIdSeparator(c: u8) bool {
+        return switch (c) {
+            '[', ']', '~', '!', '@', '#', '$', '%', '^', '&', '*', '(', ')', '{', '}', '`', ',', '.', '<', '>', '\\', '|', '=', '+', '/', '?', ' ', '\t', '\n', '\r' => true,
+            else => false,
+        };
+    }
+
+    /// As djot.js's `getUniqueIdentifier`: a run of separators (its punctuation set and
+    /// whitespace) becomes one `-`, none at either end; every other byte stays, `_`, `:`,
+    /// `-` and non-ASCII included.
     fn generate(self: *Ids, text: []const u8) ![]const u8 {
         var buf: std.ArrayList(u8) = .empty;
-        var prev_hyphen = true;
+        var separated = false;
         for (text) |c| {
-            if (std.ascii.isAlphanumeric(c)) {
+            if (isIdSeparator(c)) {
+                separated = true;
+            } else {
+                if (separated and buf.items.len > 0) try buf.append(self.a, '-');
+                separated = false;
                 try buf.append(self.a, c);
-                prev_hyphen = false;
-            } else if (c == ' ' or c == '\t' or c == '\n' or c == '\r' or c == '-' or c == '_') {
-                if (!prev_hyphen and buf.items.len > 0) {
-                    try buf.append(self.a, '-');
-                    prev_hyphen = true;
-                }
             }
         }
-        while (buf.items.len > 0 and buf.items[buf.items.len - 1] == '-') _ = buf.pop();
 
         var base_id: []const u8 = try buf.toOwnedSlice(self.a);
         // No text: `s-1`, `s-2`, ..., the first free, as djot.js (never `s` itself).
@@ -292,9 +300,8 @@ pub const Resolver = struct {
 
     fn resolveNode(self: *const Resolver, ba: Allocator, n: *Node) Allocator.Error!void {
         switch (n.data) {
-            .link, .image => |*l| if (l.destination == null) if (l.reference) |ref| {
-                const raw_label = if (ref.len > 0) ref else (inline_mod.getPlainText(ba, n.*) catch "");
-                const label = inline_mod.normalizeLabel(ba, raw_label) catch raw_label;
+            .link, .image => |*l| if (l.destination == null) if (l.reference) |label| {
+                // Keyed as parsed: normalized, an empty `[]` already the link's text.
                 if (self.defs.ref_defs.get(label)) |def| {
                     l.destination = def.url;
                     if (def.attrs) |attrs| n.* = try inline_mod.mergeRefAttrs(n.*, attrs, ba);
