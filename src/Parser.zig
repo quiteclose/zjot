@@ -54,8 +54,8 @@ lines: Lines,
 stack: std.ArrayList(Container) = .empty,
 /// Block attributes waiting for the next top-level block.
 pending_attrs: ?BlockAttrs = null,
-/// For the held top-level table (`CaptionLog`); a container keeps its own table's.
-caption_log: ?CaptionLog = null,
+/// For the held top-level table's caption (`Reserved`); a container keeps its own.
+caption_reserved: ?Reserved = null,
 /// The lines of the open leaf, which is always the tip, so one set of buffers serves.
 leaf_slices: std.ArrayList([]const u8) = .empty,
 /// The inline scanner's working memory for one leaf, reset as the leaf is dropped: what
@@ -105,15 +105,23 @@ const ListStyle = union(enum) {
 
 /// Where the log stood, and the counts, as the last caption joined a table: a caption
 /// replacing it logs the replaced one's ids there, where they were counted.
-const CaptionLog = struct { index: usize, headings_before: usize, ids_before: usize };
+/// A place in the log kept for a node that may be discarded with the ids counted on it:
+/// a definition item's first paragraph, whose term keeps its inlines and not its node
+/// (so not the id written before it), and a table's caption, which a later caption
+/// replaces. Taken where the node's ids start to be counted, with the counts of then;
+/// the ids of a node discarded at its close go in there (`logReserved`), so the log stays
+/// in source order and `Ids` registers them where djot.js read them.
+const Reserved = struct { index: usize, headings_before: usize, ids_before: usize };
 
 const Container = struct {
     start: SourcePos,
     children: std.ArrayList(Node),
     /// Parser attributes waiting for this container's next child block.
     pending_attrs: ?BlockAttrs = null,
-    /// For a table among the children (`CaptionLog`).
-    caption_log: ?CaptionLog = null,
+    /// For this item's term and for a table among the children (`Reserved`): an item can
+    /// hold both, so each has its place.
+    term_reserved: ?Reserved = null,
+    caption_reserved: ?Reserved = null,
     /// For a leaf: one past the last non-blank character of its last line (djot.js ends
     /// paragraphs and headings there, trailing whitespace excluded).
     leaf_end: SourcePos = undefined,
@@ -770,7 +778,7 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
     };
     if (c.makesNode()) {
         if (self.attrsSlot().*) |ba| {
-            if (ba.id) |id| try self.countOpeningId(id, data == .para);
+            if (ba.id != null) self.countOpeningId(data == .para);
         }
         if (self.stack.items.len == 0) self.flush();
     }
@@ -780,11 +788,27 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
 /// Counts the explicit id waiting for a block that opens, before its content, where
 /// djot.js registers it (`Definitions.ids_parsed`); the block's node carries it, and
 /// `Ids` registers it there. A paragraph opening a definition list item is its term,
-/// whose node the item's close discards with the id (djot.js keeps the term's inlines,
-/// not its attributes), so that one is logged where it stands, as an id read off no node.
-fn countOpeningId(self: *Parser, id: []const u8, para: bool) Error!void {
-    if (para and self.opensTerm()) return self.looseId(id);
+/// whose node the item's close discards with the id, so the item reserves its place.
+fn countOpeningId(self: *Parser, para: bool) void {
+    if (para and self.opensTerm()) self.tip().term_reserved = self.reserve();
     self.defs.ids_parsed += 1;
+}
+
+/// The log's place and the counts of now (`Reserved`).
+fn reserve(self: *const Parser) Reserved {
+    return .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
+}
+
+/// Logs `ids`, read off a node discarded now, into the place reserved for it, with the
+/// counts of then: behind whatever stood between, before whatever the log took since.
+fn logReserved(self: *Parser, at: Reserved, ids: []const []const u8) Error!void {
+    for (ids, 0..) |id, i| {
+        try self.defs.log.insert(self.defs.gpa, at.index + i, .{
+            .headings_before = at.headings_before,
+            .ids_before = at.ids_before + i,
+            .what = .{ .id = try self.defs.a.dupe(u8, id) },
+        });
+    }
 }
 
 /// Whether a paragraph opening now is the first child of a definition list's item: its
@@ -874,8 +898,8 @@ fn blankLine(self: *Parser) void {
 
 /// Where the record of the last caption to join a table lives: with the container the
 /// table is a child of, or with the parser for the held top-level table.
-fn captionLogSlot(self: *Parser) *?CaptionLog {
-    return if (self.stack.items.len > 0) &self.tip().caption_log else &self.caption_log;
+fn captionSlot(self: *Parser) *?Reserved {
+    return if (self.stack.items.len > 0) &self.tip().caption_reserved else &self.caption_reserved;
 }
 
 /// Where block attributes wait: with the innermost open container, or with the parser
@@ -1023,7 +1047,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // attributes waiting before it, as one closed as such does (below).
             if (p.converted) {
                 if (self.attrsSlot().*) |ba| {
-                    if (ba.id) |id| try self.countOpeningId(id, true);
+                    if (ba.id != null) self.countOpeningId(true);
                 }
             }
             break :blk try self.leafNode(a, c, .para, 0, p.attrs_from, stand);
@@ -1056,7 +1080,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // Never completed: its lines are a paragraph (djot.js reparses them), which
             // takes the attributes waiting before it without having been pushed.
             if (self.attrsSlot().*) |ba| {
-                if (ba.id) |id| try self.countOpeningId(id, true);
+                if (ba.id != null) self.countOpeningId(true);
             }
             const attrs_from = try self.failedAttrsFrom();
             return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, 0, attrs_from, stand), stand);
@@ -1094,6 +1118,9 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const data: node_mod.Payload = if (self.tip().data.list.style == .definition) definition: {
                 // The first paragraph is the term; the rest is the definition.
                 const has_term = items.len > 0 and items[0].data == .para;
+                // The term keeps the paragraph's inlines, not its node: an id written
+                // before it was counted as it opened and is logged where it stood.
+                if (has_term) if (items[0].id) |id| try self.logReserved(c.term_reserved.?, &.{id});
                 const pair = try a.alloc(Node, 2);
                 pair[0] = .{ .data = .{ .term = if (has_term) items[0].data.para else &.{} } };
                 pair[1] = .{ .data = .{ .definition = try a.dupe(Node, if (has_term) items[1..] else items) } };
@@ -1180,19 +1207,12 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // every id it reads): logged into their place in the log, behind whatever
             // stood between the two captions (a definition can), with the counts of then.
             if (countIds(t.data.table[0..1]) > 0) {
-                const at = self.captionLogSlot().*.?;
                 var ids: std.ArrayList([]const u8) = .empty;
                 defer ids.deinit(self.gpa);
                 try collectIds(self.gpa, t.data.table[0], &ids);
-                for (ids.items, 0..) |id, i| {
-                    try self.defs.log.insert(self.defs.gpa, at.index + i, .{
-                        .headings_before = at.headings_before,
-                        .ids_before = at.ids_before + i,
-                        .what = .{ .id = try self.defs.a.dupe(u8, id) },
-                    });
-                }
+                try self.logReserved(self.captionSlot().*.?, ids.items);
             }
-            self.captionLogSlot().* = .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
+            self.captionSlot().* = self.reserve();
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, 0, stand);
             // At the top the attributes were parsed into the next block's arena, which the
