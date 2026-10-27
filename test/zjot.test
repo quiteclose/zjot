@@ -79,6 +79,18 @@ Deliberate differences from djot.js 0.3.2:
     own lines; djot.js 0.3.2 reparses the slice from before the quote marker, so `> {.a`,
     `> !!`, `> z` renders `&gt; !!` on the second line there. Decided 2026-10-26.
 
+13. `\$` before a backtick is an escaped dollar and then verbatim (`\$\`a\`` gives
+    `$<code>a</code>`); djot.js 0.3.2 reads the raw `$` before the backtick and makes
+    inline math. Decided 2026-10-26.
+
+14. A block attribute that fails on an unindented blank line is a paragraph that ends
+    there; djot.js 0.3.2 keeps the paragraph it converts open across that blank line
+    (`{.a`, indented blank, blank, `  .b}` is one paragraph there, two here). Decided
+    2026-10-26.
+
+15. An unfinished block attribute whose last line is a bare key at the input's end is a
+    paragraph (`{.a`, `  x`); djot.js 0.3.2 renders nothing for it. Decided 2026-10-26.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -9514,4 +9526,77 @@ A blank line indented past an unfinished block attribute's opener keeps the attr
 para
 .
 <p class="a b">para</p>
+````
+
+A caption closed by a blank line of spaces ends one before where the parser stands, as djot.js.
+```` ap
+| a |
+^ cap
+   
+.
+doc
+  table (1:1:0-2:3:8)
+    caption (2:3:8-3:3:14)
+      str (2:3:8-2:5:10) text="cap"
+    row (1:1:0-2:0:5) head=false
+      cell (1:1:0-1:5:4) head=false align="default"
+        str (1:3:2-1:3:2) text="a"
+````
+
+A caption closed by a block quote's bare marker line ends one before the parser's stand, as djot.js.
+```` ap
+> | a |
+> ^ cap
+>
+> para
+.
+doc
+  block_quote (1:1:0-5:0:24)
+    table (1:3:2-2:5:12)
+      caption (2:5:12-3:1:16)
+        str (2:5:12-2:7:14) text="cap"
+      row (1:3:2-2:0:7) head=false
+        cell (1:3:2-1:7:6) head=false align="default"
+          str (1:5:4-1:5:4) text="a"
+    para (4:3:20-5:0:24)
+      str (4:3:20-4:6:23) text="para"
+````
+
+A paragraph made of a failed block attribute ends at a kept blank line's first byte, as djot.js.
+```` ap
+{.a
+	
+.
+doc
+  para (1:1:0-2:1:4)
+    str (1:1:0-1:3:2) text="{.a"
+    soft_break (2:0:3-2:0:3)
+````
+
+A heading ending in a hard break and followed by a bare `#` line ends at that line's first byte, as djot.js.
+```` ap
+# a\
+#
+.
+doc
+  section (1:1:0-2:1:5) id="a"
+    heading (1:1:0-2:1:5) level=1
+      str (1:3:2-1:3:2) text="a"
+      hard_break (2:0:4-2:0:4)
+````
+
+A heading ending in a hard break, bare `#` lines and a paragraph ends at the first bare line, as djot.js.
+```` ap
+# a\
+#
+
+para
+.
+doc
+  section (1:1:0-5:0:12) id="a"
+    heading (1:1:0-2:1:5) level=1
+      str (1:3:2-1:3:2) text="a"
+      hard_break (2:0:4-2:0:4)
+    para (4:1:8-5:0:12)
+      str (4:1:8-4:4:11) text="para"
 ````
