@@ -284,12 +284,21 @@ pub const AttrParser = struct {
         self.begin = null;
     }
 
+    /// A backslash before one of these goes in an attribute value: djot.js's set, which
+    /// lacks `<`, `>`, `@` and the space, so those keep their backslash.
+    fn attrEscapable(c: u8) bool {
+        return switch (c) {
+            '.', ',', '\\', '/', '#', '!', '$', '%', '^', '&', '*', ';', ':', '{', '}', '=', '-', '_', '`', '~', '+', '[', ']', '(', ')', '\'', '"', '?', '|' => true,
+            else => false,
+        };
+    }
+
     fn processEscapes(self: *AttrParser, raw: []const u8) ![]const u8 {
         if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
         var buf: std.ArrayList(u8) = .empty;
         var i: usize = 0;
         while (i < raw.len) {
-            if (raw[i] == '\\' and i + 1 < raw.len) {
+            if (raw[i] == '\\' and i + 1 < raw.len and attrEscapable(raw[i + 1])) {
                 try buf.append(self.a, raw[i + 1]);
                 i += 2;
             } else {

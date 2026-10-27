@@ -56,8 +56,9 @@ Deliberate differences from djot.js 0.3.2:
 8. A reference label is closed by its matching bracket, so `[a][b [c] d]` is a reference
    link with the label `b [c] d`, and a destination by its matching paren, so
    `[a](u [b] c)` is a link to `u [b] c`; djot.js 0.3.2 makes both text, the inner `[`
-   shadowing the label or destination on its opener stack (and an inner `[c](u)` link
-   would restore it). Decided 2026-10-26.
+   shadowing the label or destination on its opener stack. An inner `[c](u)` link
+   restores a label there (`[a][b [c](u) d]` is a reference link in both) but not a
+   destination (`[a](u [b](v) c)` stays text there, a link here). Decided 2026-10-26.
 
 9. `\\![a](u)` is an escaped backslash and an image; djot.js 0.3.2 reads the raw `\` before
    the `!` and makes `\!` and a link. Decided 2026-10-26.
@@ -66,6 +67,10 @@ Deliberate differences from djot.js 0.3.2:
     `_[a](b_c)` is `_` and a link to `b_c`; djot.js 0.3.2 runs its inline matchers over
     the destination, closes the emphasis at the `_` inside it and loses the link. Decided
     2026-10-26.
+
+11. An image by reference that resolves to nothing keeps its alt text (`![a][]` with no
+    definition gives `<img alt="a">`); djot.js 0.3.2 writes `<img>`, setting `alt` only
+    when the reference resolves. Decided 2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -92,6 +97,9 @@ converter renders it, so no `ap` case can pin it:
 11. An inline attribute right after a soft break attaches to nothing; djot.js attaches it
     to the `soft_break` node (`a`, newline, `{.c} b` gives `soft_break (…) class="c"`
     there). The HTML is the same, and an id in it is registered in both.
+12. In a table cell, an escaped punctuation byte is part of the `str` around it; djot.js
+    0.3.2 prints it as a `str` of its own there (`| a\.b |` gives `"a"`, `"."`, `"b"`),
+    while in a paragraph it joins the text in both. The HTML is the same.
 
 Ordered lists in the AST text form print their `style` as djot.js's JSON has it, the first
 number with its delimiter (`1.`, `1)`, `(1)`, `a.`, `i.`), and no `start`; the HTML renders
@@ -9171,4 +9179,97 @@ doc
   para (1:1:0-2:0:11)
     link (1:1:0-1:11:10) reference="b c"
       str (1:2:1-1:2:1) text="a"
+````
+
+An escaped backslash in a destination is one backslash, and escapes nothing after it, as djot.js.
+````
+[a](u\\,v)
+.
+<p><a href="u\,v">a</a></p>
+````
+
+A reference label of blanks only is a label, not the link's text: it matches no definition, as djot.js.
+````
+[a][ ]
+
+[a]: /u
+.
+<p><a>a</a></p>
+````
+
+A backslash, blanks and a line end in a destination are an escaped line end: all of it goes, as djot.js.
+````
+[a](u\	
+v)
+.
+<p><a href="u	v">a</a></p>
+````
+
+The blanks before an escaped line end in a destination go with it, as djot.js trims the text before a hard break.
+````
+[a](u  \
+v)
+.
+<p><a href="uv">a</a></p>
+````
+
+A heading's id keeps `_`, `:`, `;`, `-` and non-ASCII and turns runs of djot.js's separators and blanks into one `-`, none at either end, as djot.js.
+````
+# a_b
+
+# a:b c;d
+
+# a,b/c
+
+# é ü
+
+# -a-
+
+# a  b
+.
+<section id="a_b">
+<h1>a_b</h1>
+</section>
+<section id="a:b-c;d">
+<h1>a:b c;d</h1>
+</section>
+<section id="a-b-c">
+<h1>a,b/c</h1>
+</section>
+<section id="é-ü">
+<h1>é ü</h1>
+</section>
+<section id="-a-">
+<h1>-a-</h1>
+</section>
+<section id="a-b">
+<h1>a  b</h1>
+</section>
+````
+
+A backslash and a space ending a paragraph are a hard break, as djot.js, whose subject ends in a newline.
+````
+foo\ 
+.
+<p>foo<br>
+</p>
+````
+
+In an attribute value a backslash goes before djot.js's set of punctuation, and stays before `<`, `@` and a space.
+````
+a{k="x\,y\<z\@w\ v"}
+.
+<p><span k="x,y\&lt;z\@w\ v">a</span></p>
+````
+
+A hard break with blanks between its backslash and the line end spans from the backslash to the newline, as djot.js.
+```` ap
+a \ 
+b
+.
+doc
+  para (1:1:0-3:0:6)
+    str (1:1:0-1:1:0) text="a"
+    hard_break (1:4:3-2:0:4)
+    str (2:1:5-2:1:5) text="b"
 ````
