@@ -1055,16 +1055,54 @@ fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
     }
     return buf.toOwnedSlice(a);
 }
+/// The length of the JavaScript `\s` character at `i` of `text`, 0 when none: the ASCII
+/// blanks (tab to carriage return, space) and, in UTF-8, U+00A0, U+1680, U+2000 to
+/// U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF.
+pub fn jsSpaceLen(text: []const u8, i: usize) usize {
+    const c = text[i];
+    if (c == ' ' or (c >= 0x09 and c <= 0x0D)) return 1;
+    const rest = text[i..];
+    if (rest.len >= 2 and c == 0xC2 and rest[1] == 0xA0) return 2;
+    if (rest.len >= 3) {
+        if (c == 0xE1 and rest[1] == 0x9A and rest[2] == 0x80) return 3;
+        if (c == 0xE2 and rest[1] == 0x80 and ((rest[2] >= 0x80 and rest[2] <= 0x8A) or rest[2] == 0xA8 or rest[2] == 0xA9 or rest[2] == 0xAF)) return 3;
+        if (c == 0xE2 and rest[1] == 0x81 and rest[2] == 0x9F) return 3;
+        if (c == 0xE3 and rest[1] == 0x80 and rest[2] == 0x80) return 3;
+        if (c == 0xEF and rest[1] == 0xBB and rest[2] == 0xBF) return 3;
+    }
+    return 0;
+}
+
+/// `raw` with the JavaScript `\s` characters at either end dropped (JavaScript's `trim`).
+fn jsTrim(raw: []const u8) []const u8 {
+    var start: usize = 0;
+    while (start < raw.len) {
+        const n = jsSpaceLen(raw, start);
+        if (n == 0) break;
+        start += n;
+    }
+    var end: usize = raw.len;
+    while (end > start) {
+        const n = for (1..4) |k| {
+            if (end >= start + k and jsSpaceLen(raw, end - k) == k) break k;
+        } else 0;
+        if (n == 0) break;
+        end -= n;
+    }
+    return raw[start..end];
+}
+
 pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
-    // As djot.js keys labels: trimmed, each run of whitespace one space; `raw` itself
-    // when it is so already.
-    const needs_normalization = (raw.len > 0 and (raw[0] == ' ' or raw[raw.len - 1] == ' ')) or for (raw, 0..) |c, i| {
-        if (c == '\n' or c == '\r' or c == '\t' or (c == ' ' and i + 1 < raw.len and raw[i + 1] == ' ')) break true;
+    // As djot.js keys labels: JavaScript's `trim`, then each run of space, tab, CR and LF
+    // one space; `raw` itself when it is so already.
+    const trimmed = jsTrim(raw);
+    const needs_collapse = for (trimmed, 0..) |c, i| {
+        if (c == '\n' or c == '\r' or c == '\t' or (c == ' ' and i + 1 < trimmed.len and trimmed[i + 1] == ' ')) break true;
     } else false;
-    if (!needs_normalization) return raw;
+    if (!needs_collapse) return trimmed;
     var buf: std.ArrayList(u8) = .empty;
     var in_ws = false;
-    for (raw) |c| {
+    for (trimmed) |c| {
         if (c == ' ' or c == '\t' or c == '\n' or c == '\r') {
             if (!in_ws and buf.items.len > 0) {
                 try buf.append(a, ' ');

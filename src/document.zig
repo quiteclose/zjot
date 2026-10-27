@@ -243,21 +243,10 @@ pub const Ids = struct {
     }
 
     /// The length of the separator at `i` of `text`, 0 when none: djot.js's punctuation
-    /// set and what JavaScript's `\s` matches, the ASCII blanks and, in UTF-8, U+00A0,
-    /// U+1680, U+2000 to U+200A, U+2028, U+2029, U+202F, U+205F, U+3000 and U+FEFF.
+    /// set and what JavaScript's `\s` matches (`inline.jsSpaceLen`).
     fn separatorLen(text: []const u8, i: usize) usize {
-        const c = text[i];
-        if (isIdSeparator(c) or c == 0x0B or c == 0x0C) return 1;
-        const rest = text[i..];
-        if (rest.len >= 2 and c == 0xC2 and rest[1] == 0xA0) return 2;
-        if (rest.len >= 3) {
-            if (c == 0xE1 and rest[1] == 0x9A and rest[2] == 0x80) return 3;
-            if (c == 0xE2 and rest[1] == 0x80 and ((rest[2] >= 0x80 and rest[2] <= 0x8A) or rest[2] == 0xA8 or rest[2] == 0xA9 or rest[2] == 0xAF)) return 3;
-            if (c == 0xE2 and rest[1] == 0x81 and rest[2] == 0x9F) return 3;
-            if (c == 0xE3 and rest[1] == 0x80 and rest[2] == 0x80) return 3;
-            if (c == 0xEF and rest[1] == 0xBB and rest[2] == 0xBF) return 3;
-        }
-        return 0;
+        if (isIdSeparator(text[i])) return 1;
+        return inline_mod.jsSpaceLen(text, i);
     }
 
     /// As djot.js's `getUniqueIdentifier`: a run of separators (its punctuation set and

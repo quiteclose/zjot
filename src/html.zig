@@ -3,6 +3,7 @@
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Node = @import("node.zig").Node;
+const inline_mod = @import("inline.zig");
 
 /// Footnote numbering, as djot.js's HTML renderer: labels in order of first reference
 /// (`order.keys()`), kept for the document in `a`, since a reference's text lives only
@@ -261,8 +262,10 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</a>");
             },
             .image => |l| {
+                // The alt text is djot.js's `getStringContent`: the source behind smart
+                // punctuation, a newline for a break, a footnote reference's label.
                 try out.appendSlice(a, "<img alt=\"");
-                try collectAltText(a, out, l.children);
+                try appendAttrEscaped(a, out, try inline_mod.getLabelText(a, .{ .data = .{ .span = l.children } }));
                 try out.appendSlice(a, "\"");
                 if (l.destination) |dest| {
                     try out.appendSlice(a, " src=\"");
@@ -381,18 +384,6 @@ pub const Renderer = struct {
 
     /// The string content of an image's children, as djot.js: every leaf's text (a
     /// footnote reference's label included), a break as a space, a symbol as nothing.
-    fn collectAltText(a: Allocator, out: *std.ArrayList(u8), children: []const Node) Allocator.Error!void {
-        for (children) |child| switch (child.data) {
-            .soft_break, .hard_break => try out.append(a, ' '),
-            .symb => {},
-            else => if (child.text().len > 0) {
-                try appendAttrEscaped(a, out, child.text());
-            } else {
-                try collectAltText(a, out, child.children());
-            },
-        };
-    }
-
     fn renderListItem(self: *Renderer, item: Node, tight: bool) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
