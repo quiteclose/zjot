@@ -9812,3 +9812,80 @@ x{#} y{.}
 <p class="a">more</p>
 <p>x y</p>
 ````
+
+A block attribute opening on the line that closes a list lives with the block it applies to, as djot.js.
+````
+- a
+{.a
+  .b}
+next
+.
+<ul>
+<li>
+a
+</li>
+</ul>
+<p class="a b">next</p>
+````
+
+A one-line block attribute after a heading, with an id and a quoted value, as djot.js.
+````
+# h
+{#myid .c key="v w"}
+next
+.
+<section id="h">
+<h1>h</h1>
+<p id="myid" class="c" key="v w">next</p>
+</section>
+````
+
+A block attribute spanning lines after a table applies to the paragraph after it, as djot.js.
+````
+| a |
+|---|
+{.t
+  .u}
+next
+.
+<table>
+<tr>
+<th>a</th>
+</tr>
+</table>
+<p class="t u">next</p>
+````
+
+A block attribute that fails after closing a task list is a paragraph, as djot.js.
+````
+- [ ] a
+{.a
+  !!
+next
+.
+<ul class="task-list">
+<li>
+<input disabled="" type="checkbox"/>
+a
+</li>
+</ul>
+<p>{.a
+!!
+next</p>
+````
+
+A block attribute after an ordered list, with its positions.
+```` ap
+1. a
+{.a
+  .b}
+next
+.
+doc
+  ordered_list (1:1:0-2:1:5) tight=true style="1."
+    list_item (1:1:0-2:0:4)
+      para (1:4:3-2:0:4)
+        str (1:4:3-1:4:3) text="a"
+  para (4:1:15-5:0:19) class="a b"
+    str (4:1:15-4:4:18) text="next"
+````
