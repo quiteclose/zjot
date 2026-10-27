@@ -100,8 +100,53 @@ pub const AttrParser = struct {
         return .{ .status = .@"continue", .position = if (endpos < self.src.len) endpos else self.src.len -| 1 };
     }
 
+    /// What one line of a block attribute leaves the parser at: complete at its `}` (what
+    /// stands after it on the line is the caller's), unfinished at the line end, or
+    /// failed at an index into the line, or at the line's length for the line end itself.
+    pub const Fed = union(enum) { complete: usize, unfinished, failed_at: usize };
+
+    /// Feeds `line`, the block attribute's next line as written, and the line end after
+    /// it, as djot.js feeds each line to the parser its container keeps. The attributes
+    /// keep slices of `line`, so it must outlive them. A name, id or class ends at the
+    /// line end; a quoted value runs on, its text so far kept and the next line's read
+    /// from that line's start (`valueFrom`).
+    pub fn feedLine(self: *AttrParser, line: []const u8) !Fed {
+        self.src = line;
+        self.lastpos = null;
+        for (line, 0..) |c, pos| {
+            self.state = try self.stepByte(c, pos);
+            if (self.state == .done) return .{ .complete = pos };
+            if (self.state == .fail) return .{ .failed_at = pos };
+            self.lastpos = pos;
+        }
+        switch (self.state) {
+            // An escaped line end is the value's, as the newline it escapes.
+            .scanning_quoted_value, .scanning_escaped => {
+                try self.value_buf.appendSlice(self.a, line[self.valueFrom()..]);
+                try self.value_buf.append(self.a, '\n');
+                self.begin = null;
+                self.state = .scanning_quoted_value;
+            },
+            else => {
+                self.state = try self.stepByte('\n', line.len);
+                if (self.state == .done) return .{ .complete = line.len };
+                if (self.state == .fail) return .{ .failed_at = line.len };
+            },
+        }
+        return .unfinished;
+    }
+
+    /// Where a quoted value's text starts in `src`: after its quote or the newline last
+    /// flushed, or at the start of a line fed on its own.
+    fn valueFrom(self: *const AttrParser) usize {
+        return if (self.begin) |b| b + 1 else 0;
+    }
+
     fn step(self: *AttrParser, pos: usize) !AttrState {
-        const c = self.src[pos];
+        return self.stepByte(self.src[pos], pos);
+    }
+
+    fn stepByte(self: *AttrParser, c: u8, pos: usize) !AttrState {
         return switch (self.state) {
             .start => if (c == '{') .scanning else .fail,
             .scanning => try self.stepScanning(c, pos),
@@ -267,9 +312,7 @@ pub const AttrParser = struct {
 
     fn emitQuotedValue(self: *AttrParser, pos: usize) !void {
         if (self.value_buf.items.len > 0) {
-            if (self.begin) |b| {
-                try self.value_buf.appendSlice(self.a, self.src[b + 1 .. pos]);
-            }
+            try self.value_buf.appendSlice(self.a, self.src[self.valueFrom()..pos]);
             if (self.current_key) |key| {
                 const raw = try self.value_buf.toOwnedSlice(self.a);
                 const value = try self.processEscapes(try self.collapseBlanks(raw));
@@ -395,22 +438,6 @@ pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
     const result = try parser.feed(0, src.len -| 1);
     if (result.status == .done) return try parser.finish();
     return null;
-}
-
-/// What the parser makes of `src`, a block attribute's lines so far, fed with the newline
-/// after them as djot.js feeds a line: `.complete` when the `}` ends the text, else where
-/// it fails (`src.len` is the newline itself: a bare key, say), else `.unfinished`.
-pub const Fed = union(enum) { complete, unfinished, fails_at: usize };
-
-pub fn feedLines(a: Allocator, src: []const u8) !Fed {
-    const with_newline = try std.mem.concat(a, u8, &.{ src, "\n" });
-    var parser = AttrParser.init(a, with_newline);
-    const result = try parser.feed(0, with_newline.len - 1);
-    return switch (result.status) {
-        .done => if (result.position + 1 == src.len) .complete else .{ .fails_at = result.position + 1 }, // text after the `}` fails there
-        .fail => .{ .fails_at = result.position },
-        .@"continue" => .unfinished,
-    };
 }
 
 /// Whether `line` opens a block attribute it does not close: `{` followed by attribute

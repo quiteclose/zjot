@@ -128,9 +128,12 @@ const Container = struct {
         attributes: struct {
             indent: usize,
             attrs: ?BlockAttrs = null,
-            /// Whether the lines so far fail right at the line end: then a blank line next
-            /// makes the paragraph (djot.js), and counts as a blank line for the list.
-            failed_eol: bool = false,
+            /// Fed each line as written, as djot.js's container keeps its parser.
+            parser: *attrs_mod.AttrParser,
+            /// How the lines so far failed, if they did: right at a line end, where a blank
+            /// line next makes the paragraph (djot.js) and counts as the list's blank line;
+            /// or elsewhere, where only a line not indented past the opener does.
+            failed: enum { no, eol, elsewhere } = .no,
         },
         block_quote: void,
         /// `blanklines` and `tight` as `parse.js` keeps them: a blank line marks the list
@@ -400,7 +403,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             if (at.attrs != null) return false;
             // Failed at its line end, a blank line makes it a paragraph that ends here, and
             // the line is the list's blank line too (djot.js converts on the failing line).
-            if (at.failed_eol and cur.atEol()) {
+            if (at.failed == .eol and cur.atEol()) {
                 c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
                 return false;
             }
@@ -411,25 +414,30 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 // A kept blank line ends the paragraph this may become at its first byte
                 // (djot.js: one past the newline before it, its own a dropped soft break).
                 c.leaf_end = if (cur.atEol()) cur.line.pos else afterContent(cur.line);
-                const a = self.nodeAllocator();
-                const raw = try inline_mod.joinLines(a, self.leaf_slices.items);
-                at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, raw, " \t"));
-                // Fed as written, trailing blanks included, as djot.js feeds the line.
-                if (at.attrs == null) switch (try attrs_mod.feedLines(a, raw)) {
-                    // Failing with nothing but blanks left on the line, the line makes the
-                    // paragraph at once; failing on the newline after it, the next blank
-                    // line does (djot.js).
-                    .fails_at => |p| {
-                        if (p == raw.len) {
-                            at.failed_eol = true;
-                        } else if (leaf.isBlank(raw[p + 1 ..])) {
+                const line = self.leaf_slices.items[self.leaf_slices.items.len - 1];
+                switch (at.failed) {
+                    // Failed, djot.js's parser is stuck: the lines gather until one not
+                    // indented past the opener; failed at a line end, until the blank line
+                    // next, which a line that is not blank forfeits.
+                    .elsewhere => {},
+                    .eol => at.failed = .elsewhere,
+                    // Fed as written, trailing blanks included, as djot.js feeds the line;
+                    // what follows a `}` on its line is ignored, as there.
+                    .no => switch (try at.parser.feedLine(line)) {
+                        .complete => at.attrs = try at.parser.finish(),
+                        .unfinished => {},
+                        // Failing with nothing but blanks left on the line, the line makes
+                        // the paragraph at once; failing on the line end, the next blank
+                        // line does (djot.js).
+                        .failed_at => |p| if (p == line.len) {
+                            at.failed = .eol;
+                        } else if (leaf.isBlank(line[p + 1 ..])) {
                             c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
                         } else {
-                            at.failed_eol = false;
-                        }
+                            at.failed = .elsewhere;
+                        },
                     },
-                    else => at.failed_eol = false,
-                };
+                }
                 cur.i = cur.line.bytes.len;
                 return true;
             }
@@ -627,18 +635,32 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     }
     // A block attribute opens only when its first line parses so far or completes at its
     // `}`; a line that fails, text after the `}` included, is a paragraph (djot.js).
-    if (r[0] == '{' and try attrs_mod.feedLines(self.nodeAllocator(), std.mem.trimEnd(u8, r, " \t")) != .fails_at) {
-        try self.closeFrom(matched, stand);
-        try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
-        try self.addLeafSlice(r, cur.pos(), cur.line); // trailing blanks stay: content if this fails
-        self.tip().leaf_end = afterContent(cur.line);
-        // Complete on one line, or kept open for the indented lines that may follow. The
-        // attributes keep slices of the text they are parsed from, so that is the leaf's
-        // copy, which outlives the line.
-        const text = std.mem.trimEnd(u8, self.leaf_slices.items[0], " \t");
-        if (text[text.len - 1] == '}') self.tip().data.attributes.attrs = try attrs_mod.parseAttrsFromStr(self.nodeAllocator(), text);
-        cur.i = cur.line.bytes.len;
-        return true;
+    if (r[0] == '{') {
+        // Decided on a parser of its own, on the arena of the block the line stands in:
+        // what opens lives with the block after `closeFrom`, which may be the next one.
+        var probe = attrs_mod.AttrParser.init(self.nodeAllocator(), r);
+        const opens = switch (try probe.feedLine(r)) {
+            .unfinished => true,
+            .complete => |p| leaf.isBlank(r[p + 1 ..]),
+            .failed_at => false,
+        };
+        if (opens) {
+            try self.closeFrom(matched, stand);
+            // The container's parser is fed the leaf's copy of the line, which the
+            // attributes keep slices of; both live on the arena of the block they open.
+            const a = self.nodeAllocator();
+            const text = try self.leafCopy(r);
+            const parser = try a.create(attrs_mod.AttrParser);
+            parser.* = attrs_mod.AttrParser.init(a, text);
+            const fed = try parser.feedLine(text);
+            try self.push(.{ .attributes = .{ .indent = cur.indent, .parser = parser } }, cur.pos());
+            try self.addOwnedLeafSlice(text, cur.pos(), cur.line); // trailing blanks stay: content if this fails
+            self.tip().leaf_end = afterContent(cur.line);
+            // Complete on one line, or kept open for the indented lines that may follow.
+            if (fed == .complete) self.tip().data.attributes.attrs = try parser.finish();
+            cur.i = cur.line.bytes.len;
+            return true;
+        }
     }
     if (leaf.isFencedDivStart(r)) |dv| if (divClass(dv.class)) {
         try self.closeFrom(matched, stand);
@@ -879,7 +901,15 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
 const LeafStart = struct { pos: SourcePos, join: SourcePos };
 
 fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
-    const slice = if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
+    return self.addOwnedLeafSlice(try self.leafCopy(text), start, line);
+}
+
+/// `text` where the leaf can keep it: itself when the lines are stable, else a copy.
+fn leafCopy(self: *Parser, text: []const u8) Error![]const u8 {
+    return if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
+}
+
+fn addOwnedLeafSlice(self: *Parser, slice: []const u8, start: SourcePos, line: Line) Error!void {
     try self.leaf_slices.append(self.gpa, slice);
     // The join before this line is the end of the content line before it (a heading's
     // bare `#` line between adds nothing, and djot.js breaks at the first newline).
