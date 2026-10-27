@@ -646,16 +646,18 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
     const strs = try leaf.rowCells(a, r);
     const cells = try a.alloc(Node, strs.len);
     for (strs, cells, 0..) |str, *cell, i| {
-        const text = std.mem.trim(u8, str, " \t");
+        const text = trimEndKeepingEscape(std.mem.trimStart(u8, str, " \t"), " \t");
         // Where the cell's text and its pipes lie on the line.
         const idx = cur.i + (@intFromPtr(str.ptr) - @intFromPtr(r.ptr));
         const text_idx = idx + (@intFromPtr(text.ptr) - @intFromPtr(str.ptr));
         if (text.len > 0) try self.addLeafSlice(text, cur.at(text_idx), cur.line);
         cell.* = .{
-            .data = .{ .cell = .{
-                .children = try self.leafInlines(a, 0),
-                .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
-            } },
+            .data = .{
+                .cell = .{
+                    .children = try self.leafInlines(a, 0, false), // no line end follows a cell
+                    .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
+                },
+            },
             .start_pos = if (self.track_pos) cur.at(idx - 1) else null,
             .end_pos = if (self.track_pos) cur.at(idx + str.len) else null,
         };
@@ -806,7 +808,7 @@ fn failedAttrsFrom(self: *Parser) Error!usize {
 /// The rest of the line at `cur` as the open leaf's next line.
 fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     const text = switch (self.tip().data) {
-        .heading => std.mem.trimEnd(u8, cur.rest(), " "), // trailing spaces go, tabs stay (djot.js)
+        .heading => trimEndKeepingEscape(cur.rest(), " "), // trailing spaces go, tabs stay (djot.js)
         else => cur.rest(),
     };
     try self.addLeafSlice(text, cur.pos(), cur.line);
@@ -838,13 +840,20 @@ fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
 }
 
 /// The inline content of the open leaf, which empties the leaf buffers.
-fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize) Error![]const Node {
+/// `text` without its trailing `blanks`, except one right after a backslash: that one is
+/// escaped, a hard break or a non-breaking space, not trailing blank.
+fn trimEndKeepingEscape(text: []const u8, blanks: []const u8) []const u8 {
+    const trimmed = std.mem.trimEnd(u8, text, blanks);
+    return if (trimmed.len < text.len and trimmed.len > 0 and trimmed[trimmed.len - 1] == '\\') text[0 .. trimmed.len + 1] else trimmed;
+}
+
+fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) Error![]const Node {
     defer self.dropLeaf();
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
     if (src.len == 0) return &.{};
     const map: ?LineMap = if (self.track_pos) try self.leafLineMap(a) else null;
     var dropped: std.ArrayList([]const u8) = .empty;
-    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from, &dropped);
+    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from, &dropped, ends_line);
     // An inline attribute attached to no node, or an id a later attribute overrode, was
     // registered all the same (djot.js); among one leaf's explicit ids the order cannot
     // show, so these go first.
@@ -1118,7 +1127,7 @@ fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
 
 /// A paragraph, heading (of `level`) or caption over the open leaf's inlines.
 fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, level: u8, attrs_from: usize, stand: Stand) Error!Node {
-    const children = try self.leafInlines(a, attrs_from);
+    const children = try self.leafInlines(a, attrs_from, true);
     return .{
         .data = switch (tag) {
             .para => .{ .para = children },

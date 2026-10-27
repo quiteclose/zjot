@@ -58,7 +58,8 @@ Deliberate differences from djot.js 0.3.2:
    `[a](u [b] c)` is a link to `u [b] c`; djot.js 0.3.2 makes both text, the inner `[`
    shadowing the label or destination on its opener stack. An inner `[c](u)` link
    restores a label there (`[a][b [c](u) d]` is a reference link in both) but not a
-   destination (`[a](u [b](v) c)` stays text there, a link here). Decided 2026-10-26.
+   destination (`[a](u [b](v) c)` is text around the inner link there, a link to
+   `u [b](v) c` here). Decided 2026-10-26.
 
 9. `\\![a](u)` is an escaped backslash and an image; djot.js 0.3.2 reads the raw `\` before
    the `!` and makes `\!` and a link. Decided 2026-10-26.
@@ -70,7 +71,7 @@ Deliberate differences from djot.js 0.3.2:
 
 11. An image by reference that resolves to nothing keeps its alt text (`![a][]` with no
     definition gives `<img alt="a">`); djot.js 0.3.2 writes `<img>`, setting `alt` only
-    when the reference resolves. Decided 2026-10-26.
+    when the reference resolves or the label is empty. Decided 2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -9272,4 +9273,111 @@ doc
     str (1:1:0-1:1:0) text="a"
     hard_break (1:4:3-2:0:4)
     str (2:1:5-2:1:5) text="b"
+````
+
+A heading's id reads smart punctuation as its source: an apostrophe is `'`, as djot.js.
+````
+# Don't panic
+.
+<section id="Don't-panic">
+<h1>Don’t panic</h1>
+</section>
+````
+
+A heading's id reads dashes and an ellipsis as their source, as djot.js.
+````
+# a--b c---d
+
+# a...b
+.
+<section id="a--b-c---d">
+<h1>a–b c—d</h1>
+</section>
+<section id="a-b">
+<h1>a…b</h1>
+</section>
+````
+
+An implicit reference label reads smart punctuation as its source, so it matches a definition written with `'`, as djot.js.
+````
+[Don't][]
+
+[Don't]: /u
+.
+<p><a href="/u">Don’t</a></p>
+````
+
+A backslash and a space ending a table cell are a non-breaking space, as djot.js: no line end follows a cell.
+````
+| foo\ |
+.
+<table>
+<tr>
+<td>foo&nbsp;</td>
+</tr>
+</table>
+````
+
+A backslash and a tab ending a table cell are text, as djot.js.
+````
+| a\	|
+.
+<table>
+<tr>
+<td>a\	</td>
+</tr>
+</table>
+````
+
+A heading's id treats a non-breaking space and other Unicode spaces as separators, as JavaScript's `\s` does.
+````
+# a b
+
+# 　c d 
+.
+<section id="a-b">
+<h1>a b</h1>
+</section>
+<section id="c-d">
+<h1>　c d </h1>
+</section>
+````
+
+A quoted attribute value's line end is a space, even after a backslash, and runs of spaces are one, as djot.js.
+````
+a{k="x\
+y"} b{k="x  y"} c{k="x 
+ y"}
+.
+<p><span k="x\ y">a</span> <span k="x y">b</span> <span k="x y">c</span></p>
+````
+
+An implicit reference label includes a footnote reference's label, as djot.js keys it.
+````
+[a[^n]][]
+
+[an]: /u
+
+[^n]: x
+.
+<p><a href="/u">a<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>x<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A hard break ending a heading spans from its backslash, as djot.js.
+```` ap
+# foo\ 
+.
+doc
+  section (1:1:0-2:0:7) id="foo"
+    heading (1:1:0-2:0:7) level=1
+      str (1:3:2-1:5:4) text="foo"
+      hard_break (1:7:6-2:0:7)
 ````
