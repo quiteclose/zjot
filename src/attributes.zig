@@ -231,7 +231,7 @@ pub const AttrParser = struct {
     fn emitId(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
-            if (lp >= b) {
+            if (lp > b) { // an empty `#` names nothing (djot.js)
                 self.result.id = self.src[b + 1 .. pos];
                 for (self.attrs_list.items) |*attr| {
                     if (std.mem.eql(u8, attr.key, "id")) {
@@ -246,8 +246,10 @@ pub const AttrParser = struct {
 
     fn emitClass(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
-            const cls = self.src[b + 1 .. pos];
-            try self.attrs_list.append(self.a, .{ .key = "class", .value = cls });
+            const lp = if (self.lastpos) |l| l else pos -| 1;
+            if (lp > b) { // an empty `.` names nothing (djot.js)
+                try self.attrs_list.append(self.a, .{ .key = "class", .value = self.src[b + 1 .. pos] });
+            }
             self.begin = null;
         }
     }
@@ -395,9 +397,6 @@ pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
     return null;
 }
 
-/// Whether `src` holds a complete block attribute with text after its `}`: such a line
-/// is a paragraph, not a block attribute, as djot.js opens one only when the `}` ends
-/// the line (what follows is read as inline attributes there).
 /// What the parser makes of `src`, a block attribute's lines so far, fed with the newline
 /// after them as djot.js feeds a line: `.complete` when the `}` ends the text, else where
 /// it fails (`src.len` is the newline itself: a bare key, say), else `.unfinished`.

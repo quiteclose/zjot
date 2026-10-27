@@ -9762,3 +9762,49 @@ A `{` line that fails as it opens in a list item is a paragraph, so the blank li
 </li>
 </ul>
 ````
+
+A block attribute line that fails on a key followed by a trailing blank makes the paragraph at once, as djot.js feeds the line as written.
+````
+{.a
+  k 
+  y{.b}
+.
+<p>{.a
+k 
+<span class="b">y</span></p>
+````
+
+The same in a list item: the blank line after is the list's, as djot.js.
+````
+- {.a
+    k 
+    y
+
+- b
+.
+<ul>
+<li>
+<p>{.a
+k 
+y</p>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
+An empty `#` or `.` in an attribute names nothing, as djot.js.
+````
+{#}
+para
+
+{.a .}
+more
+
+x{#} y{.}
+.
+<p>para</p>
+<p class="a">more</p>
+<p>x y</p>
+````
