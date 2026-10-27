@@ -412,16 +412,20 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 // (djot.js: one past the newline before it, its own a dropped soft break).
                 c.leaf_end = if (cur.atEol()) cur.line.pos else afterContent(cur.line);
                 const a = self.nodeAllocator();
-                const joined = std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t");
-                at.attrs = try attrs_mod.parseAttrsFromStr(a, joined);
-                if (at.attrs == null) switch (try attrs_mod.feedLines(a, joined)) {
-                    // Failing on its last byte, the line makes the paragraph at once; on
-                    // the newline after it, the next blank line does (djot.js).
+                const raw = try inline_mod.joinLines(a, self.leaf_slices.items);
+                at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, raw, " \t"));
+                // Fed as written, trailing blanks included, as djot.js feeds the line.
+                if (at.attrs == null) switch (try attrs_mod.feedLines(a, raw)) {
+                    // Failing with nothing but blanks left on the line, the line makes the
+                    // paragraph at once; failing on the newline after it, the next blank
+                    // line does (djot.js).
                     .fails_at => |p| {
-                        if (p + 1 == joined.len) {
+                        if (p == raw.len) {
+                            at.failed_eol = true;
+                        } else if (leaf.isBlank(raw[p + 1 ..])) {
                             c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
                         } else {
-                            at.failed_eol = p == joined.len;
+                            at.failed_eol = false;
                         }
                     },
                     else => at.failed_eol = false,
