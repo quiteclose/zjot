@@ -110,7 +110,11 @@ converter renders it, so no `ap` case can pin it:
    gives `soft_break (2:0:5-2:0:5)` and the paragraph ends at `3:0:11`; djot.js keeps the
    `\r` in the line, `soft_break (1:5:4-2:0:5)`, paragraph end `2:5:10`, and a document ends
    on its last `\r`. The `.test` format cannot carry CRLF, so this is documented, not
-   pinned; the HTML is the same. Decided 2026-10-24.
+   pinned; the HTML is the same, but for an unfinished block attribute whose line fails
+   at its end (`{.a`, `  k`): djot.js's attribute parser fails on the `\r` and converts
+   the attribute to a paragraph on that line, where with LF it waits (difference 15), so
+   under CRLF a following indented line is paragraph text with inline attributes there
+   and attribute text here. Decided 2026-10-24, the CRLF attribute 2026-10-26.
 5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
    nodes where djot.js prints `smart_punctuation`.
 6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
