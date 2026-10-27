@@ -94,7 +94,11 @@ Deliberate differences from djot.js 0.3.2:
     nothing for it at the input's end and, at a container's end, gives the attributes
     parsed so far to the next block (`> {.a`, `>   x`, `para` and `> {.a`, `>   !!`,
     blank, `para` both give `<p class="a">para</p>` there). With a blank line after `x`
-    it is a paragraph in both. Decided 2026-10-26.
+    it is a paragraph in both. Once a line has failed there, djot.js's parser is stuck,
+    so a later indented line of one byte, or an indented blank line before a blank one,
+    converts the attribute there (`{.a`, `  x`, `  y`, `  z{.b}` gives a span on `z`),
+    where here the conversion waits for the blank line or the outdent. Decided
+    2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -9688,6 +9692,70 @@ Text after that blank line is a second paragraph, as djot.js.
 <p>{.a
 x</p>
 <p>y</p>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
+A block attribute line that fails on its last byte is a paragraph from that line, so the lines after it are lazy text with inline attributes live, as djot.js.
+````
+{.a
+  !
+  x{.b}
+.
+<p>{.a
+!
+<span class="b">x</span></p>
+````
+
+A block attribute line that fails on its last byte makes the paragraph at once, so the blank line after it is the list's: loose, as djot.js.
+````
+- {.a
+    !
+
+- b
+.
+<ul>
+<li>
+<p>{.a
+!</p>
+</li>
+<li>
+<p>b</p>
+</li>
+</ul>
+````
+
+A `{` line that fails as it opens is a paragraph from the first line, never a block attribute: an indented blank line after it ends the paragraph, as djot.js.
+````
+{x
+  
+para
+.
+<p>{x</p>
+<p>para</p>
+````
+
+A `{` line that fails as it opens is a paragraph, its next line lazy text with inline attributes, as djot.js.
+````
+{x
+  y{.b}
+.
+<p>{x
+<span class="b">y</span></p>
+````
+
+A `{` line that fails as it opens in a list item is a paragraph, so the blank line after it loosens the list, as djot.js.
+````
+- {x
+
+- b
+.
+<ul>
+<li>
+<p>{x</p>
 </li>
 <li>
 <p>b</p>

@@ -414,7 +414,18 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                 const a = self.nodeAllocator();
                 const joined = std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t");
                 at.attrs = try attrs_mod.parseAttrsFromStr(a, joined);
-                if (at.attrs == null) at.failed_eol = try attrs_mod.failsAtLineEnd(a, joined);
+                if (at.attrs == null) switch (try attrs_mod.feedLines(a, joined)) {
+                    // Failing on its last byte, the line makes the paragraph at once; on
+                    // the newline after it, the next blank line does (djot.js).
+                    .fails_at => |p| {
+                        if (p + 1 == joined.len) {
+                            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+                        } else {
+                            at.failed_eol = p == joined.len;
+                        }
+                    },
+                    else => at.failed_eol = false,
+                };
                 cur.i = cur.line.bytes.len;
                 return true;
             }
@@ -610,9 +621,9 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
         try self.tableRow(self.tip(), cur);
         return true;
     }
-    // A complete block attribute with text after its `}` is a paragraph (djot.js opens a
-    // block attribute only when the `}` ends the line), so that is left to open below.
-    if (r[0] == '{' and !try attrs_mod.textAfterAttr(self.nodeAllocator(), std.mem.trimEnd(u8, r, " \t"))) {
+    // A block attribute opens only when its first line parses so far or completes at its
+    // `}`; a line that fails, text after the `}` included, is a paragraph (djot.js).
+    if (r[0] == '{' and try attrs_mod.feedLines(self.nodeAllocator(), std.mem.trimEnd(u8, r, " \t")) != .fails_at) {
         try self.closeFrom(matched, stand);
         try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
         try self.addLeafSlice(r, cur.pos(), cur.line); // trailing blanks stay: content if this fails
