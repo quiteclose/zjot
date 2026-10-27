@@ -53,6 +53,14 @@ Deliberate differences from djot.js 0.3.2:
    cell only right after its pipe, so there it is an ordinary row of em dashes; its test
    suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
 
+8. A reference label is closed by its matching bracket, so `[a][b [c] d]` is a reference
+   link with the label `b [c] d`; djot.js 0.3.2 makes it text, its inner `[` shadowing the
+   label on its opener stack (and an inner `[c](u)` link would restore it). Decided
+   2026-10-26.
+
+9. `\\![a](u)` is an escaped backslash and an image; djot.js 0.3.2 reads the raw `\` before
+   the `!` and makes `\!` and a link. Decided 2026-10-26.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -9061,4 +9069,42 @@ A bracket pair before a brace is a span, and what follows is text, even a later 
 [a]{.c b](u)
 .
 <p><span>a</span>{.c b](u)</p>
+````
+
+An emphasis opened inside a bracket pair closes after a bare `]`, which clears nothing, as djot.js.
+````
+[a _b] c_ d](u)
+.
+<p><a href="u">a <em>b] c</em> d</a></p>
+````
+
+A bare `]` leaves the openers inside its pair standing: `[_a]_` is a bracket and an emphasis, as djot.js.
+````
+[_a]_
+.
+<p>[<em>a]</em></p>
+````
+
+A quote opened inside a bracket pair still opens after a bare `]`, as djot.js.
+````
+['a]'
+.
+<p>[‘a]’</p>
+````
+
+An escaped `)` does not close a link's destination, and is unescaped in it, as djot.js.
+````
+[a](u\)b)
+.
+<p><a href="u)b">a</a></p>
+````
+
+An escaped `]` does not close a reference label, and is unescaped in it, as djot.js.
+````
+[a][b\]c]
+
+[b]c]: /u
+.
+<p><a>a</a></p>
+<p>[b]c]: /u</p>
 ````

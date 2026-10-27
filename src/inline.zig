@@ -507,7 +507,7 @@ const Scanner = struct {
                 } else if (next < src.len and src[next] == '[') {
                     if (findMatchingBracket(src, next)) |close_ref| {
                         const children = try sc.collectChildren(op.item_idx);
-                        const ref_label = src[next + 1 .. close_ref];
+                        const ref_label = try unescapeLabel(sc.a, src[next + 1 .. close_ref]);
                         try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
@@ -531,11 +531,13 @@ const Scanner = struct {
                 }
 
                 // No link or image closes here: the `]` is text, and the bracket stays
-                // open for a later one, text itself should none come; the openers inside
-                // the pair are done with, as djot.js (`[x_y](x_` has no emphasis).
+                // open for a later one, text itself should none come. After `](` or `][`
+                // the openers inside the pair are done with (`[x_y](x_` has no emphasis);
+                // after a bare `]` they stay (`[_a]_` has), as djot.js.
+                const clears = next < src.len and (src[next] == '(' or src[next] == '[');
                 try sc.text(src[p .. p + 1]);
                 pos.* = p + 1;
-                sc.openers.items.len = i + 1;
+                if (clears) sc.openers.items.len = i + 1;
                 return;
             }
         }
@@ -939,11 +941,17 @@ fn trimVerbatimContent(raw: []const u8) []const u8 {
     return raw[start..end];
 }
 
+/// The `)` closing the destination opened at `pos`, by depth; an escaped byte does not
+/// count (`processUrl` unescapes it).
 fn findMatchingParen(src: []const u8, pos: usize) ?usize {
     if (pos >= src.len or src[pos] != '(') return null;
     var depth: usize = 1;
     var i = pos + 1;
     while (i < src.len) : (i += 1) {
+        if (src[i] == '\\') {
+            i += 1;
+            continue;
+        }
         if (src[i] == '(') depth += 1;
         if (src[i] == ')') {
             depth -= 1;
@@ -953,11 +961,16 @@ fn findMatchingParen(src: []const u8, pos: usize) ?usize {
     return null;
 }
 
+/// The `]` closing the bracket at `pos`, by depth; an escaped byte does not count.
 fn findMatchingBracket(src: []const u8, pos: usize) ?usize {
     if (pos >= src.len or src[pos] != '[') return null;
     var depth: usize = 1;
     var i = pos + 1;
     while (i < src.len) : (i += 1) {
+        if (src[i] == '\\') {
+            i += 1;
+            continue;
+        }
         if (src[i] == '[') depth += 1;
         if (src[i] == ']') {
             depth -= 1;
@@ -965,6 +978,18 @@ fn findMatchingBracket(src: []const u8, pos: usize) ?usize {
         }
     }
     return null;
+}
+
+/// A reference label as djot.js keys it: a backslash before an escapable byte goes.
+fn unescapeLabel(a: Allocator, raw: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
+    var out = try std.ArrayList(u8).initCapacity(a, raw.len);
+    var i: usize = 0;
+    while (i < raw.len) : (i += 1) {
+        if (raw[i] == '\\' and i + 1 < raw.len and isEscapable(raw[i + 1])) i += 1;
+        out.appendAssumeCapacity(raw[i]);
+    }
+    return out.items;
 }
 
 fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
