@@ -58,6 +58,10 @@ pending_attrs: ?BlockAttrs = null,
 caption_log: ?CaptionLog = null,
 /// The lines of the open leaf, which is always the tip, so one set of buffers serves.
 leaf_slices: std.ArrayList([]const u8) = .empty,
+/// The inline scanner's working memory for one leaf, reset as the leaf is dropped: what
+/// the nodes keep is duplicated out of it, so no block (or footnote) arena holds the
+/// lists that built them.
+scratch: std.heap.ArenaAllocator,
 leaf_starts: std.ArrayList(LeafStart) = .empty,
 /// The newline of the open leaf's last line, where its `LineMap` ends.
 leaf_last_eol: SourcePos = undefined,
@@ -242,7 +246,7 @@ const Cursor = struct {
 /// buffers and what definitions keep.
 pub fn init(gpa: Allocator, da: Allocator, lines: Lines, defs: *Definitions) Allocator.Error!Parser {
     const arena = try newArena(gpa);
-    return .{ .gpa = gpa, .arena = arena, .a = arena.allocator(), .da = da, .defs = defs, .lines = lines };
+    return .{ .gpa = gpa, .arena = arena, .a = arena.allocator(), .da = da, .defs = defs, .lines = lines, .scratch = std.heap.ArenaAllocator.init(gpa) };
 }
 
 pub fn deinit(self: *Parser) void {
@@ -251,6 +255,7 @@ pub fn deinit(self: *Parser) void {
     self.stack.deinit(self.gpa);
     self.leaf_slices.deinit(self.gpa);
     self.leaf_starts.deinit(self.gpa);
+    self.scratch.deinit();
     for (self.spare_lists.items) |*l| l.deinit(self.gpa);
     self.spare_lists.deinit(self.gpa);
     self.destroy(self.arena);
@@ -409,8 +414,9 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             }
             // Lines indented past the opener keep the attribute going until it parses.
             if (cur.indent > at.indent) { // a blank line indented past the opener keeps it going too (djot.js)
-                // Stored with its trailing tab, content should it become a paragraph.
-                try self.addLeafSlice(std.mem.trimStart(u8, cur.rest(), " \t"), cur.pos(), cur.line);
+                // Stored with its trailing tab, content should it become a paragraph, and
+                // kept with the nodes: the attributes are slices of it.
+                try self.addOwnedLeafSlice(try self.leafCopy(std.mem.trimStart(u8, cur.rest(), " \t"), .kept), cur.pos(), cur.line);
                 // A kept blank line ends the paragraph this may become at its first byte
                 // (djot.js: one past the newline before it, its own a dropped soft break).
                 c.leaf_end = if (cur.atEol()) cur.line.pos else afterContent(cur.line);
@@ -649,7 +655,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
             // The container's parser is fed the leaf's copy of the line, which the
             // attributes keep slices of; both live on the arena of the block they open.
             const a = self.nodeAllocator();
-            const text = try self.leafCopy(r);
+            const text = try self.leafCopy(r, .kept);
             const parser = try a.create(attrs_mod.AttrParser);
             parser.* = attrs_mod.AttrParser.init(a, text);
             const fed = try parser.feedLine(text);
@@ -901,12 +907,16 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
 const LeafStart = struct { pos: SourcePos, join: SourcePos };
 
 fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) Error!void {
-    return self.addOwnedLeafSlice(try self.leafCopy(text), start, line);
+    return self.addOwnedLeafSlice(try self.leafCopy(text, .joined), start, line);
 }
 
-/// `text` where the leaf can keep it: itself when the lines are stable, else a copy.
-fn leafCopy(self: *Parser, text: []const u8) Error![]const u8 {
-    return if (self.lines.stable()) text else try self.nodeAllocator().dupe(u8, text);
+/// `text` where the leaf can keep it: itself when the lines are stable, else a copy. A
+/// leaf's lines are read once, when it is joined, so the copy lives in the block's arena,
+/// which outlives any footnote open inside it, and not with the footnote's content; the
+/// lines an attribute block keeps slices of (`.kept`) live where its nodes do.
+fn leafCopy(self: *Parser, text: []const u8, life: enum { joined, kept }) Error![]const u8 {
+    if (self.lines.stable()) return text;
+    return try (if (life == .kept) self.nodeAllocator() else self.a).dupe(u8, text);
 }
 
 fn addOwnedLeafSlice(self: *Parser, slice: []const u8, start: SourcePos, line: Line) Error!void {
@@ -943,9 +953,10 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) 
     defer self.dropLeaf();
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
     if (src.len == 0) return &.{};
-    const map: ?LineMap = if (self.track_pos) try self.leafLineMap(a) else null;
+    const scratch = self.scratch.allocator();
+    const map: ?LineMap = if (self.track_pos) try self.leafLineMap(scratch) else null;
     var dropped: std.ArrayList([]const u8) = .empty;
-    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from, &dropped, ends_line);
+    const nodes = try inline_mod.parseInlineContent(a, scratch, src, map, attrs_from, &dropped, ends_line);
     // An inline attribute attached to no node, or an id a later attribute overrode, was
     // registered all the same (djot.js); among one leaf's explicit ids the order cannot
     // show, so these go first.
@@ -955,6 +966,7 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) 
 }
 
 fn dropLeaf(self: *Parser) void {
+    _ = self.scratch.reset(.retain_capacity);
     self.leaf_slices.clearRetainingCapacity();
     self.leaf_starts.clearRetainingCapacity();
 }
