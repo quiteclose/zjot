@@ -677,14 +677,31 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
         .data = data,
     };
     if (c.makesNode()) {
-        // An explicit id waiting for this block counts before its content, where
-        // djot.js registers it (`Definitions.ids_parsed`).
         if (self.attrsSlot().*) |ba| {
-            if (ba.id != null) self.defs.ids_parsed += 1;
+            if (ba.id) |id| try self.countOpeningId(id, data == .para);
         }
         if (self.stack.items.len == 0) self.flush();
     }
     try self.stack.append(self.gpa, c);
+}
+
+/// Counts the explicit id waiting for a block that opens, before its content, where
+/// djot.js registers it (`Definitions.ids_parsed`); the block's node carries it, and
+/// `Ids` registers it there. A paragraph opening a definition list item is its term,
+/// whose node the item's close discards with the id (djot.js keeps the term's inlines,
+/// not its attributes), so that one is logged where it stands, as an id read off no node.
+fn countOpeningId(self: *Parser, id: []const u8, para: bool) Error!void {
+    if (para and self.opensTerm()) return self.looseId(id);
+    self.defs.ids_parsed += 1;
+}
+
+/// Whether a paragraph opening now is the first child of a definition list's item: its
+/// term, once the item closes.
+fn opensTerm(self: *Parser) bool {
+    const s = self.stack.items;
+    if (s.len < 2) return false;
+    const item = s[s.len - 1];
+    return item.data == .list_item and item.children.items.len == 0 and s[s.len - 2].data == .list and s[s.len - 2].data.list.style == .definition;
 }
 
 /// Registers `id`, read off any node, where it stands: counted now and logged with the
@@ -859,7 +876,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // Never completed: its lines are a paragraph (djot.js reparses them), which
             // takes the attributes waiting before it without having been pushed.
             if (self.attrsSlot().*) |ba| {
-                if (ba.id != null) self.defs.ids_parsed += 1;
+                if (ba.id) |id| try self.countOpeningId(id, true);
             }
             const attrs_from = try self.failedAttrsFrom();
             return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, 0, attrs_from, stand), stand);

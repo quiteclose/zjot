@@ -8402,3 +8402,71 @@ A table's rows claim their ids before its caption inside a block quote too, as d
 </ol>
 </section>
 ````
+
+A definition list item's term loses its attributes with its paragraph, but its id is registered where it stood, as djot.js: a later heading of that name is numbered.
+````
+: {#x}
+  term
+
+# x
+.
+<dl>
+<dt>term</dt>
+<dd>
+</dd>
+</dl>
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+A term's id is registered where it stood, before the headings of a footnote definition in the item and the body's: the footnote's heading takes the plain id, as djot.js.
+````
+: {#x}
+  term
+
+  [^n]: # Foo
+
+# Foo
+
+use[^n]
+.
+<dl>
+<dt>term</dt>
+<dd>
+</dd>
+</dl>
+<section id="Foo-1">
+<h1>Foo</h1>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+</section>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A term's id, then a heading inside the item, then one after: numbered in source order, as djot.js.
+````
+: {#x}
+  term
+
+  # x
+
+# x
+.
+<dl>
+<dt>term</dt>
+<dd>
+<h1 id="x-1">x</h1>
+</dd>
+</dl>
+<section id="x-2">
+<h1>x</h1>
+</section>
+````
