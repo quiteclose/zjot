@@ -9987,3 +9987,208 @@ doc
     para (4:1:10-5:0:14)
       str (4:1:10-4:4:13) text="para"
 ````
+
+A note first referenced inside another note is numbered by where its definition stands, as djot.js walks every definition in definition order before it writes the endnotes.
+````
+[^b]: B [^c]
+
+[^a]: A [^b]
+
+[^c]: C
+
+[^a]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>A <a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>C<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<p>B <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a href="#fnref3" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A note referenced only from a definition nothing references still gets an endnote, as djot.js.
+````
+[^x]: X [^y]
+
+[^y]: Y
+
+[^a]: A
+
+[^a]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>A<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>Y<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Nested definitions close inner first, so their notes are numbered inner first, as djot.js.
+````
+[^n0]: t0 [^n1]
+
+  [^n1]: t1 [^n2]
+
+    [^n2]: t2 [^n3]
+
+[^n0]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>t0 <a id="fnref4" href="#fn4" role="doc-noteref"><sup>4</sup></a><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<p>t2 <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a href="#fnref3" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn4">
+<p>t1 <a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a><a href="#fnref4" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Notes referenced in the body keep their reading order; only those first met inside a note follow the definitions, as djot.js.
+````
+[^b]: B [^d]
+
+[^a]: A
+
+[^d]: D
+
+[^c]: C [^b]
+
+[^a] [^c]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>A<a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>C <a id="fnref4" href="#fn4" role="doc-noteref"><sup>4</sup></a><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<p>D<a href="#fnref3" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn4">
+<p>B <a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a><a href="#fnref4" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Without a reference in the body there are no endnotes, whatever the definitions reference, as djot.js.
+````
+[^a]: A [^a]
+
+[^b]: B [^c]
+
+[^c]: C
+
+x
+.
+<p>x</p>
+````
+
+Definitions are walked in JavaScript's key order: labels that are array indexes first, ascending, then the rest as written, as djot.js.
+````
+[^b]: B [^10]
+
+[^10]: ten [^2]
+
+[^2]: two [^a]
+
+[^a]: A
+
+[^b]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>B <a id="fnref4" href="#fn4" role="doc-noteref"><sup>4</sup></a><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>A<a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<p>two <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a href="#fnref3" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn4">
+<p>ten <a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a><a href="#fnref4" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+Numeric labels defined in reverse are walked ascending; `01`, `-1` and `4294967295` are not array indexes, as djot.js.
+````
+[^3]: three [^2]
+
+[^2]: two [^1]
+
+[^1]: one [^01]
+
+[^01]: oh-one [^-1]
+
+[^-1]: minus [^4294967295]
+
+[^4294967295]: big [^0]
+
+[^0]: zero
+
+[^3]
+.
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p>three <a id="fnref4" href="#fn4" role="doc-noteref"><sup>4</sup></a><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<p>oh-one <a id="fnref5" href="#fn5" role="doc-noteref"><sup>5</sup></a><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn3">
+<p>one <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a><a href="#fnref3" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn4">
+<p>two <a id="fnref3" href="#fn3" role="doc-noteref"><sup>3</sup></a><a href="#fnref4" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn5">
+<p>minus <a id="fnref6" href="#fn6" role="doc-noteref"><sup>6</sup></a><a href="#fnref5" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn6">
+<p>big <a id="fnref7" href="#fn7" role="doc-noteref"><sup>7</sup></a><a href="#fnref6" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn7">
+<p>zero<a href="#fnref7" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````

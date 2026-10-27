@@ -233,6 +233,18 @@ const Output = struct {
         self.waiting -= 1;
     }
 
+    /// `label` as the array index JavaScript orders an object's keys by first: the canonical
+    /// decimal of an integer below 2^32 - 1, no sign or leading zero; null for any other key.
+    fn jsArrayIndex(label: []const u8) ?u32 {
+        if (label.len == 0 or label.len > 10 or (label.len > 1 and label[0] == '0')) return null;
+        var v: u64 = 0;
+        for (label) |c| {
+            if (c < '0' or c > '9') return null;
+            v = v * 10 + (c - '0');
+        }
+        return if (v < 4294967295) @intCast(v) else null;
+    }
+
     /// Numbers the footnote references the HTML renderer will write, in its order: an
     /// image's children are its alt text, where a reference is plain text.
     fn numberFootnotes(self: *Output, node: Node) !void {
@@ -359,6 +371,26 @@ const Output = struct {
             if (self.hold_sections) self.endSection(sections_end);
         }
         try self.drain(true);
+        // Once the body has referenced a note (djot.js writes endnotes only then), every
+        // definition's references take their numbers before any endnote is written, in the
+        // order djot.js walks its definitions object: labels that are array indexes first,
+        // ascending, then the rest as they closed. A note first referenced inside another
+        // is numbered by where its definition stands in that walk, and one referenced only
+        // from a definition nothing references gets an endnote all the same.
+        if (self.mode == .html and self.footnotes.order.count() > 0) {
+            const labels = self.resolver.defs.footnote_defs.keys();
+            const defs = self.resolver.defs.footnote_defs.values();
+            var indexes: std.ArrayList(usize) = .empty;
+            defer indexes.deinit(self.a);
+            for (labels, 0..) |label, i| if (jsArrayIndex(label) != null) try indexes.append(self.a, i);
+            std.mem.sort(usize, indexes.items, labels, struct {
+                fn lessThan(ls: []const []const u8, x: usize, y: usize) bool {
+                    return jsArrayIndex(ls[x]).? < jsArrayIndex(ls[y]).?;
+                }
+            }.lessThan);
+            for (indexes.items) |i| for (defs[i].blocks) |node| try self.numberFootnotes(node);
+            for (labels, defs) |label, def| if (jsArrayIndex(label) == null) for (def.blocks) |node| try self.numberFootnotes(node);
+        }
         // The footnotes follow the document, each resolved and written in scratch.
         var n: usize = 0;
         while (self.footnoteLabel(n)) |label| : (n += 1) {
