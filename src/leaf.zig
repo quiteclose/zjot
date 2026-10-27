@@ -103,7 +103,7 @@ pub fn closesDiv(line: []const u8, fence_len: usize) bool {
 }
 
 /// `rest_col` is the number of bytes before `rest` on its line.
-pub const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_col: u32, is_footnote: bool };
+pub const DefinitionLabel = struct { label: []const u8, rest: []const u8, rest_col: usize, is_footnote: bool };
 
 /// `[label]:` or `[^label]:` opening a reference or footnote definition: space
 /// indentation only, the label as written (`^` included; a reference's may be empty, as
@@ -122,7 +122,7 @@ pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     return .{
         .label = label,
         .rest = rest,
-        .rest_col = @intCast(line.len - after_colon.len + rest_lead),
+        .rest_col = line.len - after_colon.len + rest_lead,
         .is_footnote = is_footnote,
     };
 }
