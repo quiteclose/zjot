@@ -54,12 +54,18 @@ Deliberate differences from djot.js 0.3.2:
    suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
 
 8. A reference label is closed by its matching bracket, so `[a][b [c] d]` is a reference
-   link with the label `b [c] d`; djot.js 0.3.2 makes it text, its inner `[` shadowing the
-   label on its opener stack (and an inner `[c](u)` link would restore it). Decided
-   2026-10-26.
+   link with the label `b [c] d`, and a destination by its matching paren, so
+   `[a](u [b] c)` is a link to `u [b] c`; djot.js 0.3.2 makes both text, the inner `[`
+   shadowing the label or destination on its opener stack (and an inner `[c](u)` link
+   would restore it). Decided 2026-10-26.
 
 9. `\\![a](u)` is an escaped backslash and an image; djot.js 0.3.2 reads the raw `\` before
    the `!` and makes `\!` and a link. Decided 2026-10-26.
+
+10. A delimiter opened before a link closes nowhere inside the link's destination:
+    `_[a](b_c)` is `_` and a link to `b_c`; djot.js 0.3.2 runs its inline matchers over
+    the destination, closes the emphasis at the `_` inside it and loses the link. Decided
+    2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -9107,4 +9113,62 @@ An escaped `]` does not close a reference label, and is unescaped in it, as djot
 .
 <p><a>a</a></p>
 <p>[b]c]: /u</p>
+````
+
+A backslash escapes any ASCII punctuation, `&`, `,`, `/`, `;`, `?` and `@` included, as djot.js.
+````
+a\,b \&c \/d \;e \?f \@g
+.
+<p>a,b &amp;c /d ;e ?f @g</p>
+````
+
+An escaped comma in a destination is the comma, as djot.js.
+````
+[a](u\,v)
+.
+<p><a href="u,v">a</a></p>
+````
+
+A backslash before a space in a destination goes, the space stays, as djot.js.
+````
+[a](u\ v)
+.
+<p><a href="u v">a</a></p>
+````
+
+A backslash before a space in a reference label goes, and the label matches its definition, as djot.js.
+````
+[a][b\ c]
+
+[b c]: /v
+.
+<p><a href="/v">a</a></p>
+````
+
+A backslash ending a destination's line goes with the line end, as djot.js.
+````
+[a](u\
+v)
+.
+<p><a href="uv">a</a></p>
+````
+
+A backslash ending a reference label's line goes, the line end a space in the key, as djot.js.
+````
+[a][b\
+c]
+
+[b c]: /u
+.
+<p><a href="/u">a</a></p>
+````
+
+A reference label prints normalized in the AST, as djot.js.
+```` ap
+[a][ b  c ]
+.
+doc
+  para (1:1:0-2:0:11)
+    link (1:1:0-1:11:10) reference="b c"
+      str (1:2:1-1:2:1) text="a"
 ````
