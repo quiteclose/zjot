@@ -25,6 +25,8 @@ const OpenerInfo = struct {
     /// Where the opener starts in the source: the `{` of a marked one.
     src_pos: usize,
     marked: bool = false,
+    /// The opener of the same kind below this one, if any (`Scanner.tops`).
+    prev_same: ?usize = null,
 };
 
 /// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
@@ -56,6 +58,53 @@ const Scanner = struct {
     ends_line: bool,
     items: std.ArrayList(InlineItem) = .empty,
     openers: std.ArrayList(OpenerInfo) = .empty,
+    /// The nearest open opener of each kind (its char, marked or not), chained down
+    /// through `OpenerInfo.prev_same`, as djot.js keys its openers by kind: a closer
+    /// finds its opener, or learns there is none, without walking the openers of other
+    /// kinds above it, which a line of unmatched openers would make quadratic. Small, as
+    /// it is cleared for every leaf.
+    tops: [kinds]?usize = .{null} ** kinds,
+
+    const kinds = 22;
+
+    /// An opener's kind: one of the eleven chars that open, marked or not.
+    fn kind(char: u8, marked: bool) usize {
+        const c: usize = switch (char) {
+            '[' => 0,
+            '!' => 1,
+            '*' => 2,
+            '_' => 3,
+            '~' => 4,
+            '^' => 5,
+            '+' => 6,
+            '-' => 7,
+            '=' => 8,
+            '\'' => 9,
+            '"' => 10,
+            else => unreachable,
+        };
+        return c * 2 + @intFromBool(marked);
+    }
+
+    fn pushOpener(sc: *Scanner, opener: OpenerInfo) !void {
+        var op = opener;
+        const top = &sc.tops[kind(op.char, op.marked)];
+        op.prev_same = top.*;
+        top.* = sc.openers.items.len;
+        try sc.openers.append(sc.scratch, op);
+    }
+
+    fn topOpener(sc: *const Scanner, char: u8, marked: bool) ?usize {
+        return sc.tops[kind(char, marked)];
+    }
+
+    /// Drops the openers from `len` up, each kind's top falling back to the one below.
+    fn truncateOpeners(sc: *Scanner, len: usize) void {
+        while (sc.openers.items.len > len) {
+            const op = sc.openers.pop().?;
+            sc.tops[kind(op.char, op.marked)] = op.prev_same;
+        }
+    }
 
     fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) Node {
         const map = sc.map orelse return node;
@@ -252,7 +301,7 @@ const Scanner = struct {
                         continue;
                     }
                     // The bracket is an item of its own: the opener's index points at it.
-                    try sc.openers.append(sc.scratch, .{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
+                    try sc.pushOpener(.{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
                     try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 1]) });
                     pos += 1;
                     text_start = pos;
@@ -262,7 +311,7 @@ const Scanner = struct {
                     // the closing bracket, where the reference has already matched.
                     if (pos + 1 < src.len and src[pos + 1] == '[' and footnoteRefEnd(src, pos + 1) == null) {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
-                        try sc.openers.append(sc.scratch, .{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
+                        try sc.pushOpener(.{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
                         try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 2]) });
                         pos += 2;
                         text_start = pos;
@@ -396,13 +445,8 @@ const Scanner = struct {
     /// one closes nothing and ends the search, as djot.js (`{_a {__} b_}` keeps the first
     /// `{_` open and makes the inner `_}` text).
     fn markedOpener(sc: *const Scanner, char: u8) ?usize {
-        var i = sc.openers.items.len;
-        while (i > 0) {
-            i -= 1;
-            const op = sc.openers.items[i];
-            if (op.char == char and op.marked) return if (op.item_idx + 1 < sc.items.items.len) i else null;
-        }
-        return null;
+        const i = sc.topOpener(char, true) orelse return null;
+        return if (sc.openers.items[i].item_idx + 1 < sc.items.items.len) i else null;
     }
 
     /// Closes the marked opener `{X` with `X}` at `p` as a node of `tag` spanning both
@@ -412,7 +456,7 @@ const Scanner = struct {
         const op = sc.openers.items[i];
         const children = try sc.collectChildren(op.item_idx);
         try sc.emit(inlineContainer(tag, children), op.src_pos, p + 1);
-        sc.openers.items.len = i;
+        sc.truncateOpeners(i);
         return true;
     }
 
@@ -438,6 +482,14 @@ const Scanner = struct {
 
     fn applyInlineAttrs(sc: *Scanner, ba: BlockAttrs) !void {
         if (ba.id == null and ba.attrs.len == 0) return;
+        // Attributes written one after another apply as one object, as djot.js's would
+        // one key at a time: an id the later overrides was read all the same.
+        if (sc.items.items.len > 0) if (sc.items.items[sc.items.items.len - 1] == .pending_attrs) {
+            const prev = &sc.items.items[sc.items.items.len - 1].pending_attrs;
+            if (prev.id) |old| if (ba.writesId()) try sc.dropped.append(sc.scratch, old);
+            try prev.apply(ba, sc.a);
+            return;
+        };
         try sc.items.append(sc.scratch, .{ .pending_attrs = ba });
     }
 
@@ -452,28 +504,21 @@ const Scanner = struct {
         }
 
         const can_close = canCloseDelim(src, p) and !marked;
-        if (can_close) {
-            var i = sc.openers.items.len;
-            while (i > 0) {
-                i -= 1;
-                const op = sc.openers.items[i];
-                if (op.char == char and op.marked == marked) {
-                    if (op.item_idx + 1 < sc.items.items.len) {
-                        const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(inlineContainer(matchedTag(char), children), op.src_pos, p);
-                        sc.openers.items.len = i;
-                        pos.* = p + 1;
-                        return;
-                    }
-                    break;
-                }
+        if (can_close) if (sc.topOpener(char, marked)) |i| {
+            const op = sc.openers.items[i];
+            if (op.item_idx + 1 < sc.items.items.len) { // an empty pair closes nothing
+                const children = try sc.collectChildren(op.item_idx);
+                try sc.emit(inlineContainer(matchedTag(char), children), op.src_pos, p);
+                sc.truncateOpeners(i);
+                pos.* = p + 1;
+                return;
             }
-        }
+        };
 
         const can_open = marked or canOpenDelim(src, p);
         if (can_open) {
             const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = if (marked) p - 1 else p, .marked = marked };
-            try sc.openers.append(sc.scratch, opener);
+            try sc.pushOpener(opener);
             try sc.items.append(sc.scratch, .{ .opener = opener });
             pos.* = p + 1;
             return;
@@ -486,7 +531,7 @@ const Scanner = struct {
     fn handleBracedSpan(sc: *Scanner, pos: *usize) !void {
         const p = pos.*;
         const opener = OpenerInfo{ .char = sc.src[p + 1], .item_idx = sc.items.items.len, .src_pos = p, .marked = true };
-        try sc.openers.append(sc.scratch, opener);
+        try sc.pushOpener(opener);
         try sc.items.append(sc.scratch, .{ .opener = opener });
         pos.* = p + 2;
     }
@@ -494,11 +539,14 @@ const Scanner = struct {
     fn handleCloseBracket(sc: *Scanner, pos: *usize) !void {
         const src = sc.src;
         const p = pos.*;
-        var i = sc.openers.items.len;
-        while (i > 0) {
-            i -= 1;
+        // The nearest bracket of either kind.
+        const nearest: ?usize = if (sc.topOpener('[', false)) |b|
+            (if (sc.topOpener('!', false)) |e| @max(b, e) else b)
+        else
+            sc.topOpener('!', false);
+        if (nearest) |i| {
             const op = sc.openers.items[i];
-            if (op.char == '[' or op.char == '!') {
+            {
                 const is_image = op.char == '!';
                 // djot.js starts an image on its bracket, not its `!`.
                 const start = if (is_image) op.src_pos + 1 else op.src_pos;
@@ -511,7 +559,7 @@ const Scanner = struct {
                         const dest = processUrl(sc.a, raw_dest) catch raw_dest;
                         try sc.emit(linkNode(is_image, .{ .children = children, .destination = dest }), start, close_paren);
                         pos.* = close_paren + 1;
-                        sc.openers.items.len = i;
+                        sc.truncateOpeners(i);
                         return;
                     }
                 } else if (next < src.len and src[next] == '[') {
@@ -528,7 +576,7 @@ const Scanner = struct {
                             .{ .children = children, .reference = try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label)) };
                         try sc.emit(linkNode(is_image, link), start, close_ref);
                         pos.* = close_ref + 1;
-                        sc.openers.items.len = i;
+                        sc.truncateOpeners(i);
                         return;
                     }
                 } else if (next < src.len and src[next] == '{') {
@@ -544,7 +592,7 @@ const Scanner = struct {
                         try sc.emit(span_node, start, p);
                         pos.* = next;
                     }
-                    sc.openers.items.len = i;
+                    sc.truncateOpeners(i);
                     return;
                 }
 
@@ -555,7 +603,7 @@ const Scanner = struct {
                 const clears = next < src.len and (src[next] == '(' or src[next] == '[');
                 try sc.text(src[p .. p + 1]);
                 pos.* = p + 1;
-                if (clears) sc.openers.items.len = i + 1;
+                if (clears) sc.truncateOpeners(i + 1);
                 return;
             }
         }
@@ -664,28 +712,21 @@ const Scanner = struct {
         else
             false;
 
-        if (can_close) {
-            var i = sc.openers.items.len;
-            while (i > 0) {
-                i -= 1;
-                const op = sc.openers.items[i];
-                if (op.char == char and !op.marked) {
-                    if (op.item_idx + 1 < sc.items.items.len) {
-                        const tag: Tag = if (char == '"') .double_quoted else .single_quoted;
-                        const children = try sc.collectChildren(op.item_idx);
-                        try sc.emit(inlineContainer(tag, children), op.src_pos, p);
-                        sc.openers.items.len = i;
-                        pos.* = p + 1;
-                        return;
-                    }
-                    break;
-                }
+        if (can_close) if (sc.topOpener(char, false)) |i| {
+            const op = sc.openers.items[i];
+            if (op.item_idx + 1 < sc.items.items.len) {
+                const tag: Tag = if (char == '"') .double_quoted else .single_quoted;
+                const children = try sc.collectChildren(op.item_idx);
+                try sc.emit(inlineContainer(tag, children), op.src_pos, p);
+                sc.truncateOpeners(i);
+                pos.* = p + 1;
+                return;
             }
-        }
+        };
 
         if (can_open) {
             const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = if (marked) p - 1 else p, .marked = marked };
-            try sc.openers.append(sc.scratch, opener);
+            try sc.pushOpener(opener);
             try sc.items.append(sc.scratch, .{ .opener = opener });
         } else {
             // Can't open or close: emit a typographic quote as literal text.

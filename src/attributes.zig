@@ -11,21 +11,46 @@ const Attr = @import("node.zig").Attr;
 pub const BlockAttrs = struct {
     id: ?[]const u8 = null,
     attrs: []const Attr = &.{},
+    /// What the list can grow to in place before `apply` reallocates it, 0 for a slice
+    /// this object does not own (a node's, a parsed one's), which the first application
+    /// copies. An object applied to again and again grows by doubling, so a run of
+    /// applications costs what its result holds, not the sum of what it held.
+    attrs_cap: usize = 0,
+    /// The same for the buffer the class value is joined in.
+    class_cap: usize = 0,
+    /// The object's index by key, once it has one (`AttrObject`); none for a borrowed list.
+    index: ?*AttrObject.Index = null,
 
     /// `attrs` as the block attributes they are, the id read off them: an empty `id=""`
     /// stays an attribute and names nothing, as djot.js tests the id's truthiness.
     pub fn fromAttrs(attrs: []const Attr) BlockAttrs {
-        const id = find(attrs, "id") orelse "";
-        return .{ .id = if (id.len > 0) id else null, .attrs = attrs };
+        return .{ .id = idOf(attrs), .attrs = attrs };
     }
 
-    /// `other` applied over `self`, as djot.js applies one block attribute's object to
-    /// the one before it: each key set as `setAttr` sets it, the classes joined.
+    fn idOf(attrs: []const Attr) ?[]const u8 {
+        const id = find(attrs, "id") orelse "";
+        return if (id.len > 0) id else null;
+    }
+
+    /// `other` applied over `self` in place, as djot.js applies one block attribute's
+    /// object to the one before it: each key set as `setAttr` sets it, the classes joined.
+    pub fn apply(self: *BlockAttrs, other: BlockAttrs, a: Allocator) !void {
+        var obj = AttrObject{ .list = .{ .items = @constCast(self.attrs), .capacity = self.attrs_cap }, .class_cap = self.class_cap, .index = self.index };
+        if (self.attrs_cap == 0) { // not this object's to write: copied first, with room
+            obj = .{};
+            try obj.list.ensureTotalCapacity(a, @max(8, 2 * (self.attrs.len + other.attrs.len)));
+            obj.list.appendSliceAssumeCapacity(self.attrs);
+        }
+        for (other.attrs) |oa| try obj.set(a, oa.key, oa.value, std.mem.eql(u8, oa.key, "class"));
+        const id = if (obj.find("id")) |i| obj.list.items[i].value else "";
+        self.* = .{ .id = if (id.len > 0) id else null, .attrs = obj.list.items, .attrs_cap = obj.list.capacity, .class_cap = obj.class_cap, .index = obj.index };
+    }
+
+    /// `other` applied over a copy of `self`, which stays as it is.
     pub fn merge(self: BlockAttrs, other: BlockAttrs, a: Allocator) !BlockAttrs {
-        var merged: std.ArrayList(Attr) = .empty;
-        try merged.appendSlice(a, self.attrs);
-        for (other.attrs) |oa| try setAttr(a, &merged, oa.key, oa.value, std.mem.eql(u8, oa.key, "class"));
-        return fromAttrs(try merged.toOwnedSlice(a));
+        var copy = BlockAttrs{ .attrs = self.attrs }; // borrowed: `apply` copies before it writes
+        try copy.apply(other, a);
+        return copy;
     }
 
     /// Whether an id was written, `#x` or `id=`, empty included: a later one overrides
@@ -52,18 +77,65 @@ pub const BlockAttrs = struct {
     }
 };
 
-/// Sets `key` in `attrs` as djot.js's attribute object does: a key keeps its first position
-/// and takes the value, `join` adding it after the value there with a space (a `.class`,
-/// and a class merged from a later block attribute); `class=c` written as a key starts the
-/// classes over, and `id=x` is the id as `#x` is.
-fn setAttr(a: Allocator, attrs: *std.ArrayList(Attr), key: []const u8, value: []const u8, join: bool) !void {
-    for (attrs.items) |*attr| {
-        if (std.mem.eql(u8, attr.key, key)) {
-            attr.value = if (join and attr.value.len > 0) try std.mem.concat(a, u8, &.{ attr.value, " ", value }) else value;
+/// An attribute object under construction, djot.js's: `set` keeps a key's first position
+/// and gives it the last value, `join` adding the value after the one there with a space
+/// (a `.class`, and a class merged from a later block attribute); `class=c` written as a
+/// key starts the classes over, and `id=x` is the id as `#x` is. A key is found by a
+/// scan of the list while the list is short and by an index once it is not, so a run of
+/// a thousand keys costs a thousand sets, not a million comparisons.
+const AttrObject = struct {
+    list: std.ArrayList(Attr) = .empty,
+    /// The room in the buffer the class value is joined in (`joinClass`), 0 for none.
+    class_cap: usize = 0,
+    index: ?*Index = null,
+
+    const Index = std.StringHashMapUnmanaged(usize);
+    const index_from = 32;
+
+    fn find(self: *const AttrObject, key: []const u8) ?usize {
+        if (self.index) |ix| return ix.get(key);
+        for (self.list.items, 0..) |attr, i| if (std.mem.eql(u8, attr.key, key)) return i;
+        return null;
+    }
+
+    fn set(self: *AttrObject, a: Allocator, key: []const u8, value: []const u8, join: bool) !void {
+        if (self.find(key)) |i| {
+            const attr = &self.list.items[i];
+            if (join and attr.value.len > 0) {
+                attr.value = try joinClass(a, &self.class_cap, attr.value, value);
+            } else {
+                attr.value = value;
+                if (std.mem.eql(u8, key, "class")) self.class_cap = 0;
+            }
             return;
         }
+        try self.list.append(a, .{ .key = key, .value = value });
+        if (self.index) |ix| {
+            try ix.put(a, key, self.list.items.len - 1);
+        } else if (self.list.items.len > index_from) {
+            const ix = try a.create(Index);
+            ix.* = .{};
+            for (self.list.items, 0..) |attr, i| try ix.put(a, attr.key, i);
+            self.index = ix;
+        }
     }
-    try attrs.append(a, .{ .key = key, .value = value });
+};
+
+/// `value` after `sofar` and a space, in a buffer that doubles as it fills: `cap` is the
+/// buffer's size when `sofar` is in one, else 0 and a buffer is made.
+fn joinClass(a: Allocator, cap: *usize, sofar: []const u8, value: []const u8) ![]const u8 {
+    const need = sofar.len + 1 + value.len;
+    var buf: []u8 = undefined;
+    if (cap.* >= need) {
+        buf = @constCast(sofar.ptr)[0..cap.*];
+    } else {
+        buf = try a.alloc(u8, @max(2 * need, 16));
+        @memcpy(buf[0..sofar.len], sofar);
+        cap.* = buf.len;
+    }
+    buf[sofar.len] = ' ';
+    @memcpy(buf[sofar.len + 1 .. need], value);
+    return buf[0..need];
 }
 
 pub const AttrParseStatus = enum { done, fail, @"continue" };
@@ -73,7 +145,8 @@ pub const AttrParser = struct {
     state: AttrState,
     begin: ?usize,
     lastpos: ?usize,
-    attrs_list: std.ArrayList(Attr),
+    /// The attributes read so far.
+    obj: AttrObject = .{},
     value_buf: std.ArrayList(u8),
     current_key: ?[]const u8,
     a: Allocator,
@@ -99,7 +172,6 @@ pub const AttrParser = struct {
             .state = .start,
             .begin = null,
             .lastpos = null,
-            .attrs_list = .empty,
             .value_buf = .empty,
             .current_key = null,
             .a = a,
@@ -294,7 +366,7 @@ pub const AttrParser = struct {
     fn emitId(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
-            if (lp > b) try setAttr(self.a, &self.attrs_list, "id", self.src[b + 1 .. pos], false); // an empty `#` names nothing (djot.js)
+            if (lp > b) try self.obj.set(self.a, "id", self.src[b + 1 .. pos], false); // an empty `#` names nothing (djot.js)
             self.begin = null;
         }
     }
@@ -302,7 +374,7 @@ pub const AttrParser = struct {
     fn emitClass(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
-            if (lp > b) try setAttr(self.a, &self.attrs_list, "class", self.src[b + 1 .. pos], true); // an empty `.` names nothing (djot.js)
+            if (lp > b) try self.obj.set(self.a, "class", self.src[b + 1 .. pos], true); // an empty `.` names nothing (djot.js)
             self.begin = null;
         }
     }
@@ -311,7 +383,7 @@ pub const AttrParser = struct {
         if (self.begin) |b| {
             const value = self.src[b..pos];
             if (self.current_key) |key| {
-                try setAttr(self.a, &self.attrs_list, key, value, false);
+                try self.obj.set(self.a, key, value, false);
                 self.current_key = null;
             }
             self.begin = null;
@@ -324,13 +396,13 @@ pub const AttrParser = struct {
             if (self.current_key) |key| {
                 const raw = try self.value_buf.toOwnedSlice(self.a);
                 const value = try self.processEscapes(try self.collapseBlanks(raw));
-                try setAttr(self.a, &self.attrs_list, key, value, false);
+                try self.obj.set(self.a, key, value, false);
                 self.current_key = null;
             }
         } else if (self.begin) |b| {
             const value = try self.processEscapes(try self.collapseBlanks(self.src[b + 1 .. pos]));
             if (self.current_key) |key| {
-                try setAttr(self.a, &self.attrs_list, key, value, false);
+                try self.obj.set(self.a, key, value, false);
                 self.current_key = null;
             }
         }
@@ -384,7 +456,7 @@ pub const AttrParser = struct {
     }
 
     pub fn finish(self: *AttrParser) !BlockAttrs {
-        return BlockAttrs.fromAttrs(try self.attrs_list.toOwnedSlice(self.a));
+        return BlockAttrs.fromAttrs(try self.obj.list.toOwnedSlice(self.a));
     }
 
     fn isName(c: u8) bool {
