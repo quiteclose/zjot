@@ -233,7 +233,7 @@ const Scanner = struct {
                     if (pos + 1 < src.len and src[pos + 1] == '^') {
                         if (findMatchingBracket(src, pos)) |close| {
                             if (close > pos + 2) { // a reference has a label: `[^]` is text (djot.js)
-                                try sc.emit(.{ .data = .{ .footnote_reference = src[pos + 2 .. close] } }, pos, close);
+                                try sc.emit(.{ .data = .{ .footnote_reference = try normalizeLabel(sc.a, src[pos + 2 .. close]) } }, pos, close);
                                 pos = close + 1;
                                 text_start = pos;
                                 continue;
@@ -358,6 +358,8 @@ const Scanner = struct {
         sc.trimTrailingWhitespace();
     }
 
+    /// Before a line break: spaces and tabs go (djot.js); at the paragraph's end
+    /// (`trimTrailingWhitespace`) only spaces do, a trailing tab being content there.
     fn stripTrailingSpacesFromLastStr(sc: *Scanner) void {
         if (sc.items.items.len == 0) return;
         switch (sc.items.items[sc.items.items.len - 1]) {
@@ -376,7 +378,7 @@ const Scanner = struct {
             switch (sc.items.items[sc.items.items.len - 1]) {
                 .node => |*n| {
                     if (n.data == .str) {
-                        sc.setText(n, std.mem.trimEnd(u8, n.data.str, " \t"));
+                        sc.setText(n, std.mem.trimEnd(u8, n.data.str, " "));
                         if (n.data.str.len == 0) {
                             _ = sc.items.pop();
                             continue;
@@ -973,8 +975,10 @@ fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
     return buf.toOwnedSlice(a);
 }
 pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
-    const needs_normalization = for (raw) |c| {
-        if (c == '\n' or c == '\r' or c == '\t') break true;
+    // As djot.js keys labels: trimmed, each run of whitespace one space; `raw` itself
+    // when it is so already.
+    const needs_normalization = (raw.len > 0 and (raw[0] == ' ' or raw[raw.len - 1] == ' ')) or for (raw, 0..) |c, i| {
+        if (c == '\n' or c == '\r' or c == '\t' or (c == ' ' and i + 1 < raw.len and raw[i + 1] == ' ')) break true;
     } else false;
     if (!needs_normalization) return raw;
     var buf: std.ArrayList(u8) = .empty;

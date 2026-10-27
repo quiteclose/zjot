@@ -57,7 +57,7 @@ pub fn build(b: *std.Build) void {
 
     // One fixture per block family: test/cli/NAME.dj, with the expected output of each
     // mode beside it as NAME.html, NAME.ast and NAME.sourcepos.ast (AGENTS.md: Test suite).
-    const fixtures = [_][]const u8{ "hi", "headings", "inlines", "lists", "code", "blockquote", "table", "footnotes" };
+    const fixtures = [_][]const u8{ "hi", "headings", "inlines", "lists", "code", "blockquote", "table", "footnotes", "nofinal" };
     for (fixtures) |name| {
         const dj = b.fmt("test/cli/{s}.dj", .{name});
         inline for (.{

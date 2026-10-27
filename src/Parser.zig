@@ -62,6 +62,8 @@ leaf_slices: std.ArrayList([]const u8) = .empty,
 leaf_starts: std.ArrayList(LeafStart) = .empty,
 /// The newline of the open leaf's last line, where its `LineMap` ends.
 leaf_last_eol: SourcePos = undefined,
+/// Whether the open leaf's last line ended in a newline: only the input's last line may not.
+leaf_last_newline: bool = true,
 /// Children lists of closed containers, reused by the next ones pushed.
 spare_lists: std.ArrayList(std.ArrayList(Node)) = .empty,
 /// Open footnotes: their content is allocated for the document, not the block.
@@ -367,8 +369,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             const r = cur.rest();
             const hashes = leaf.countLeadingChar(r, '#');
             if (hashes != h.level or (hashes < r.len and r[hashes] != ' ' and r[hashes] != '\t')) return false;
-            cur.i += hashes;
-            c.leaf_end = afterContent(cur.line);
+            cur.i += hashes; // the heading ends where its text does: a bare marker line adds none
             return true;
         },
         .thematic_break => return false,
@@ -522,7 +523,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
             // Logged as it opens, with the counts before it; its own id, in the block
             // attributes waiting for it, counts next (djot.js registers it where it is
             // written), then its content's.
-            const label = try self.defs.a.dupe(u8, def.label[1..]);
+            const label = try self.defs.a.dupe(u8, try inline_mod.normalizeLabel(self.a, def.label[1..])); // as a reference's
             try self.defs.log.append(self.defs.gpa, .{
                 .headings_before = self.defs.headings_parsed,
                 .ids_before = self.defs.ids_parsed,
@@ -544,7 +545,8 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
         // (`[^n]:x`, no space after the colon, is one, labelled `^n`, as djot.js).
         if (std.mem.indexOfAny(u8, def.rest, " \t") == null and def.rest_col + def.rest.len == r.len) {
             try self.closeFrom(matched, stand);
-            try self.push(.{ .reference_definition = .{ .label = try self.defs.a.dupe(u8, def.label), .indent = cur.indent } }, cur.pos());
+            // The label as djot.js keys it: trimmed, each run of whitespace one space.
+            try self.push(.{ .reference_definition = .{ .label = try self.defs.a.dupe(u8, try inline_mod.normalizeLabel(self.a, def.label)), .indent = cur.indent } }, cur.pos());
             if (def.rest.len > 0) try self.addLeafSlice(def.rest, cur.at(cur.i + def.rest_col), cur.line);
             cur.i = cur.line.bytes.len;
             return true;
@@ -787,7 +789,7 @@ fn failedAttrsFrom(self: *Parser) Error!usize {
 /// The rest of the line at `cur` as the open leaf's next line.
 fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     const text = switch (self.tip().data) {
-        .heading => std.mem.trimEnd(u8, cur.rest(), " \t"),
+        .heading => std.mem.trimEnd(u8, cur.rest(), " "), // trailing spaces go, tabs stay (djot.js)
         else => cur.rest(),
     };
     try self.addLeafSlice(text, cur.pos(), cur.line);
@@ -803,6 +805,7 @@ fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) E
     try self.leaf_slices.append(self.gpa, slice);
     try self.leaf_starts.append(self.gpa, .{ .pos = start, .newline = line.newlineBefore() });
     self.leaf_last_eol = line.eol;
+    self.leaf_last_newline = line.newline;
 }
 
 /// Where the open leaf's inline content is read from: `joined_start` of each line in the
@@ -840,7 +843,7 @@ fn dropLeaf(self: *Parser) void {
 
 /// One past the last non-blank character of `line`: its newline unless whitespace trails.
 fn afterContent(line: Line) SourcePos {
-    const trimmed = std.mem.trimEnd(u8, line.bytes, " \t").len;
+    const trimmed = std.mem.trimEnd(u8, line.bytes, " ").len; // spaces, not tabs, as djot.js
     if (trimmed == line.bytes.len) return line.eol;
     const content = std.math.lossyCast(u32, trimmed);
     return .{ .line = line.pos.line, .col = content +| 1, .offset = line.pos.offset +| content };
@@ -1066,7 +1069,8 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const url = try std.mem.concat(da, u8, self.leaf_slices.items);
             self.dropLeaf();
             const slot = self.attrsSlot();
-            try self.defs.ref_defs.put(self.defs.gpa, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
+            // An empty label defines nothing (djot.js parses the line and stores no entry).
+            if (rd.label.len > 0) try self.defs.ref_defs.put(self.defs.gpa, rd.label, .{ .url = url, .attrs = if (slot.*) |ba| try ba.dupe(da) else null });
             // Its id is registered where it is written, off any node (djot.js).
             if (slot.*) |ba| {
                 if (ba.id) |id| try self.looseId(id);
@@ -1078,10 +1082,12 @@ fn close(self: *Parser, stand: Stand) Error!void {
     try self.closeAs(node, stand);
 }
 
-/// The open code block's text: its lines, each with a newline, which empties the buffers.
+/// The open code block's text: its lines, each with its newline, which empties the
+/// buffers. The input's last line may have none, and then the text has none (djot.js).
 fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
     defer self.dropLeaf();
-    return inline_mod.joinLinesTerminated(a, self.leaf_slices.items);
+    const text = try inline_mod.joinLinesTerminated(a, self.leaf_slices.items);
+    return if (self.leaf_last_newline or text.len == 0) text else text[0 .. text.len - 1];
 }
 
 /// A paragraph, heading (of `level`) or caption over the open leaf's inlines.
@@ -1114,12 +1120,14 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         // other block is returned at once, or next if one is already due.
         self.flush();
         std.debug.assert(self.pending == null);
+        // The block takes its arena with it; what opens from here on is the next block's,
+        // made first, so that failing leaves every arena owned once.
+        const next = self.spare orelse try newArena(self.gpa);
+        self.spare = null;
         const block = Block{ .node = n, .arena = self.arena, .last = n.end_pos };
         if (n.data == .table or self.done != null) self.pending = block else self.done = block;
-        // The block takes its arena with it; what opens from here on is the next block's.
-        self.arena = self.spare orelse try newArena(self.gpa);
-        self.spare = null;
-        self.a = self.arena.allocator();
+        self.arena = next;
+        self.a = next.allocator();
         // The block ended on the line before the one that closed it, unless that line was
         // its own (a closing fence) or the last.
         self.last_block_line = if (stand.eof or stand.inclusive) self.line_count else self.line_count - 1;

@@ -109,6 +109,10 @@ pub fn main(init: std.process.Init) !u8 {
             try printErr(init.io, "zjot: {s}: input exceeds 2^64 - 1 bytes or lines\n", .{name});
             return 1;
         },
+        error.TooDeep => {
+            try printErr(init.io, "zjot: {s}: nesting deeper than {d} levels\n", .{ name, zjot.max_nesting });
+            return 1;
+        },
         else => |e| return e,
     };
     w.interface.flush() catch return writeFailed(init.io);
