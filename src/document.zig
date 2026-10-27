@@ -343,7 +343,8 @@ pub const Resolver = struct {
 
 /// The section structure as events, so a consumer can write around headings without
 /// building a tree. A heading closes every open section of its level or deeper, opens its own,
-/// and moves its id and attributes onto it. Open levels strictly increase, so the
+/// and moves its id onto it, and its written attributes only when they hold an id (djot.js
+/// moves `attributes` with the id in them, and the generated id alone). Open levels strictly increase, so the
 /// stack is at most six deep and one block yields at most eight events. A section's end
 /// is the consumer's to fill in when it closes: where the heading that closes it ends, as
 /// djot.js (`parse.js` pops sections at the `-heading` event), or the document's end.
@@ -374,13 +375,16 @@ pub const Sections = struct {
         }
         self.levels[self.depth] = level;
         self.depth += 1;
+        const explicit = for (block.attrs) |attr| {
+            if (std.mem.eql(u8, attr.key, "id")) break true;
+        } else false;
         var heading = block;
         heading.id = null;
-        heading.attrs = &.{};
+        if (explicit) heading.attrs = &.{};
         self.events[n] = .{ .open = .{
             .data = .{ .section = .{ .level = level } },
             .id = block.id,
-            .attrs = block.attrs,
+            .attrs = if (explicit) block.attrs else &.{},
             .start_pos = block.start_pos,
         } };
         self.events[n + 1] = .{ .block = heading };
