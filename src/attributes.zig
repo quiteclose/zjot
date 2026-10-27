@@ -365,6 +365,16 @@ pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
     return null;
 }
 
+/// Whether `src` holds a complete block attribute with text after its `}`: such a line
+/// is a paragraph, not a block attribute, as djot.js opens one only when the `}` ends
+/// the line (what follows is read as inline attributes there).
+pub fn textAfterAttr(a: Allocator, src: []const u8) !bool {
+    if (src.len < 2 or src[0] != '{') return false;
+    var parser = AttrParser.init(a, src);
+    const result = try parser.feed(0, src.len -| 1);
+    return result.status == .done and result.position + 1 < src.len;
+}
+
 /// Whether `line` opens a block attribute it does not close: `{` followed by attribute
 /// syntax that is still incomplete at the end of the line.
 pub fn opensAttr(a: Allocator, line: []const u8) !bool {

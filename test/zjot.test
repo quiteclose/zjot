@@ -8921,3 +8921,68 @@ doc
       cell (1:1:0-1:5:4) head=true align="default"
         str (1:3:2-1:3:2) text="a"
 ````
+
+A complete block attribute with text after its `}` is a paragraph, as djot.js, which reads what follows as inline attributes: both ids are registered, neither applies.
+````
+{#x .b}	 {#y}
+para
+
+# x
+
+# y
+.
+<p>	 
+para</p>
+<section id="x-1">
+<h1>x</h1>
+</section>
+<section id="y-1">
+<h1>y</h1>
+</section>
+````
+
+A block attribute followed by another on the same line is a paragraph, as djot.js.
+````
+{#x} {.c}
+para
+
+# x
+.
+<p> 
+para</p>
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+A block attribute followed by a word is a paragraph, as djot.js.
+````
+{#x} junk
+para
+
+# x
+.
+<p> junk
+para</p>
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+A footnote reference's label ends at the first `]`, as djot.js: a bracket inside it is not matched.
+````
+q[^a[b]c]
+
+[^a[b]c]: n
+.
+<p>q<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a>c]</p>
+<p><a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a>c]: n</p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
