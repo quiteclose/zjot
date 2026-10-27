@@ -111,8 +111,12 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         else => {},
     }
 
-    // Attributes print as djot.js's text form does: id, class, then the rest in order.
-    if (node.id) |id| {
+    // Attributes print as djot.js's text form does: id, class, then the rest in order;
+    // the written id over a generated one, an empty `id=""` included (html.zig).
+    const written = for (node.attrs) |attr| {
+        if (std.mem.eql(u8, attr.key, "id")) break attr.value;
+    } else null;
+    if (written orelse node.id) |id| {
         try out.appendSlice(a, " id=");
         try appendJsonStr(a, out, id);
     }

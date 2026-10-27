@@ -861,7 +861,7 @@ const Scanner = struct {
             .symb,
             => {
                 if (last.id) |old| {
-                    if (ba.id != null) try sc.dropped.append(sc.a, old);
+                    if (ba.writesId()) try sc.dropped.append(sc.a, old);
                 }
                 nodes.items[nodes.items.len - 1] = try applyLaterAttrsToNode(sc.a, last.*, ba);
             },

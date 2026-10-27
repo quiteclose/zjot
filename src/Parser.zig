@@ -1030,8 +1030,9 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 // Waits for the next block in the container it was written in.
                 const slot = self.attrsSlot();
                 if (slot.*) |existing| {
-                    // An id a later line's overrides was still read (djot.js registers it).
-                    if (existing.id != null and attrs.id != null) try self.looseId(existing.id.?);
+                    // An id a later line's overrides, an empty one included, was still read
+                    // (djot.js registers it).
+                    if (existing.id != null and attrs.writesId()) try self.looseId(existing.id.?);
                 }
                 slot.* = if (slot.*) |existing| try existing.merge(attrs, self.nodeAllocator()) else attrs;
                 self.dropLeaf();
