@@ -383,7 +383,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             // Lines indented past the opener keep the attribute going until it parses.
             if (!cur.atEol() and cur.indent > at.indent) {
                 // Stored with its trailing tab, content should it become a paragraph.
-                try self.addLeafSlice(std.mem.trimEnd(u8, std.mem.trimStart(u8, cur.rest(), " \t"), " "), cur.pos(), cur.line);
+                try self.addLeafSlice(std.mem.trimStart(u8, cur.rest(), " \t"), cur.pos(), cur.line);
                 c.leaf_end = afterContent(cur.line);
                 const a = self.nodeAllocator();
                 at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t"));
@@ -585,7 +585,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     if (r[0] == '{' and !try attrs_mod.textAfterAttr(self.nodeAllocator(), std.mem.trimEnd(u8, r, " \t"))) {
         try self.closeFrom(matched, stand);
         try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
-        try self.addLeafSlice(std.mem.trimEnd(u8, r, " "), cur.pos(), cur.line); // a trailing tab stays: content if this fails
+        try self.addLeafSlice(r, cur.pos(), cur.line); // trailing blanks stay: content if this fails
         self.tip().leaf_end = afterContent(cur.line);
         // Complete on one line, or kept open for the indented lines that may follow. The
         // attributes keep slices of the text they are parsed from, so that is the leaf's
@@ -646,7 +646,8 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
     const strs = try leaf.rowCells(a, r);
     const cells = try a.alloc(Node, strs.len);
     for (strs, cells, 0..) |str, *cell, i| {
-        const text = trimEndKeepingEscape(std.mem.trimStart(u8, str, " \t"), " \t");
+        // Trailing spaces go, a tab stays, as djot.js's row parser has it.
+        const text = trimEndKeepingEscape(std.mem.trimStart(u8, str, " \t"), " ");
         // Where the cell's text and its pipes lie on the line.
         const idx = cur.i + (@intFromPtr(str.ptr) - @intFromPtr(r.ptr));
         const text_idx = idx + (@intFromPtr(text.ptr) - @intFromPtr(str.ptr));
@@ -807,10 +808,9 @@ fn failedAttrsFrom(self: *Parser) Error!usize {
 
 /// The rest of the line at `cur` as the open leaf's next line.
 fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
-    const text = switch (self.tip().data) {
-        .heading => trimEndKeepingEscape(cur.rest(), " "), // trailing spaces go, tabs stay (djot.js)
-        else => cur.rest(),
-    };
+    // Trailing blanks stay: before a soft break they are content, and at the block's end
+    // the inline parser trims the spaces, as djot.js.
+    const text = cur.rest();
     try self.addLeafSlice(text, cur.pos(), cur.line);
     self.tip().leaf_end = afterContent(cur.line);
 }

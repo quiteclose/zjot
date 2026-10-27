@@ -155,7 +155,7 @@ pub fn isTableRow(line: []const u8) bool {
     var i: usize = 0;
     var ends_with_pipe = false;
     while (i < trimmed.len) {
-        if (trimmed[i] == '\\' and i + 1 < trimmed.len) {
+        if (escapesInRow(trimmed, i)) {
             i += 2;
         } else if (trimmed[i] == '`') {
             i = skipBacktickSpan(trimmed, i);
@@ -165,6 +165,13 @@ pub fn isTableRow(line: []const u8) bool {
         }
     }
     return ends_with_pipe;
+}
+
+/// Whether the backslash at `i` escapes the pipe or backtick after it. A pipe right after
+/// a backslash is escaped whatever stands before the backslash, as djot.js's row parser
+/// has it (`| a\\|` is a paragraph there).
+fn escapesInRow(line: []const u8, i: usize) bool {
+    return line[i] == '\\' and i + 1 < line.len and (line[i + 1] == '|' or line[i + 1] == '`');
 }
 
 /// A separator row: `|`, then cells of `:?-+:?`, each ending at its pipe, spaces allowed
@@ -226,7 +233,7 @@ fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
     var i: usize = 0;
     var cell_start: usize = 0;
     while (i < content.len) {
-        if (content[i] == '\\' and i + 1 < content.len) {
+        if (escapesInRow(content, i)) {
             i += 2;
         } else if (content[i] == '`') {
             i = skipBacktickSpan(content, i);
