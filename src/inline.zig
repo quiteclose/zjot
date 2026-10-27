@@ -35,8 +35,10 @@ const OpenerInfo = struct {
 /// `ends_line` says whether a line end follows `src` (a table cell's does not), which is
 /// where a backslash ending it is a hard break (djot.js ends a block's subject with a
 /// newline, a cell's not).
-pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8), ends_line: bool) Allocator.Error![]const Node {
-    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from, .dropped = dropped, .ends_line = ends_line };
+/// `a` is for what the nodes keep; `scratch` for the scanner's working lists, which the
+/// caller may reset once the nodes are returned (`dropped` grows on it too).
+pub fn parseInlineContent(a: Allocator, scratch: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8), ends_line: bool) Allocator.Error![]const Node {
+    var sc = Scanner{ .a = a, .scratch = scratch, .src = src, .map = map, .attrs_from = attrs_from, .dropped = dropped, .ends_line = ends_line };
     try sc.run();
     return sc.resolveItems(sc.items.items);
 }
@@ -46,6 +48,7 @@ pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_fr
 /// made without the source it came from.
 const Scanner = struct {
     a: Allocator,
+    scratch: Allocator,
     src: []const u8,
     map: ?LineMap,
     attrs_from: usize = 0,
@@ -63,7 +66,7 @@ const Scanner = struct {
     }
 
     fn emit(sc: *Scanner, node: Node, start: usize, end: usize) !void {
-        try sc.items.append(sc.a, .{ .node = sc.positioned(node, start, end) });
+        try sc.items.append(sc.scratch, .{ .node = sc.positioned(node, start, end) });
     }
 
     fn within(sc: *const Scanner, slice: []const u8) bool {
@@ -114,7 +117,7 @@ const Scanner = struct {
                 else => {},
             }
         }
-        try sc.items.append(sc.a, .{ .node = sc.strNode(slice) });
+        try sc.items.append(sc.scratch, .{ .node = sc.strNode(slice) });
     }
 
     fn run(sc: *Scanner) !void {
@@ -248,8 +251,8 @@ const Scanner = struct {
                         continue;
                     }
                     // The bracket is an item of its own: the opener's index points at it.
-                    try sc.openers.append(sc.a, .{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
-                    try sc.items.append(sc.a, .{ .node = sc.strNode(src[pos .. pos + 1]) });
+                    try sc.openers.append(sc.scratch, .{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
+                    try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 1]) });
                     pos += 1;
                     text_start = pos;
                 },
@@ -258,8 +261,8 @@ const Scanner = struct {
                     // the closing bracket, where the reference has already matched.
                     if (pos + 1 < src.len and src[pos + 1] == '[' and footnoteRefEnd(src, pos + 1) == null) {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
-                        try sc.openers.append(sc.a, .{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
-                        try sc.items.append(sc.a, .{ .node = sc.strNode(src[pos .. pos + 2]) });
+                        try sc.openers.append(sc.scratch, .{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
+                        try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 2]) });
                         pos += 2;
                         text_start = pos;
                     } else {
@@ -438,7 +441,7 @@ const Scanner = struct {
 
     fn applyInlineAttrs(sc: *Scanner, ba: BlockAttrs) !void {
         if (ba.id == null and ba.attrs.len == 0) return;
-        try sc.items.append(sc.a, .{ .pending_attrs = ba });
+        try sc.items.append(sc.scratch, .{ .pending_attrs = ba });
     }
 
     fn handleEmphDelimiter(sc: *Scanner, pos: *usize, char: u8, marked: bool) !void {
@@ -474,8 +477,8 @@ const Scanner = struct {
         const can_open = marked or canOpenDelim(src, p);
         if (can_open) {
             const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = if (marked) p - 1 else p, .marked = marked };
-            try sc.openers.append(sc.a, opener);
-            try sc.items.append(sc.a, .{ .opener = opener });
+            try sc.openers.append(sc.scratch, opener);
+            try sc.items.append(sc.scratch, .{ .opener = opener });
             pos.* = p + 1;
             return;
         }
@@ -487,8 +490,8 @@ const Scanner = struct {
     fn handleBracedSpan(sc: *Scanner, pos: *usize) !void {
         const p = pos.*;
         const opener = OpenerInfo{ .char = sc.src[p + 1], .item_idx = sc.items.items.len, .src_pos = p, .marked = true };
-        try sc.openers.append(sc.a, opener);
-        try sc.items.append(sc.a, .{ .opener = opener });
+        try sc.openers.append(sc.scratch, opener);
+        try sc.items.append(sc.scratch, .{ .opener = opener });
         pos.* = p + 2;
     }
 
@@ -536,7 +539,7 @@ const Scanner = struct {
                     // A span, with the attributes when they parse; else the brace is text
                     // (djot.js). An image's `!` is text before it.
                     const children = try sc.collectChildren(op.item_idx);
-                    if (is_image) try sc.items.append(sc.a, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
+                    if (is_image) try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
                     const span_node = Node{ .data = .{ .span = children } };
                     if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
                         try sc.emit(try applyBlockAttrsToNode(sc.a, span_node, parsed.attrs), start, p);
@@ -612,8 +615,8 @@ const Scanner = struct {
 
         if (canOpenDelim(sc.src, p)) {
             const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = p };
-            try sc.openers.append(sc.a, opener);
-            try sc.items.append(sc.a, .{ .opener = opener });
+            try sc.openers.append(sc.scratch, opener);
+            try sc.items.append(sc.scratch, .{ .opener = opener });
             pos.* = p + 1;
             return;
         }
@@ -715,8 +718,8 @@ const Scanner = struct {
 
         if (can_open) {
             const opener = OpenerInfo{ .char = char, .item_idx = sc.items.items.len, .src_pos = if (marked) p - 1 else p, .marked = marked };
-            try sc.openers.append(sc.a, opener);
-            try sc.items.append(sc.a, .{ .opener = opener });
+            try sc.openers.append(sc.scratch, opener);
+            try sc.items.append(sc.scratch, .{ .opener = opener });
         } else {
             // Can't open or close: emit a typographic quote as literal text.
             // Single quote becomes right curly (') for apostrophe contexts;
@@ -727,9 +730,12 @@ const Scanner = struct {
         pos.* = p + 1;
     }
 
-    /// The nodes after the opener at `opener_idx`, which are removed from `items`.
+    /// The nodes after the opener at `opener_idx`, which are removed from `items`. The
+    /// list is sized by its items, each of which makes at most one node (an attribute
+    /// that splits a word into text and span counts for the span), and filled in place
+    /// on `a`: no growth, no copy.
     fn collectChildren(sc: *Scanner, opener_idx: usize) ![]const Node {
-        var children: std.ArrayList(Node) = .empty;
+        var children: std.ArrayList(Node) = .initBuffer(try sc.a.alloc(Node, sc.items.items.len - opener_idx - 1));
         for (sc.items.items[opener_idx + 1 ..]) |item| {
             switch (item) {
                 .node => |n| try sc.appendNode(&children, n),
@@ -738,7 +744,7 @@ const Scanner = struct {
             }
         }
         sc.items.items.len = opener_idx;
-        return children.toOwnedSlice(sc.a);
+        return children.items;
     }
 
     /// The text of an opener that never closed.
@@ -758,11 +764,12 @@ const Scanner = struct {
     /// not close leaves text djot.js reports as one `str`.
     fn appendNode(sc: *const Scanner, nodes: *std.ArrayList(Node), node: Node) !void {
         if (node.data == .str and nodes.items.len > 0 and sc.extendStr(&nodes.items[nodes.items.len - 1], node.data.str)) return;
-        try nodes.append(sc.a, node);
+        nodes.appendAssumeCapacity(node);
     }
 
+    /// The items as nodes, sized and filled as `collectChildren` fills its list.
     fn resolveItems(sc: *Scanner, items: []const InlineItem) ![]const Node {
-        var nodes: std.ArrayList(Node) = .empty;
+        var nodes: std.ArrayList(Node) = .initBuffer(try sc.a.alloc(Node, items.len));
         for (items) |item| {
             switch (item) {
                 .node => |n| try sc.appendNode(&nodes, n),
@@ -770,12 +777,12 @@ const Scanner = struct {
                 .pending_attrs => |pa| try sc.applyAttrsToResolved(&nodes, pa),
             }
         }
-        return nodes.toOwnedSlice(sc.a);
+        return nodes.items;
     }
 
     /// An attribute attached to nothing: its id was read all the same.
     fn dropId(sc: *Scanner, ba: BlockAttrs) !void {
-        if (ba.id) |id| try sc.dropped.append(sc.a, id);
+        if (ba.id) |id| try sc.dropped.append(sc.scratch, id);
     }
 
     fn applyAttrsToResolved(sc: *Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
@@ -811,33 +818,35 @@ const Scanner = struct {
                     }
                 }
 
-                var span_children: std.ArrayList(Node) = .empty;
+                // The span's children: the gathered nodes, the first's word part in place
+                // of it, or the one word; sized so, on `a`, as the lists above.
+                var span_children: std.ArrayList(Node) = .initBuffer(try sc.a.alloc(Node, nodes.items.len - gather_start));
                 if (gather_start < nodes.items.len - 1 or word_start > 0) {
                     if (word_start > 0) {
                         const first_text = nodes.items[gather_start].data.str;
-                        try span_children.append(sc.a, sc.strNode(first_text[word_start..]));
-                        for (nodes.items[gather_start + 1 ..]) |n| try span_children.append(sc.a, n);
+                        span_children.appendAssumeCapacity(sc.strNode(first_text[word_start..]));
+                        for (nodes.items[gather_start + 1 ..]) |n| span_children.appendAssumeCapacity(n);
                     } else {
-                        for (nodes.items[gather_start..]) |n| try span_children.append(sc.a, n);
+                        for (nodes.items[gather_start..]) |n| span_children.appendAssumeCapacity(n);
                     }
                 } else {
-                    try span_children.append(sc.a, sc.strNode(last_text[word_start..]));
+                    span_children.appendAssumeCapacity(sc.strNode(last_text[word_start..]));
                 }
 
-                const kids = try span_children.toOwnedSlice(sc.a);
+                const kids = span_children.items;
                 var span_node = Node{ .data = .{ .span = kids }, .start_pos = kids[0].start_pos, .end_pos = kids[kids.len - 1].end_pos };
                 span_node = try applyBlockAttrsToNode(sc.a, span_node, ba);
 
                 if (word_start > 0 and gather_start < nodes.items.len - 1) {
                     sc.setText(&nodes.items[gather_start], nodes.items[gather_start].data.str[0..word_start]);
                     nodes.items.len = gather_start + 1;
-                    try nodes.append(sc.a, span_node);
+                    nodes.appendAssumeCapacity(span_node);
                 } else if (word_start > 0) {
                     sc.setText(last, last_text[0..word_start]);
-                    try nodes.append(sc.a, span_node);
+                    nodes.appendAssumeCapacity(span_node);
                 } else {
                     nodes.items.len = gather_start;
-                    try nodes.append(sc.a, span_node);
+                    nodes.appendAssumeCapacity(span_node);
                 }
             },
             .span,
@@ -861,7 +870,7 @@ const Scanner = struct {
             .symb,
             => {
                 if (last.id) |old| {
-                    if (ba.writesId()) try sc.dropped.append(sc.a, old);
+                    if (ba.writesId()) try sc.dropped.append(sc.scratch, old);
                 }
                 nodes.items[nodes.items.len - 1] = try applyLaterAttrsToNode(sc.a, last.*, ba);
             },
