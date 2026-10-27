@@ -507,7 +507,7 @@ const Scanner = struct {
                 } else if (next < src.len and src[next] == '[') {
                     if (findMatchingBracket(src, next)) |close_ref| {
                         const children = try sc.collectChildren(op.item_idx);
-                        const ref_label = try unescapeLabel(sc.a, src[next + 1 .. close_ref]);
+                        const ref_label = try normalizeLabel(sc.a, try unescapeLabel(sc.a, src[next + 1 .. close_ref])); // as djot.js prints it
                         try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
@@ -905,11 +905,19 @@ fn canOpenSingleQuote(src: []const u8, pos: usize) bool {
         prev == '"' or prev == '\'' or prev == '-' or prev == '(' or prev == '[';
 }
 
+/// Whether a backslash before `c` escapes it: any ASCII punctuation (djot.js's
+/// `pattPunctuation`).
 fn isEscapable(c: u8) bool {
     return switch (c) {
-        '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '"', '\'', '~', '^', ':', '<', '>', '$', '%', '=' => true,
+        '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '"', '\'', '~', '^', ':', '<', '>', '$', '%', '=', '&', ',', '/', ';', '?', '@' => true,
         else => false,
     };
+}
+
+/// Whether a backslash before `c` goes in a label or destination: before punctuation, a
+/// space (`\ ` is a space there, djot.js) or a newline (an escaped line end).
+fn backslashGoesBefore(c: u8) bool {
+    return isEscapable(c) or c == ' ' or c == '\n';
 }
 
 fn countRunAt(src: []const u8, pos: usize, char: u8) usize {
@@ -986,7 +994,7 @@ fn unescapeLabel(a: Allocator, raw: []const u8) ![]const u8 {
     var out = try std.ArrayList(u8).initCapacity(a, raw.len);
     var i: usize = 0;
     while (i < raw.len) : (i += 1) {
-        if (raw[i] == '\\' and i + 1 < raw.len and isEscapable(raw[i + 1])) i += 1;
+        if (raw[i] == '\\' and i + 1 < raw.len and backslashGoesBefore(raw[i + 1])) i += 1;
         out.appendAssumeCapacity(raw[i]);
     }
     return out.items;
@@ -1002,9 +1010,8 @@ fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
         if (raw[i] == '\n') {
             i += 1;
             while (i < raw.len and (raw[i] == ' ' or raw[i] == '\t')) : (i += 1) {}
-        } else if (raw[i] == '\\' and i + 1 < raw.len and isEscapable(raw[i + 1])) {
-            try buf.append(a, raw[i + 1]);
-            i += 2;
+        } else if (raw[i] == '\\' and i + 1 < raw.len and backslashGoesBefore(raw[i + 1])) {
+            i += 1; // the byte itself follows: a newline takes the line-end branch
         } else {
             try buf.append(a, raw[i]);
             i += 1;
