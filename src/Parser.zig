@@ -54,6 +54,9 @@ lines: Lines,
 stack: std.ArrayList(Container) = .empty,
 /// Block attributes waiting for the next top-level block.
 pending_attrs: ?BlockAttrs = null,
+/// Where the log stood, and the counts, as the last caption joined its table: a caption
+/// replacing it logs the replaced one's ids there, where they were counted.
+caption_log: ?struct { index: usize, headings_before: usize, ids_before: usize } = null,
 /// The lines of the open leaf, which is always the tip, so one set of buffers serves.
 leaf_slices: std.ArrayList([]const u8) = .empty,
 leaf_starts: std.ArrayList(LeafStart) = .empty,
@@ -103,7 +106,7 @@ const Container = struct {
     data: union(Kind) {
         /// `attrs_from`: no inline attribute is read before this joined offset (a failed
         /// block attribute's first line is text, as djot.js reparses it).
-        para: struct { attrs_from: usize = 0 },
+        para: struct { attrs_from: usize = 0, converted: bool = false },
         heading: struct { level: u8 },
         thematic_break: struct { end: SourcePos },
         /// `attrs`: parsed when the lines so far form a complete block attribute.
@@ -382,7 +385,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             }
             // It never parsed: its lines are a paragraph, and this line continues it or
             // not as a paragraph's would.
-            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom() } };
+            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
             return !cur.atEol();
         },
         .block_quote => {
@@ -723,6 +726,12 @@ fn looseIds(self: *Parser, node: Node) Error!void {
 }
 
 /// The explicit ids among `nodes` and their descendants.
+/// Every id in `node`'s tree, in tree order.
+fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Allocator.Error!void {
+    if (node.id) |id| try ids.append(gpa, id);
+    for (node.children()) |child| try collectIds(gpa, child, ids);
+}
+
 fn countIds(nodes: []const Node) usize {
     var n: usize = 0;
     for (nodes) |node| {
@@ -764,11 +773,15 @@ fn attrsSlot(self: *Parser) *?BlockAttrs {
     return if (self.stack.items.len > 0) &self.tip().pending_attrs else &self.pending_attrs;
 }
 
-/// A block attribute that never parsed is a paragraph: its first line is read without
-/// inline attributes when it opened one, as djot.js reparses it.
+/// A block attribute that never parsed is a paragraph: its lines are read without inline
+/// attributes when the first opened one, as djot.js reparses every line it fed the
+/// attribute parser (`reparseAttributes`).
 fn failedAttrsFrom(self: *Parser) Error!usize {
-    const first = self.leaf_slices.items[0];
-    return if (try attrs_mod.opensAttr(self.nodeAllocator(), first)) first.len else 0;
+    const slices = self.leaf_slices.items;
+    if (!try attrs_mod.opensAttr(self.nodeAllocator(), slices[0])) return 0;
+    var joined: usize = slices.len - 1; // the newlines between
+    for (slices) |s| joined += s.len;
+    return joined;
 }
 
 /// The rest of the line at `cur` as the open leaf's next line.
@@ -796,10 +809,10 @@ fn addLeafSlice(self: *Parser, text: []const u8, start: SourcePos, line: Line) E
 /// text `joinLines` makes, and the position it came from.
 fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
     const segs = try a.alloc(LineMap.Segment, self.leaf_slices.items.len);
-    var joined: u32 = 0;
+    var joined: usize = 0;
     for (self.leaf_slices.items, self.leaf_starts.items, segs) |slice, start, *seg| {
         seg.* = .{ .joined_start = joined, .orig_line = start.pos.line, .orig_col = start.pos.col, .orig_offset = start.pos.offset, .newline_offset = start.newline };
-        joined += @intCast(slice.len + 1);
+        joined += slice.len + 1;
     }
     return .{ .segments = segs, .total = joined - 1, .end = self.leaf_last_eol };
 }
@@ -810,7 +823,12 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize) Error![]const Nod
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
     if (src.len == 0) return &.{};
     const map: ?LineMap = if (self.track_pos) try self.leafLineMap(a) else null;
-    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from);
+    var dropped: std.ArrayList([]const u8) = .empty;
+    const nodes = try inline_mod.parseInlineContent(a, src, map, attrs_from, &dropped);
+    // An inline attribute attached to no node, or an id a later attribute overrode, was
+    // registered all the same (djot.js); among one leaf's explicit ids the order cannot
+    // show, so these go first.
+    for (dropped.items) |id| try self.looseId(id);
     self.defs.ids_parsed += countIds(nodes);
     return nodes;
 }
@@ -822,8 +840,9 @@ fn dropLeaf(self: *Parser) void {
 
 /// One past the last non-blank character of `line`: its newline unless whitespace trails.
 fn afterContent(line: Line) SourcePos {
-    const content = std.math.lossyCast(u32, std.mem.trimEnd(u8, line.bytes, " \t").len);
-    if (content == line.bytes.len) return line.eol;
+    const trimmed = std.mem.trimEnd(u8, line.bytes, " \t").len;
+    if (trimmed == line.bytes.len) return line.eol;
+    const content = std.math.lossyCast(u32, trimmed);
     return .{ .line = line.pos.line, .col = content +| 1, .offset = line.pos.offset +| content };
 }
 
@@ -851,7 +870,16 @@ fn close(self: *Parser, stand: Stand) Error!void {
     const a = self.nodeAllocator();
     const pos = self.track_pos;
     const node: Node = switch (c.data) {
-        .para => |p| try self.leafNode(a, c, .para, 0, p.attrs_from, stand),
+        .para => |p| blk: {
+            // A failed attribute block that a line turned into a paragraph takes the
+            // attributes waiting before it, as one closed as such does (below).
+            if (p.converted) {
+                if (self.attrsSlot().*) |ba| {
+                    if (ba.id) |id| try self.countOpeningId(id, true);
+                }
+            }
+            break :blk try self.leafNode(a, c, .para, 0, p.attrs_from, stand);
+        },
         .heading => |h| blk: {
             self.defs.headings_parsed += 1;
             break :blk try self.leafNode(a, c, .heading, h.level, 0, stand);
@@ -983,15 +1011,36 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 break :blk if (siblings.len > 0 and siblings[siblings.len - 1].data == .table) &siblings[siblings.len - 1] else null;
             } else if (self.pending) |*p| (if (p.node.data == .table) &p.node else null) else null;
             const t = table orelse {
-                self.dropLeaf();
+                // Dropped, but the ids it holds were read (djot.js registers every id it
+                // reads): the waiting attributes', taken as it opened, then its content's.
+                const slot = self.attrsSlot();
+                if (slot.*) |ba| {
+                    if (ba.id) |id| try self.looseId(id);
+                }
+                slot.* = null;
+                const n = try self.leafNode(self.nodeAllocator(), c, .caption, 0, 0, stand);
+                self.defs.ids_parsed -= countIds(&.{n});
+                try self.looseIds(n);
                 return;
             };
             // A caption this one replaces is dropped with the ids counted on it as it
             // closed, which stay registered where they were counted (djot.js registers
-            // every id it reads): uncounted, then logged in their place, before this one's
-            // (only an attribute line can stand between two captions).
-            self.defs.ids_parsed -= countIds(t.data.table[0..1]);
-            try self.looseIds(t.data.table[0]);
+            // every id it reads): logged into their place in the log, behind whatever
+            // stood between the two captions (a definition can), with the counts of then.
+            if (countIds(t.data.table[0..1]) > 0) {
+                const at = self.caption_log.?;
+                var ids: std.ArrayList([]const u8) = .empty;
+                defer ids.deinit(self.gpa);
+                try collectIds(self.gpa, t.data.table[0], &ids);
+                for (ids.items, 0..) |id, i| {
+                    try self.defs.log.insert(self.defs.gpa, at.index + i, .{
+                        .headings_before = at.headings_before,
+                        .ids_before = at.ids_before + i,
+                        .what = .{ .id = try self.defs.a.dupe(u8, id) },
+                    });
+                }
+            }
+            self.caption_log = .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
             const has_text = self.leaf_slices.items.len > 0;
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, 0, stand);

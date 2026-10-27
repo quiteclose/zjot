@@ -29,9 +29,11 @@ const OpenerInfo = struct {
 
 /// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
 /// the document position of the source it came from; without, none does. No inline
-/// attribute is read before `attrs_from` (the text of a failed block attribute).
-pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize) Allocator.Error![]const Node {
-    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from };
+/// attribute is read before `attrs_from` (the text of a failed block attribute). An id read
+/// but attached to no node, or overridden by a later attribute's, goes to `dropped`: djot.js
+/// registers it all the same.
+pub fn parseInlineContent(a: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8)) Allocator.Error![]const Node {
+    var sc = Scanner{ .a = a, .src = src, .map = map, .attrs_from = attrs_from, .dropped = dropped };
     try sc.run();
     return sc.resolveItems(sc.items.items);
 }
@@ -44,14 +46,15 @@ const Scanner = struct {
     src: []const u8,
     map: ?LineMap,
     attrs_from: usize = 0,
+    dropped: *std.ArrayList([]const u8),
     items: std.ArrayList(InlineItem) = .empty,
     openers: std.ArrayList(OpenerInfo) = .empty,
 
     fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) Node {
         const map = sc.map orelse return node;
         var n = node;
-        n.start_pos = map.resolve(std.math.lossyCast(u32, start));
-        n.end_pos = map.resolve(std.math.lossyCast(u32, end));
+        n.start_pos = map.resolve(start);
+        n.end_pos = map.resolve(end);
         return n;
     }
 
@@ -91,7 +94,7 @@ const Scanner = struct {
         if (last.id != null or last.attrs.len > 0) return false;
         last.data.str = sofar.ptr[0 .. sofar.len + slice.len];
         if (sc.map) |m| if (sc.within(last.data.str)) {
-            last.end_pos = m.resolve(std.math.lossyCast(u32, @intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1));
+            last.end_pos = m.resolve(@intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1);
         };
         return true;
     }
@@ -229,10 +232,12 @@ const Scanner = struct {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 < src.len and src[pos + 1] == '^') {
                         if (findMatchingBracket(src, pos)) |close| {
-                            try sc.emit(.{ .data = .{ .footnote_reference = src[pos + 2 .. close] } }, pos, close);
-                            pos = close + 1;
-                            text_start = pos;
-                            continue;
+                            if (close > pos + 2) { // a reference has a label: `[^]` is text (djot.js)
+                                try sc.emit(.{ .data = .{ .footnote_reference = src[pos + 2 .. close] } }, pos, close);
+                                pos = close + 1;
+                                text_start = pos;
+                                continue;
+                            }
                         }
                     }
                     // The bracket is an item of its own: the opener's index points at it.
@@ -741,19 +746,24 @@ const Scanner = struct {
         return nodes.toOwnedSlice(sc.a);
     }
 
-    fn applyAttrsToResolved(sc: *const Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
-        if (nodes.items.len == 0) return;
+    /// An attribute attached to nothing: its id was read all the same.
+    fn dropId(sc: *Scanner, ba: BlockAttrs) !void {
+        if (ba.id) |id| try sc.dropped.append(sc.a, id);
+    }
+
+    fn applyAttrsToResolved(sc: *Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
+        if (nodes.items.len == 0) return sc.dropId(ba);
         const last = &nodes.items[nodes.items.len - 1];
         switch (last.data) {
             .str => |last_text| {
-                if (last_text.len == 0) return;
+                if (last_text.len == 0) return sc.dropId(ba);
                 var word_start = last_text.len;
                 while (word_start > 0 and last_text[word_start - 1] != ' ' and
                     last_text[word_start - 1] != '\t' and last_text[word_start - 1] != '\n')
                 {
                     word_start -= 1;
                 }
-                if (word_start == last_text.len) return;
+                if (word_start == last_text.len) return sc.dropId(ba);
 
                 var gather_start = nodes.items.len - 1;
                 if (word_start == 0) {
@@ -823,9 +833,12 @@ const Scanner = struct {
             .footnote_reference,
             .symb,
             => {
-                nodes.items[nodes.items.len - 1] = try applyBlockAttrsToNode(sc.a, last.*, ba);
+                if (last.id) |old| {
+                    if (ba.id != null) try sc.dropped.append(sc.a, old);
+                }
+                nodes.items[nodes.items.len - 1] = try applyLaterAttrsToNode(sc.a, last.*, ba);
             },
-            else => {},
+            else => try sc.dropId(ba),
         }
     }
 };
@@ -842,6 +855,17 @@ pub fn applyBlockAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
         result.attrs = ba.attrs;
     }
     if (ba.id) |id| result.id = id;
+    return result;
+}
+
+/// A later inline attribute applied to a node that has one: the first keeps its places,
+/// the later's values win and its classes join after, as djot.js's attribute object
+/// (`[x]{#i .c}{.d}` gives `id="i" class="c d"`).
+fn applyLaterAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
+    const merged = try (BlockAttrs{ .id = node.id, .attrs = node.attrs }).merge(ba, a);
+    var result = node;
+    result.attrs = merged.attrs;
+    result.id = merged.id;
     return result;
 }
 
