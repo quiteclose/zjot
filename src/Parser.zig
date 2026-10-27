@@ -70,6 +70,9 @@ footnote_depth: usize = 0,
 /// Set by a start or continuation that took the whole line (a fence): nothing else
 /// on it is read.
 finished_line: bool = false,
+/// Whether the blank line being parsed was taken by a block attribute it failed: then it
+/// is the paragraph's, and no blank line for the list around (djot.js), so not loosening.
+blank_taken: bool = false,
 /// The block `nextBlock` returns once the current line is parsed.
 done: ?Block = null,
 /// A closed top-level table, kept until a block follows it or the input ends: a caption
@@ -327,6 +330,7 @@ fn holdsBlocks(self: *const Parser, n: usize) bool {
 fn parseLine(self: *Parser, line: Line) Error!void {
     var cur = Cursor{ .line = line };
     self.finished_line = false;
+    self.blank_taken = false;
     // Open containers continue from the outermost in; the first that does not ends it.
     var matched: usize = 0;
     for (self.stack.items) |*c| {
@@ -359,7 +363,7 @@ fn parseLine(self: *Parser, line: Line) Error!void {
     if (!lazy) try self.closeFrom(matched, cur.stand());
     if (self.holdsBlocks(self.stack.items.len)) {
         if (blank) {
-            if (!new_starts) self.blankLine();
+            if (!new_starts and !self.blank_taken) self.blankLine();
         } else {
             try self.push(.{ .para = .{} }, cur.pos());
         }
@@ -403,6 +407,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             // It never parsed: its lines are a paragraph, and this line continues it or
             // not as a paragraph's would.
             c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+            self.blank_taken = cur.atEol();
             return !cur.atEol();
         },
         .block_quote => {
@@ -1099,10 +1104,8 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 }
             }
             self.captionLogSlot().* = .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
-            const has_text = self.leaf_slices.items.len > 0;
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, 0, stand);
-            if (!has_text) n.end_pos = n.start_pos;
             // At the top the attributes were parsed into the next block's arena, which the
             // waiting table outlives, so they are copied into the table's.
             const slot = self.attrsSlot();
