@@ -232,7 +232,7 @@ const Scanner = struct {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     if (pos + 1 < src.len and src[pos + 1] == '^') {
                         if (findMatchingBracket(src, pos)) |close| {
-                            if (close > pos + 2) { // a reference has a label: `[^]` is text (djot.js)
+                            if (close > pos + 2 and std.mem.indexOfScalar(u8, src[pos + 2 .. close], '\n') == null) { // a reference has a label, on one line: `[^]` is text (djot.js)
                                 try sc.emit(.{ .data = .{ .footnote_reference = try normalizeLabel(sc.a, src[pos + 2 .. close]) } }, pos, close);
                                 pos = close + 1;
                                 text_start = pos;

@@ -426,6 +426,9 @@ test "nesting deeper than max_nesting levels is error.TooDeep, before any walker
     // The paragraph and its text are two levels under the quotes.
     try std.testing.expectError(error.TooDeep, render(a, ("> " ** (max_nesting - 1)) ++ "x\n", &written.writer, .{}));
     written.clearRetainingCapacity();
+    // Inline nesting is caught as the leaf's ids are counted, before any walker.
+    try std.testing.expectError(error.TooDeep, render(a, ("[" ** max_nesting) ++ "x" ++ ("]{.c}" ** max_nesting) ++ "\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
     try render(a, ("> " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
     try std.testing.expect(written.written().len > 0);
 }

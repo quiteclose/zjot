@@ -28,7 +28,7 @@ const Line = lines_mod.Line;
 
 const Parser = @This();
 
-pub const Error = Allocator.Error || error{ ReadFailed, InputTooLarge };
+pub const Error = Allocator.Error || error{ ReadFailed, InputTooLarge, TooDeep };
 
 /// A top-level block and the arena its nodes live in, which the consumer gives back
 /// through `recycle` once the block is written. `last` is where the block's last event
@@ -54,9 +54,8 @@ lines: Lines,
 stack: std.ArrayList(Container) = .empty,
 /// Block attributes waiting for the next top-level block.
 pending_attrs: ?BlockAttrs = null,
-/// Where the log stood, and the counts, as the last caption joined its table: a caption
-/// replacing it logs the replaced one's ids there, where they were counted.
-caption_log: ?struct { index: usize, headings_before: usize, ids_before: usize } = null,
+/// For the held top-level table (`CaptionLog`); a container keeps its own table's.
+caption_log: ?CaptionLog = null,
 /// The lines of the open leaf, which is always the tip, so one set of buffers serves.
 leaf_slices: std.ArrayList([]const u8) = .empty,
 leaf_starts: std.ArrayList(LeafStart) = .empty,
@@ -97,11 +96,17 @@ const ListStyle = union(enum) {
     ordered: struct { styles: leaf.OrderedStyles, delim: node_mod.Delim },
 };
 
+/// Where the log stood, and the counts, as the last caption joined a table: a caption
+/// replacing it logs the replaced one's ids there, where they were counted.
+const CaptionLog = struct { index: usize, headings_before: usize, ids_before: usize };
+
 const Container = struct {
     start: SourcePos,
     children: std.ArrayList(Node),
     /// Parser attributes waiting for this container's next child block.
     pending_attrs: ?BlockAttrs = null,
+    /// For a table among the children (`CaptionLog`).
+    caption_log: ?CaptionLog = null,
     /// For a leaf: one past the last non-blank character of its last line (djot.js ends
     /// paragraphs and headings there, trailing whitespace excluded).
     leaf_end: SourcePos = undefined,
@@ -377,10 +382,11 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             if (at.attrs != null) return false;
             // Lines indented past the opener keep the attribute going until it parses.
             if (!cur.atEol() and cur.indent > at.indent) {
-                try self.addLeafSlice(std.mem.trim(u8, cur.rest(), " \t"), cur.pos(), cur.line);
+                // Stored with its trailing tab, content should it become a paragraph.
+                try self.addLeafSlice(std.mem.trimEnd(u8, std.mem.trimStart(u8, cur.rest(), " \t"), " "), cur.pos(), cur.line);
                 c.leaf_end = afterContent(cur.line);
                 const a = self.nodeAllocator();
-                at.attrs = try attrs_mod.parseAttrsFromStr(a, try inline_mod.joinLines(a, self.leaf_slices.items));
+                at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t"));
                 cur.i = cur.line.bytes.len;
                 return true;
             }
@@ -577,12 +583,12 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     if (r[0] == '{') {
         try self.closeFrom(matched, stand);
         try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
-        try self.addLeafSlice(std.mem.trimEnd(u8, r, " \t"), cur.pos(), cur.line);
+        try self.addLeafSlice(std.mem.trimEnd(u8, r, " "), cur.pos(), cur.line); // a trailing tab stays: content if this fails
         self.tip().leaf_end = afterContent(cur.line);
         // Complete on one line, or kept open for the indented lines that may follow. The
         // attributes keep slices of the text they are parsed from, so that is the leaf's
         // copy, which outlives the line.
-        const text = self.leaf_slices.items[0];
+        const text = std.mem.trimEnd(u8, self.leaf_slices.items[0], " \t");
         if (text[text.len - 1] == '}') self.tip().data.attributes.attrs = try attrs_mod.parseAttrsFromStr(self.nodeAllocator(), text);
         cur.i = cur.line.bytes.len;
         return true;
@@ -655,7 +661,7 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
     try c.children.append(self.gpa, .{
         .data = .{ .row = .{ .children = cells } },
         .start_pos = if (self.track_pos) cur.pos() else null,
-        .end_pos = if (self.track_pos) afterContent(cur.line) else null,
+        .end_pos = if (self.track_pos) afterBlanks(cur.line, " \t") else null, // a row's trailing tab is not content
     });
 }
 
@@ -734,11 +740,14 @@ fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Alloc
     for (node.children()) |child| try collectIds(gpa, child, ids);
 }
 
-fn countIds(nodes: []const Node) usize {
+/// The ids in `nodes`' trees. The first walk over a leaf's inlines: deeper than
+/// `document.max_nesting` is `error.TooDeep` here, before any walker recurses into it.
+fn countIds(nodes: []const Node, depth: usize) error{TooDeep}!usize {
+    if (depth > document.max_nesting) return error.TooDeep;
     var n: usize = 0;
     for (nodes) |node| {
         if (node.id != null) n += 1;
-        n += countIds(node.children());
+        n += try countIds(node.children(), depth + 1);
     }
     return n;
 }
@@ -767,6 +776,12 @@ fn listEvent(self: *Parser, is_list: bool, is_item: bool) void {
 fn blankLine(self: *Parser) void {
     if (self.listNode()) |ln| ln.data.list.blanklines = true;
     self.attrsSlot().* = null;
+}
+
+/// Where the record of the last caption to join a table lives: with the container the
+/// table is a child of, or with the parser for the held top-level table.
+fn captionLogSlot(self: *Parser) *?CaptionLog {
+    return if (self.stack.items.len > 0) &self.tip().caption_log else &self.caption_log;
 }
 
 /// Where block attributes wait: with the innermost open container, or with the parser
@@ -832,7 +847,7 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize) Error![]const Nod
     // registered all the same (djot.js); among one leaf's explicit ids the order cannot
     // show, so these go first.
     for (dropped.items) |id| try self.looseId(id);
-    self.defs.ids_parsed += countIds(nodes);
+    self.defs.ids_parsed += try countIds(nodes, 1);
     return nodes;
 }
 
@@ -843,7 +858,13 @@ fn dropLeaf(self: *Parser) void {
 
 /// One past the last non-blank character of `line`: its newline unless whitespace trails.
 fn afterContent(line: Line) SourcePos {
-    const trimmed = std.mem.trimEnd(u8, line.bytes, " ").len; // spaces, not tabs, as djot.js
+    return afterBlanks(line, " "); // spaces, not tabs, as djot.js: a trailing tab is content
+}
+
+/// Where `line`'s content ends with `blanks` stripped from its end: its newline when
+/// there are none, else one past the last other byte.
+fn afterBlanks(line: Line, blanks: []const u8) SourcePos {
+    const trimmed = std.mem.trimEnd(u8, line.bytes, blanks).len;
     if (trimmed == line.bytes.len) return line.eol;
     const content = std.math.lossyCast(u32, trimmed);
     return .{ .line = line.pos.line, .col = content +| 1, .offset = line.pos.offset +| content };
@@ -884,8 +905,11 @@ fn close(self: *Parser, stand: Stand) Error!void {
             break :blk try self.leafNode(a, c, .para, 0, p.attrs_from, stand);
         },
         .heading => |h| blk: {
+            // Its inline ids count first, then the heading (djot.js registers an attribute's
+            // id as it is read, the heading's own as the heading ends).
+            const n = try self.leafNode(a, c, .heading, h.level, 0, stand);
             self.defs.headings_parsed += 1;
-            break :blk try self.leafNode(a, c, .heading, h.level, 0, stand);
+            break :blk n;
         },
         .thematic_break => |tb| .{
             .data = .thematic_break,
@@ -1022,7 +1046,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 }
                 slot.* = null;
                 const n = try self.leafNode(self.nodeAllocator(), c, .caption, 0, 0, stand);
-                self.defs.ids_parsed -= countIds(&.{n});
+                self.defs.ids_parsed -= try countIds(&.{n}, 1);
                 try self.looseIds(n);
                 return;
             };
@@ -1030,8 +1054,8 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // closed, which stay registered where they were counted (djot.js registers
             // every id it reads): logged into their place in the log, behind whatever
             // stood between the two captions (a definition can), with the counts of then.
-            if (countIds(t.data.table[0..1]) > 0) {
-                const at = self.caption_log.?;
+            if (try countIds(t.data.table[0..1], 1) > 0) {
+                const at = self.captionLogSlot().*.?;
                 var ids: std.ArrayList([]const u8) = .empty;
                 defer ids.deinit(self.gpa);
                 try collectIds(self.gpa, t.data.table[0], &ids);
@@ -1043,7 +1067,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                     });
                 }
             }
-            self.caption_log = .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
+            self.captionLogSlot().* = .{ .index = self.defs.log.items.len, .headings_before = self.defs.headings_parsed, .ids_before = self.defs.ids_parsed };
             const has_text = self.leaf_slices.items.len > 0;
             const ta = if (self.stack.items.len > 0) a else self.pending.?.arena.allocator();
             var n = try self.leafNode(ta, c, .caption, 0, 0, stand);
