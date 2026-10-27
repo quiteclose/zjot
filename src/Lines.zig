@@ -21,13 +21,13 @@ pub const Line = struct {
     eol: SourcePos,
     /// Whether a newline ended it: only the input's last line can lack one.
     newline: bool,
+    /// The offset of the newline before the line, one less than its start, kept rather
+    /// than derived: a start past the ceiling reads as the ceiling, as a start exactly
+    /// there does, and only the count knows which (the first line's is 0).
+    newline_before: u32,
 
-    /// The offset of the newline before the line: one less than its start. A start that has
-    /// saturated puts the newline at the maximum too (a start of exactly 2^32 has it there,
-    /// a later one past it), so a position behind the ceiling never falls below it.
     pub fn newlineBefore(self: Line) u32 {
-        const start = self.pos.offset;
-        return if (start == std.math.maxInt(u32)) start else start -| 1;
+        return self.newline_before;
     }
 };
 
@@ -61,10 +61,11 @@ pub const Lines = union(enum) {
             const bytes = if (newline and raw.len > 0 and raw[raw.len - 1] == '\r') raw[0 .. raw.len - 1] else raw;
             self.line = std.math.add(u64, self.line, 1) catch return error.InputTooLarge;
             const pos: SourcePos = .{ .line = sat(self.line), .col = 1, .offset = sat(self.offset) };
+            const newline_before = sat(self.offset -| 1);
             self.offset = std.math.add(u64, self.offset, @as(u64, raw.len) + @intFromBool(newline)) catch return error.InputTooLarge;
             self.last_len = bytes.len;
             self.newline = newline;
-            return .{ .bytes = bytes, .pos = pos, .eol = self.end(), .newline = newline };
+            return .{ .bytes = bytes, .pos = pos, .eol = self.end(), .newline = newline, .newline_before = newline_before };
         }
 
         fn end(self: Count) SourcePos {
@@ -159,6 +160,14 @@ test "positions saturate past 4 GiB of input and that many lines" {
     const next = try count.take("", false);
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, next.pos);
     try std.testing.expectEqual(@as(u32, max), next.newlineBefore()); // not max - 1: the newline is past the ceiling too
+    // A line starting exactly at the ceiling has its newline one before it, which a
+    // start that reads the same for having passed the ceiling does not.
+    var at_ceiling: Lines.Count = .{ .line = 1, .offset = max };
+    const at = try at_ceiling.take("x", true);
+    try std.testing.expectEqual(@as(u32, max), at.pos.offset);
+    try std.testing.expectEqual(@as(u32, max - 1), at.newlineBefore());
+    var past: Lines.Count = .{ .line = 1, .offset = @as(u64, max) + 1 };
+    try std.testing.expectEqual(@as(u32, max), (try past.take("x", true)).newlineBefore());
     try std.testing.expectEqual(SourcePos{ .line = max, .col = 1, .offset = max }, count.end());
     try std.testing.expectEqual(@as(u64, max) + 2, count.offset); // the count itself goes on
 }
@@ -180,7 +189,7 @@ const Taken = struct { lines: []const Line, end: SourcePos };
 
 fn takeAll(a: Allocator, lines: *Lines) !Taken {
     var list: std.ArrayList(Line) = .empty;
-    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol, .newline = line.newline });
+    while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol, .newline = line.newline, .newline_before = line.newline_before });
     return .{ .lines = try list.toOwnedSlice(a), .end = lines.end() };
 }
 
