@@ -429,8 +429,40 @@ test "nesting deeper than max_nesting levels is error.TooDeep, before any walker
     // Inline nesting is caught as the leaf's ids are counted, before any walker.
     try std.testing.expectError(error.TooDeep, render(a, ("[" ** max_nesting) ++ "x" ++ ("]{.c}" ** max_nesting) ++ "\n", &written.writer, .{}));
     written.clearRetainingCapacity();
+    // A collapsed reference's label is read off its text only once the text is bounded.
+    try std.testing.expectError(error.TooDeep, render(a, ("[" ** max_nesting) ++ "x" ++ ("]{.c}" ** (max_nesting - 1)) ++ "][]\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    // A footnote definition's blocks nest where the definition stands: each heading after
+    // an inner definition brings that definition due and re-enters the walk, on one budget.
+    const chain = try nestedDefinitions(a, max_nesting + 2);
+    defer a.free(chain);
+    try std.testing.expectError(error.TooDeep, render(a, chain, &written.writer, .{}));
+    written.clearRetainingCapacity();
+    const short = try nestedDefinitions(a, 8);
+    defer a.free(short);
+    try render(a, short, &written.writer, .{});
+    try std.testing.expect(written.written().len > 0);
+    written.clearRetainingCapacity();
     try render(a, ("> " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
     try std.testing.expect(written.written().len > 0);
+}
+
+/// `n` footnote definitions each nested in the one before, each but the innermost followed
+/// (inside its parent) by a heading, and the outermost referenced from the body.
+fn nestedDefinitions(a: std.mem.Allocator, n: usize) ![]u8 {
+    var out = std.Io.Writer.Allocating.init(a);
+    defer out.deinit();
+    for (0..n) |i| {
+        try out.writer.splatByteAll(' ', i);
+        try out.writer.print("[^n{d}]:\n\n", .{i});
+    }
+    var i = n - 1;
+    while (i > 0) : (i -= 1) {
+        try out.writer.splatByteAll(' ', i - 1);
+        try out.writer.print("# h{d}\n\n", .{i - 1});
+    }
+    try out.writer.writeAll("[^n0]\n");
+    return out.toOwnedSlice();
 }
 
 test "a block is written as it arrives unless a reference-style link holds it" {

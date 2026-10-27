@@ -518,14 +518,16 @@ const Scanner = struct {
                 } else if (next < src.len and src[next] == '[') {
                     if (findMatchingBracket(src, next)) |close_ref| {
                         const children = try sc.collectChildren(op.item_idx);
-                        // An empty `[]` stands for the link's text (djot.js's `getStringContent`);
-                        // any other label, blanks only included, is keyed as written.
+                        // An empty `[]` stands for the link's text (djot.js's `getStringContent`),
+                        // read off it by `labelOwnText` once the leaf is bounded: until then
+                        // the link has neither destination nor label. Any other label, blanks
+                        // only included, is keyed as written.
                         const raw_label = src[next + 1 .. close_ref];
-                        const ref_label = if (raw_label.len == 0)
-                            try normalizeLabel(sc.a, try getLabelText(sc.a, .{ .data = .{ .span = children } }))
+                        const link: node_mod.Link = if (raw_label.len == 0)
+                            .{ .children = children }
                         else
-                            try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label));
-                        try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
+                            .{ .children = children, .reference = try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label)) };
+                        try sc.emit(linkNode(is_image, link), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
                         return;
@@ -1134,6 +1136,20 @@ pub fn getLabelText(a: Allocator, node: Node) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try addPlainText(a, &buf, node, true);
     return buf.toOwnedSlice(a);
+}
+
+/// Gives a link or image written `[text][]` its label: its own text as `getLabelText`
+/// reads it, normalized. The parser emits such a link with neither destination nor
+/// reference and calls this from its first walk over the leaf, after the walk has
+/// bounded what stands below the node, so the text is never read deeper than
+/// `max_nesting`; nothing reads the link before that walk.
+pub fn labelOwnText(a: Allocator, node: *Node) Allocator.Error!void {
+    switch (node.data) {
+        .link, .image => |*l| if (l.destination == null and l.reference == null) {
+            l.reference = try normalizeLabel(a, try getLabelText(a, .{ .data = .{ .span = l.children } }));
+        },
+        else => {},
+    }
 }
 
 /// The quotes smart punctuation makes, one slice each, so that the text behind a node is
