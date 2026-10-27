@@ -19,7 +19,9 @@ Deliberate differences from djot.js 0.3.2:
    djot.js 0.3.2 applies `{.c}`, blank, `para` to the paragraph and carries `> {.c}`
    out of the quote onto the next block, but its own test suite (attributes.test,
    "If there is a blank line between, the attributes won't be applied") says it must
-   not; zjot follows the suite. Checked 2026-10-23.
+   not; zjot follows the suite. Nor is the id of an attribute dropped so registered:
+   djot.js registers every id as it reads it, so `{#a}`, blank, `# a` gives the heading
+   `a-1` there and `a` here. Checked 2026-10-23, the id half decided 2026-10-26.
 
 2. A footnote reference's label is not part of a heading's text for its id:
    `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
@@ -8469,4 +8471,238 @@ A term's id, then a heading inside the item, then one after: numbered in source 
 <section id="x-2">
 <h1>x</h1>
 </section>
+````
+
+An inline attribute after a space attaches to nothing, but its id is registered where it was read, as djot.js: a later heading of that name is numbered.
+````
+a {#Foo}
+
+# Foo
+.
+<p>a </p>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+An inline attribute at the start of a heading's text attaches to nothing; its id is registered all the same, as djot.js.
+````
+# {#Foo} x
+
+# Foo
+.
+<section id="x">
+<h1> x</h1>
+</section>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+An inline attribute alone in a table cell attaches to nothing; its id is registered all the same, as djot.js.
+````
+| {#Foo} |
+|---|
+
+# Foo
+.
+<table>
+<tr>
+<th></th>
+</tr>
+</table>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+An inline attribute after a soft break attaches to nothing; its id is registered all the same, as djot.js.
+````
+a
+{#Foo}
+b
+
+# Foo
+.
+<p>a
+
+b</p>
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+A second inline attribute overrides the first's id, which was registered all the same, as djot.js.
+````
+[x]{#a}{#b}
+
+# a
+.
+<p><span id="b">x</span></p>
+<section id="a-1">
+<h1>a</h1>
+</section>
+````
+
+A second inline attribute joins its classes after the first's and keeps the first's attribute order, as djot.js.
+````
+[x]{#Foo .c}{.d}
+.
+<p><span id="Foo" class="c d">x</span></p>
+````
+
+A second inline attribute's id takes the place of the first one's class, which came first, as djot.js.
+````
+[x]{.c}{#i .d}
+.
+<p><span class="c d" id="i">x</span></p>
+````
+
+A second inline attribute's id comes after the first's key, as djot.js.
+````
+[x]{k=v}{#i}
+.
+<p><span k="v" id="i">x</span></p>
+````
+
+A second inline attribute's key comes after the first's id, as djot.js.
+````
+[x]{#i}{k=v}
+.
+<p><span id="i" k="v">x</span></p>
+````
+
+A caption with no table before it is dropped, but the id of the attribute line before it is registered, as djot.js.
+````
+{#x}
+^ cap
+
+# x
+.
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+A caption with no table before it in a block quote: its attribute's id is registered, as djot.js.
+````
+> {#x}
+> ^ cap
+>
+> # x
+.
+<blockquote>
+<h1 id="x-1">x</h1>
+</blockquote>
+````
+
+A caption with no table before it is dropped, but an id in its text is registered, as djot.js.
+````
+^ [x]{#Foo}
+
+# Foo
+.
+<section id="Foo-1">
+<h1>Foo</h1>
+</section>
+````
+
+A caption replaced after a footnote definition stood between the two captions keeps its ids where they were counted, before the footnote's headings, as djot.js.
+````
+| a |
+^ [x]{#Foo}
+
+[^n]: # Foo
+
+^ two
+
+use[^n]
+.
+<table>
+<caption>two</caption>
+<tr>
+<td>a</td>
+</tr>
+</table>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A failed block attribute that a line turns into a paragraph takes the attributes waiting before it and counts their id there, so a later footnote's headings come after, as djot.js.
+````
+{#x}
+{#y
+text
+
+> [z]{#Foo}
+>
+> [^n]: # Foo
+
+use[^n]
+.
+<p id="x">{#y
+text</p>
+<blockquote>
+<p><span id="Foo">z</span></p>
+</blockquote>
+<p>use<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<h1 id="Foo-1">Foo</h1>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A failed block attribute that becomes a definition item's term: the waiting attribute's id is registered where it stood, as djot.js.
+````
+: {#x}
+  {#y
+  text
+
+# x
+.
+<dl>
+<dt>{#y
+text</dt>
+<dd>
+</dd>
+</dl>
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+Every line of a failed block attribute is read without inline attributes, as djot.js reparses them: an attribute on its second line is text, and registers nothing.
+````
+{#a
+ x{#b}
+more
+
+# b
+.
+<p>{#a
+x{#b}
+more</p>
+<section id="b">
+<h1>b</h1>
+</section>
+````
+
+`[^]` is text, not a footnote reference: a reference has a label, as djot.js.
+````
+[^]: # Foo
+.
+<p>[^]: # Foo</p>
 ````
