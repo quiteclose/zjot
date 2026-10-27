@@ -88,8 +88,11 @@ Deliberate differences from djot.js 0.3.2:
     (`{.a`, indented blank, blank, `  .b}` is one paragraph there, two here). Decided
     2026-10-26.
 
-15. An unfinished block attribute whose last line is a bare key at the input's end is a
-    paragraph (`{.a`, `  x`); djot.js 0.3.2 renders nothing for it. Decided 2026-10-26.
+15. An unfinished block attribute whose line fails anywhere but at a line end (`{.a`,
+    `  x`; `{.a`, `  !!`) is a paragraph; djot.js 0.3.2 keeps it an attribute, renders
+    nothing for it at the input's end and, at a container's end, gives the attributes
+    parsed so far to the next block (`> {.a`, `>   !!`, blank, `para` is
+    `<p class="a">para</p>` there). Decided 2026-10-26.
 
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
@@ -9599,4 +9602,36 @@ doc
       hard_break (2:0:4-2:0:4)
     para (4:1:8-5:0:12)
       str (4:1:8-4:4:11) text="para"
+````
+
+An empty caption ends one before the stand that closes it too, as djot.js.
+```` ap
+| a |
+^ 
+   
+.
+doc
+  table (1:1:0-3:0:8)
+    caption (3:0:8-3:3:11)
+    row (1:1:0-2:0:5) head=false
+      cell (1:1:0-1:5:4) head=false align="default"
+        str (1:3:2-1:3:2) text="a"
+````
+
+A blank line that fails a block attribute in a list item is the paragraph's, not the list's: the list stays tight, as djot.js.
+````
+- {.a
+     
+
+- b
+.
+<ul>
+<li>
+{.a
+
+</li>
+<li>
+b
+</li>
+</ul>
 ````
