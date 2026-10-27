@@ -580,7 +580,9 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
         try self.tableRow(self.tip(), cur);
         return true;
     }
-    if (r[0] == '{') {
+    // A complete block attribute with text after its `}` is a paragraph (djot.js opens a
+    // block attribute only when the `}` ends the line), so that is left to open below.
+    if (r[0] == '{' and !try attrs_mod.textAfterAttr(self.nodeAllocator(), std.mem.trimEnd(u8, r, " \t"))) {
         try self.closeFrom(matched, stand);
         try self.push(.{ .attributes = .{ .indent = cur.indent } }, cur.pos());
         try self.addLeafSlice(std.mem.trimEnd(u8, r, " "), cur.pos(), cur.line); // a trailing tab stays: content if this fails
