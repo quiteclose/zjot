@@ -114,7 +114,12 @@ const Container = struct {
         /// `attrs_from`: no inline attribute is read before this joined offset (a failed
         /// block attribute's first line is text, as djot.js reparses it).
         para: struct { attrs_from: usize = 0, converted: bool = false },
-        heading: struct { level: u8 },
+        heading: struct {
+            level: u8,
+            /// The first bare `#` line after the heading's last content line, where the
+            /// heading ends when that content ends in a hard break (djot.js: one past it).
+            bare_at: ?SourcePos = null,
+        },
         thematic_break: struct { end: SourcePos },
         /// `attrs`: parsed when the lines so far form a complete block attribute.
         attributes: struct { indent: usize, attrs: ?BlockAttrs = null },
@@ -370,11 +375,14 @@ fn parseLine(self: *Parser, line: Line) Error!void {
 fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
     switch (c.data) {
         .para => return !cur.atEol(),
-        .heading => |h| {
+        .heading => |*h| {
             const r = cur.rest();
             const hashes = leaf.countLeadingChar(r, '#');
             if (hashes != h.level or (hashes < r.len and r[hashes] != ' ' and r[hashes] != '\t')) return false;
-            cur.i += hashes; // the heading ends where its text does: a bare marker line adds none
+            // A bare marker line adds no text: the heading ends where its text does, or
+            // after a hard break at the first such line.
+            if (h.bare_at == null and leaf.isBlank(r[hashes..])) h.bare_at = cur.line.pos;
+            cur.i += hashes;
             return true;
         },
         .thematic_break => return false,
@@ -384,7 +392,9 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             if (cur.indent > at.indent) { // a blank line indented past the opener keeps it going too (djot.js)
                 // Stored with its trailing tab, content should it become a paragraph.
                 try self.addLeafSlice(std.mem.trimStart(u8, cur.rest(), " \t"), cur.pos(), cur.line);
-                c.leaf_end = afterContent(cur.line);
+                // A kept blank line ends the paragraph this may become at its first byte
+                // (djot.js: one past the newline before it, its own a dropped soft break).
+                c.leaf_end = if (cur.atEol()) cur.line.pos else afterContent(cur.line);
                 const a = self.nodeAllocator();
                 at.attrs = try attrs_mod.parseAttrsFromStr(a, std.mem.trimEnd(u8, try inline_mod.joinLines(a, self.leaf_slices.items), " \t"));
                 cur.i = cur.line.bytes.len;
@@ -811,10 +821,9 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     // Trailing blanks stay: before a soft break they are content, and at the block's end
     // the inline parser trims the spaces, as djot.js.
     const text = cur.rest();
-    // A caption ends at its last line's newline, whatever follows the text (djot.js
-    // closes it at the line's end); a paragraph or heading after its last content byte.
     try self.addLeafSlice(text, cur.pos(), cur.line);
-    self.tip().leaf_end = if (self.tip().data == .caption) cur.line.eol else afterContent(cur.line);
+    self.tip().leaf_end = afterContent(cur.line);
+    if (self.tip().data == .heading) self.tip().data.heading.bare_at = null;
 }
 
 /// Where a leaf line's content starts, and the newline before the line, which the line
@@ -889,7 +898,13 @@ fn afterBlanks(line: Line, blanks: []const u8) SourcePos {
 /// Where a paragraph or heading ends, as djot.js: after its last non-blank character, or
 /// one past a hard break that ends it.
 fn leafEnd(c: Container, children: []const Node, stand: Stand) SourcePos {
-    if (children.len > 0 and children[children.len - 1].data == .hard_break) return stand.line_first;
+    // A caption ends one before where the parser stands as it closes, whatever closed it
+    // (djot.js: `pos - 1` of the closing line); a paragraph or heading after its last
+    // content byte, or past a hard break ending it, at the next line's first byte.
+    if (c.data == .caption) return stand.before;
+    if (children.len > 0 and children[children.len - 1].data == .hard_break) {
+        return if (c.data == .heading) (c.data.heading.bare_at orelse stand.line_first) else stand.line_first;
+    }
     return c.leaf_end;
 }
 

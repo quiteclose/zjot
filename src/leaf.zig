@@ -10,7 +10,7 @@ const CellAlign = node_mod.CellAlign;
 const ListStyle = node_mod.ListStyle;
 const Delim = node_mod.Delim;
 
-fn isBlank(line: []const u8) bool {
+pub fn isBlank(line: []const u8) bool {
     for (line) |c| {
         if (c != ' ' and c != '\t' and c != '\r') return false;
     }
