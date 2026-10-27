@@ -376,7 +376,7 @@ pub const Sections = struct {
         self.levels[self.depth] = level;
         self.depth += 1;
         const explicit = for (block.attrs) |attr| {
-            if (std.mem.eql(u8, attr.key, "id")) break true;
+            if (std.mem.eql(u8, attr.key, "id") and attr.value.len > 0) break true;
         } else false;
         var heading = block;
         heading.id = null;

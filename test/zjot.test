@@ -100,6 +100,13 @@ Deliberate differences from djot.js 0.3.2:
     where here the conversion waits for the blank line or the outdent. Decided
     2026-10-26.
 
+16. A `class` key in a later stacked block attribute joins the classes before it, as a
+    `.class` does (`{.a}`, `{class=b}`, `para` gives `class="a b"`); djot.js 0.3.2 gives
+    `class="b"`, since it hands the accumulated attributes to the next block attribute's
+    container, where a key starts its value over before the value is read. Inside one
+    attribute, and on a later inline attribute, the two agree (`{.a class=b .c}` is
+    `b c`, `[x]{.a}{class=b}` is `a b`). Decided 2026-10-26.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -10191,4 +10198,197 @@ Numeric labels defined in reverse are walked ascending; `01`, `-1` and `42949672
 </li>
 </ol>
 </section>
+````
+
+An `id` key is the id, as `#` is, and it counts among the ids a heading avoids, as djot.js.
+````
+{id=x}
+para
+
+# x
+.
+<p id="x">para</p>
+<section id="x-1">
+<h1>x</h1>
+</section>
+````
+
+A later `id` key wins over `#`, in the first one's place; a repeated key takes its last value, as djot.js.
+````
+{#y id=x}
+para
+
+{k=a k=b}
+more
+.
+<p id="x">para</p>
+<p k="b">more</p>
+````
+
+A `class` key starts the classes over, and a `.class` after it joins, as djot.js.
+````
+{.a class="b c"}
+para
+
+{.a class=b .c}
+more
+.
+<p class="b c">para</p>
+<p class="b c">more</p>
+````
+
+The same on an inline attribute, and the `id` key on a heading's span.
+````
+a{id=x} b{#y id=x .c}
+
+{#x}
+# h{id=y}
+.
+<p><span id="x">a</span> <span id="x" class="c">b</span></p>
+<section id="x">
+<h1><span id="y">h</span></h1>
+</section>
+````
+
+Stacked block attributes merge as djot.js's object: the last id wins in the first's place, and classes join; a later inline attribute's `class` key joins too.
+````
+{#x}
+{id=y}
+para
+
+{id=a}
+{id=b}
+more
+
+{.a}
+{.b}
+last [x]{.a}{class=b}
+.
+<p id="y">para</p>
+<p id="b">more</p>
+<p class="a b">last <span class="a b">x</span></p>
+````
+
+The AST prints an `id` key as the id.
+```` ap
+{id=x .c k=v}
+para
+.
+doc
+  para (2:1:14-3:0:18) id="x" class="c" k="v"
+    str (2:1:14-2:4:17) text="para"
+````
+
+An empty `id=""` is an attribute and no id: the heading keeps it and gets a generated id, which the section takes, as djot.js.
+````
+{id=""}
+# h
+
+# h
+
+[h][]
+.
+<section id="h">
+<h1 id="">h</h1>
+</section>
+<section id="h-1">
+<h1>h</h1>
+<p><a href="#h">h</a></p>
+</section>
+````
+
+The same with a written id before it: the empty one wins the attribute, the heading its generated id, as djot.js.
+````
+{#x id=""}
+# h
+
+# x
+
+[h][]
+.
+<section id="h">
+<h1 id="">h</h1>
+</section>
+<section id="x">
+<h1>x</h1>
+<p><a href="#h">h</a></p>
+</section>
+````
+
+An empty id on a paragraph and on a span is written and counts as no id, as djot.js.
+````
+{id=""}
+para a{id=""}
+
+# s
+.
+<p id="">para <span id="">a</span></p>
+<section id="s">
+<h1>s</h1>
+</section>
+````
+
+A heading that opens no section writes its written empty id over the generated one it registers, as djot.js.
+````
+> {id=""}
+> # h
+
+- {#x id=""}
+  # h
+
+# h
+.
+<blockquote>
+<h1 id="">h</h1>
+</blockquote>
+<ul>
+<li>
+<h1 id="">h</h1>
+</li>
+</ul>
+<section id="h-2">
+<h1>h</h1>
+</section>
+````
+
+An id a later empty `id=""` overrides was still read, on a block and on a span, as djot.js.
+````
+{#x}
+{id=""}
+para [a]{#y}{id=""} b{#z}{id="" .c}
+
+# x
+
+# y
+
+# z
+.
+<p id="">para <span id="">a</span> <span id="" class="c">b</span></p>
+<section id="x-1">
+<h1>x</h1>
+</section>
+<section id="y-1">
+<h1>y</h1>
+</section>
+<section id="z-1">
+<h1>z</h1>
+</section>
+````
+
+The AST prints a written empty id.
+```` ap
+{id=""}
+para [a]{id=""}
+
+> {id=""}
+> # h
+.
+doc
+  para (2:1:8-3:0:23) id=""
+    str (2:1:8-2:5:12) text="para "
+    span (2:6:13-2:8:15) id=""
+      str (2:7:14-2:7:14) text="a"
+  block_quote (4:1:25-6:0:40)
+    heading (5:3:37-6:0:40) level=1 id=""
+      str (5:5:39-5:5:39) text="h"
 ````

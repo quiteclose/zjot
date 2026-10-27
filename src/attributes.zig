@@ -5,27 +5,33 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Attr = @import("node.zig").Attr;
 
-/// `attrs` hold every attribute in source order, the id among them as `id`; `id` is the
-/// effective one (a later `#id` wins, a merged block attribute's wins).
+/// `attrs` hold every attribute as djot.js's attribute object holds them: a key keeps its
+/// first position and takes its last value, whether written `#x` or `id=x`, `.c` or
+/// `class=c` (`setAttr`); `id` is the `id` among them.
 pub const BlockAttrs = struct {
     id: ?[]const u8 = null,
     attrs: []const Attr = &.{},
 
-    /// `other` applied over `self`, as djot.js's attribute object: a key keeps its first
-    /// position and takes its last value, and classes join (consecutive block attributes).
+    /// `attrs` as the block attributes they are, the id read off them: an empty `id=""`
+    /// stays an attribute and names nothing, as djot.js tests the id's truthiness.
+    pub fn fromAttrs(attrs: []const Attr) BlockAttrs {
+        const id = find(attrs, "id") orelse "";
+        return .{ .id = if (id.len > 0) id else null, .attrs = attrs };
+    }
+
+    /// `other` applied over `self`, as djot.js applies one block attribute's object to
+    /// the one before it: each key set as `setAttr` sets it, the classes joined.
     pub fn merge(self: BlockAttrs, other: BlockAttrs, a: Allocator) !BlockAttrs {
         var merged: std.ArrayList(Attr) = .empty;
-        for (self.attrs) |sa| {
-            var value = sa.value;
-            if (find(other.attrs, sa.key)) |ov| {
-                value = if (std.mem.eql(u8, sa.key, "class")) try std.fmt.allocPrint(a, "{s} {s}", .{ sa.value, ov }) else ov;
-            }
-            try merged.append(a, .{ .key = sa.key, .value = value });
-        }
-        for (other.attrs) |oa| {
-            if (find(self.attrs, oa.key) == null) try merged.append(a, oa);
-        }
-        return .{ .id = other.id orelse self.id, .attrs = try merged.toOwnedSlice(a) };
+        try merged.appendSlice(a, self.attrs);
+        for (other.attrs) |oa| try setAttr(a, &merged, oa.key, oa.value, std.mem.eql(u8, oa.key, "class"));
+        return fromAttrs(try merged.toOwnedSlice(a));
+    }
+
+    /// Whether an id was written, `#x` or `id=`, empty included: a later one overrides
+    /// the id before it, which djot.js registered all the same.
+    pub fn writesId(self: BlockAttrs) bool {
+        return find(self.attrs, "id") != null;
     }
 
     fn find(attrs: []const Attr, key: []const u8) ?[]const u8 {
@@ -46,6 +52,20 @@ pub const BlockAttrs = struct {
     }
 };
 
+/// Sets `key` in `attrs` as djot.js's attribute object does: a key keeps its first position
+/// and takes the value, `join` adding it after the value there with a space (a `.class`,
+/// and a class merged from a later block attribute); `class=c` written as a key starts the
+/// classes over, and `id=x` is the id as `#x` is.
+fn setAttr(a: Allocator, attrs: *std.ArrayList(Attr), key: []const u8, value: []const u8, join: bool) !void {
+    for (attrs.items) |*attr| {
+        if (std.mem.eql(u8, attr.key, key)) {
+            attr.value = if (join and attr.value.len > 0) try std.mem.concat(a, u8, &.{ attr.value, " ", value }) else value;
+            return;
+        }
+    }
+    try attrs.append(a, .{ .key = key, .value = value });
+}
+
 pub const AttrParseStatus = enum { done, fail, @"continue" };
 
 pub const AttrParser = struct {
@@ -53,7 +73,6 @@ pub const AttrParser = struct {
     state: AttrState,
     begin: ?usize,
     lastpos: ?usize,
-    result: BlockAttrs,
     attrs_list: std.ArrayList(Attr),
     value_buf: std.ArrayList(u8),
     current_key: ?[]const u8,
@@ -80,7 +99,6 @@ pub const AttrParser = struct {
             .state = .start,
             .begin = null,
             .lastpos = null,
-            .result = .{},
             .attrs_list = .empty,
             .value_buf = .empty,
             .current_key = null,
@@ -271,20 +289,12 @@ pub const AttrParser = struct {
         return .scanning_comment;
     }
 
-    /// The id is also an `id` attribute, so renderers write it where it was written; a
-    /// second `#id` keeps the first's place with the last value, as djot.js's object does.
+    /// The id is the `id` attribute, so renderers write it where it was written; a second
+    /// `#id` keeps the first's place with the last value, as djot.js's object does.
     fn emitId(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
-            if (lp > b) { // an empty `#` names nothing (djot.js)
-                self.result.id = self.src[b + 1 .. pos];
-                for (self.attrs_list.items) |*attr| {
-                    if (std.mem.eql(u8, attr.key, "id")) {
-                        attr.value = self.result.id.?;
-                        break;
-                    }
-                } else try self.attrs_list.append(self.a, .{ .key = "id", .value = self.result.id.? });
-            }
+            if (lp > b) try setAttr(self.a, &self.attrs_list, "id", self.src[b + 1 .. pos], false); // an empty `#` names nothing (djot.js)
             self.begin = null;
         }
     }
@@ -292,9 +302,7 @@ pub const AttrParser = struct {
     fn emitClass(self: *AttrParser, pos: usize) !void {
         if (self.begin) |b| {
             const lp = if (self.lastpos) |l| l else pos -| 1;
-            if (lp > b) { // an empty `.` names nothing (djot.js)
-                try self.attrs_list.append(self.a, .{ .key = "class", .value = self.src[b + 1 .. pos] });
-            }
+            if (lp > b) try setAttr(self.a, &self.attrs_list, "class", self.src[b + 1 .. pos], true); // an empty `.` names nothing (djot.js)
             self.begin = null;
         }
     }
@@ -303,7 +311,7 @@ pub const AttrParser = struct {
         if (self.begin) |b| {
             const value = self.src[b..pos];
             if (self.current_key) |key| {
-                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
+                try setAttr(self.a, &self.attrs_list, key, value, false);
                 self.current_key = null;
             }
             self.begin = null;
@@ -316,13 +324,13 @@ pub const AttrParser = struct {
             if (self.current_key) |key| {
                 const raw = try self.value_buf.toOwnedSlice(self.a);
                 const value = try self.processEscapes(try self.collapseBlanks(raw));
-                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
+                try setAttr(self.a, &self.attrs_list, key, value, false);
                 self.current_key = null;
             }
         } else if (self.begin) |b| {
             const value = try self.processEscapes(try self.collapseBlanks(self.src[b + 1 .. pos]));
             if (self.current_key) |key| {
-                try self.attrs_list.append(self.a, .{ .key = key, .value = value });
+                try setAttr(self.a, &self.attrs_list, key, value, false);
                 self.current_key = null;
             }
         }
@@ -376,35 +384,7 @@ pub const AttrParser = struct {
     }
 
     pub fn finish(self: *AttrParser) !BlockAttrs {
-        var result = self.result;
-        if (self.attrs_list.items.len > 0) {
-            var merged: std.ArrayList(Attr) = .empty;
-            var class_buf: std.ArrayList(u8) = .empty;
-            var class_inserted = false;
-            for (self.attrs_list.items) |attr| {
-                if (std.mem.eql(u8, attr.key, "class")) {
-                    if (class_buf.items.len > 0) try class_buf.append(self.a, ' ');
-                    try class_buf.appendSlice(self.a, attr.value);
-                    if (!class_inserted) {
-                        try merged.append(self.a, .{ .key = "class", .value = "" });
-                        class_inserted = true;
-                    }
-                } else {
-                    try merged.append(self.a, attr);
-                }
-            }
-            if (class_buf.items.len > 0) {
-                const class_val = try class_buf.toOwnedSlice(self.a);
-                for (merged.items) |*m| {
-                    if (std.mem.eql(u8, m.key, "class") and m.value.len == 0) {
-                        m.value = class_val;
-                        break;
-                    }
-                }
-            }
-            result.attrs = try merged.toOwnedSlice(self.a);
-        }
-        return result;
+        return BlockAttrs.fromAttrs(try self.attrs_list.toOwnedSlice(self.a));
     }
 
     fn isName(c: u8) bool {

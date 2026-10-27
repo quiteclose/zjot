@@ -439,7 +439,9 @@ fn renderFilteredAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node, skip_c
     if (node.id != null and !id_written) try renderAttr(a, out, "id", node.id.?);
     for (node.attrs) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) {
-            if (node.id) |id| try renderAttr(a, out, "id", id);
+            // The written id, where it was written, over a generated one: djot.js renders
+            // its written attributes over its generated ones, an empty `id=""` included.
+            try renderAttr(a, out, "id", attr.value);
             continue;
         }
         if (skip_class and std.mem.eql(u8, attr.key, "class")) continue;
