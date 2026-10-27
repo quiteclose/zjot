@@ -20,8 +20,9 @@ Deliberate differences from djot.js 0.3.2:
    out of the quote onto the next block, but its own test suite (attributes.test,
    "If there is a blank line between, the attributes won't be applied") says it must
    not; zjot follows the suite. Nor is the id of an attribute dropped so registered:
-   djot.js registers every id as it reads it, so `{#a}`, blank, `# a` gives the heading
-   `a-1` there and `a` here. Checked 2026-10-23, the id half decided 2026-10-26.
+   djot.js registers every id as it reads it, so `{#a}`, blank, `{#b}`, `para`, blank,
+   `# a` gives the heading `a-1` there and `a` here. Checked 2026-10-23, the id half
+   decided 2026-10-26.
 
 2. A footnote reference's label is not part of a heading's text for its id:
    `# Introduction[^1]` gets `id="Introduction"`, as footnotes.test expects; djot.js
@@ -74,6 +75,9 @@ converter renders it, so no `ap` case can pin it:
 10. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
+11. An inline attribute right after a soft break attaches to nothing; djot.js attaches it
+    to the `soft_break` node (`a`, newline, `{.c} b` gives `soft_break (…) class="c"`
+    there). The HTML is the same, and an id in it is registered in both.
 
 Ordered lists in the AST text form print their `style` as djot.js's JSON has it, the first
 number with its delimiter (`1.`, `1)`, `(1)`, `a.`, `i.`), and no `start`; the HTML renders
@@ -8985,4 +8989,76 @@ q[^a[b]c]
 </li>
 </ol>
 </section>
+````
+
+A `]` that closes no link, image or span is text, and its bracket stays open for a later `]`, as djot.js.
+````
+q[a]b](u)
+.
+<p>q<a href="u">a]b</a></p>
+````
+
+An inner bracket pair closed by nothing stays text inside the link a later `]` makes, as djot.js.
+````
+q[[a]b](u)
+.
+<p>q[<a href="u">a]b</a></p>
+````
+
+An image's bracket stays open past a `]` that closes nothing, as djot.js.
+````
+![a]b](u)
+.
+<p><img alt="a]b" src="u"></p>
+````
+
+`![^a]` is `!` and a footnote reference, as djot.js, which decides an image at the closing bracket.
+````
+q![^a]
+.
+<p>q!<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+`![^a](u)` is `!`, a footnote reference and text, as djot.js.
+````
+q![^a](u)
+.
+<p>q!<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a>(u)</p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
+</section>
+````
+
+A bracket pair before a `{` is a span even when the attributes do not parse: the brace is text, as djot.js.
+````
+[a]{x
+.
+<p><span>a</span>{x</p>
+````
+
+An image's bracket pair before attributes is a span, its `!` text before it, as djot.js.
+````
+![a]{.c}
+.
+<p>!<span class="c">a</span></p>
+````
+
+A bracket pair before a brace is a span, and what follows is text, even a later `](u)`, as djot.js.
+````
+[a]{.c b](u)
+.
+<p><span>a</span>{.c b](u)</p>
 ````

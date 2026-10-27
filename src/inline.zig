@@ -230,17 +230,11 @@ const Scanner = struct {
                 },
                 '[' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (pos + 1 < src.len and src[pos + 1] == '^') {
-                        // The label ends at the first `]`, as djot.js's `[^\]]+` (a bracket
-                        // in it is not matched); it is on one line, and `[^]` is text.
-                        if (std.mem.indexOfScalarPos(u8, src, pos + 2, ']')) |close| {
-                            if (close > pos + 2 and std.mem.indexOfScalar(u8, src[pos + 2 .. close], '\n') == null) {
-                                try sc.emit(.{ .data = .{ .footnote_reference = try normalizeLabel(sc.a, src[pos + 2 .. close]) } }, pos, close);
-                                pos = close + 1;
-                                text_start = pos;
-                                continue;
-                            }
-                        }
+                    if (footnoteRefEnd(src, pos)) |close| {
+                        try sc.emit(.{ .data = .{ .footnote_reference = try normalizeLabel(sc.a, src[pos + 2 .. close]) } }, pos, close);
+                        pos = close + 1;
+                        text_start = pos;
+                        continue;
                     }
                     // The bracket is an item of its own: the opener's index points at it.
                     try sc.openers.append(sc.a, .{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
@@ -249,7 +243,9 @@ const Scanner = struct {
                     text_start = pos;
                 },
                 '!' => {
-                    if (pos + 1 < src.len and src[pos + 1] == '[') {
+                    // `![^a]` is `!` and a footnote reference: djot.js decides an image at
+                    // the closing bracket, where the reference has already matched.
+                    if (pos + 1 < src.len and src[pos + 1] == '[' and footnoteRefEnd(src, pos + 1) == null) {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
                         try sc.openers.append(sc.a, .{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
                         try sc.items.append(sc.a, .{ .node = sc.strNode(src[pos .. pos + 2]) });
@@ -493,47 +489,53 @@ const Scanner = struct {
             i -= 1;
             const op = sc.openers.items[i];
             if (op.char == '[' or op.char == '!') {
-                const children = try sc.collectChildren(op.item_idx);
                 const is_image = op.char == '!';
                 // djot.js starts an image on its bracket, not its `!`.
                 const start = if (is_image) op.src_pos + 1 else op.src_pos;
-                pos.* = p + 1;
+                const next = p + 1;
 
-                if (pos.* < src.len and src[pos.*] == '(') {
-                    if (findMatchingParen(src, pos.*)) |close_paren| {
-                        const raw_dest = src[pos.* + 1 .. close_paren];
+                if (next < src.len and src[next] == '(') {
+                    if (findMatchingParen(src, next)) |close_paren| {
+                        const children = try sc.collectChildren(op.item_idx);
+                        const raw_dest = src[next + 1 .. close_paren];
                         const dest = processUrl(sc.a, raw_dest) catch raw_dest;
                         try sc.emit(linkNode(is_image, .{ .children = children, .destination = dest }), start, close_paren);
                         pos.* = close_paren + 1;
                         sc.openers.items.len = i;
                         return;
                     }
-                } else if (pos.* < src.len and src[pos.*] == '[') {
-                    if (findMatchingBracket(src, pos.*)) |close_ref| {
-                        const ref_label = src[pos.* + 1 .. close_ref];
+                } else if (next < src.len and src[next] == '[') {
+                    if (findMatchingBracket(src, next)) |close_ref| {
+                        const children = try sc.collectChildren(op.item_idx);
+                        const ref_label = src[next + 1 .. close_ref];
                         try sc.emit(linkNode(is_image, .{ .children = children, .reference = ref_label }), start, close_ref);
                         pos.* = close_ref + 1;
                         sc.openers.items.len = i;
                         return;
                     }
-                } else if (pos.* < src.len and src[pos.*] == '{') {
-                    if (try attrs.parseInlineAttrs(sc.a, src, pos.*)) |parsed| {
-                        const span_node = try applyBlockAttrsToNode(sc.a, .{ .data = .{ .span = children } }, parsed.attrs);
-                        try sc.emit(span_node, start, p);
+                } else if (next < src.len and src[next] == '{') {
+                    // A span, with the attributes when they parse; else the brace is text
+                    // (djot.js). An image's `!` is text before it.
+                    const children = try sc.collectChildren(op.item_idx);
+                    if (is_image) try sc.items.append(sc.a, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
+                    const span_node = Node{ .data = .{ .span = children } };
+                    if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
+                        try sc.emit(try applyBlockAttrsToNode(sc.a, span_node, parsed.attrs), start, p);
                         pos.* = parsed.end;
-                        sc.openers.items.len = i;
-                        return;
+                    } else {
+                        try sc.emit(span_node, start, p);
+                        pos.* = next;
                     }
+                    sc.openers.items.len = i;
+                    return;
                 }
 
-                var restored: std.ArrayList(InlineItem) = .empty;
-                const bracket_len: usize = if (is_image) 2 else 1;
-                try restored.append(sc.a, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + bracket_len]) });
-                for (children) |child| try restored.append(sc.a, .{ .node = child });
-                try restored.append(sc.a, .{ .node = sc.strNode(src[p .. p + 1]) });
-                sc.items.items.len = op.item_idx;
-                for (restored.items) |item| try sc.items.append(sc.a, item);
-                sc.openers.items.len = i;
+                // No link or image closes here: the `]` is text, and the bracket stays
+                // open for a later one, text itself should none come; the openers inside
+                // the pair are done with, as djot.js (`[x_y](x_` has no emphasis).
+                try sc.text(src[p .. p + 1]);
+                pos.* = p + 1;
+                sc.openers.items.len = i + 1;
                 return;
             }
         }
@@ -871,6 +873,15 @@ fn applyLaterAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
     result.attrs = merged.attrs;
     result.id = merged.id;
     return result;
+}
+
+/// Where a footnote reference opening at `pos` (`[^`) ends: its first `]`, with a label of
+/// at least one byte on the line between, as djot.js's `[^\]]+`; `[^]` is text.
+fn footnoteRefEnd(src: []const u8, pos: usize) ?usize {
+    if (pos + 1 >= src.len or src[pos + 1] != '^') return null;
+    const close = std.mem.indexOfScalarPos(u8, src, pos + 2, ']') orelse return null;
+    if (close == pos + 2 or std.mem.indexOfScalar(u8, src[pos + 2 .. close], '\n') != null) return null;
+    return close;
 }
 
 fn canOpenDelim(src: []const u8, pos: usize) bool {
