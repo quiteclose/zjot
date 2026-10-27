@@ -155,23 +155,29 @@ pub fn isTableRow(line: []const u8) bool {
     var i: usize = 0;
     var ends_with_pipe = false;
     while (i < trimmed.len) {
-        if (escapesInRow(trimmed, i)) {
+        if (takesNextInRow(trimmed, i)) {
             i += 2;
         } else if (trimmed[i] == '`') {
             i = skipBacktickSpan(trimmed, i);
         } else {
-            ends_with_pipe = trimmed[i] == '|' and i == trimmed.len - 1;
+            ends_with_pipe = trimmed[i] == '|' and i == trimmed.len - 1 and !escapedPipe(trimmed, i);
             i += 1;
         }
     }
     return ends_with_pipe;
 }
 
-/// Whether the backslash at `i` escapes the pipe or backtick after it. A pipe right after
-/// a backslash is escaped whatever stands before the backslash, as djot.js's row parser
-/// has it (`| a\\|` is a paragraph there).
-fn escapesInRow(line: []const u8, i: usize) bool {
-    return line[i] == '\\' and i + 1 < line.len and (line[i + 1] == '|' or line[i + 1] == '`');
+/// Whether the backslash at `i` takes the byte after it as a row is read: a backslash
+/// (so `\\` is a pair) or a backtick (so it opens no span), as djot.js's inline parser
+/// consumes them between the pipes.
+fn takesNextInRow(line: []const u8, i: usize) bool {
+    return line[i] == '\\' and i + 1 < line.len and (line[i + 1] == '\\' or line[i + 1] == '`');
+}
+
+/// Whether the pipe at `i` is escaped: right after a backslash, whatever stands before
+/// the backslash (`| a\\|` is a paragraph), as djot.js reads the pipe's previous byte.
+fn escapedPipe(line: []const u8, i: usize) bool {
+    return line[i] == '|' and i > 0 and line[i - 1] == '\\';
 }
 
 /// A separator row: `|`, then cells of `:?-+:?`, each ending at its pipe, spaces allowed
@@ -233,11 +239,11 @@ fn splitTableCells(a: Allocator, content: []const u8) ![]const []const u8 {
     var i: usize = 0;
     var cell_start: usize = 0;
     while (i < content.len) {
-        if (escapesInRow(content, i)) {
+        if (takesNextInRow(content, i)) {
             i += 2;
         } else if (content[i] == '`') {
             i = skipBacktickSpan(content, i);
-        } else if (content[i] == '|') {
+        } else if (content[i] == '|' and !escapedPipe(content, i)) {
             try result.append(a, content[cell_start..i]);
             cell_start = i + 1;
             i += 1;
