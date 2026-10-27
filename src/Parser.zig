@@ -790,14 +790,27 @@ fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Alloc
     for (node.children()) |child| try collectIds(gpa, child, ids);
 }
 
-/// The ids in `nodes`' trees. The first walk over a leaf's inlines: deeper than
-/// `document.max_nesting` is `error.TooDeep` here, before any walker recurses into it.
-fn countIds(nodes: []const Node, depth: usize) error{TooDeep}!usize {
-    if (depth > document.max_nesting) return error.TooDeep;
+/// The ids in `nodes`' trees, which `boundLeaf` has walked.
+fn countIds(nodes: []const Node) usize {
     var n: usize = 0;
     for (nodes) |node| {
         if (node.id != null) n += 1;
-        n += try countIds(node.children(), depth + 1);
+        n += countIds(node.children());
+    }
+    return n;
+}
+
+/// The first walk over a leaf's fresh inlines, and the only one before `Ids.assign` bounds
+/// the block: deeper than `document.max_nesting` is `error.TooDeep` here, before any
+/// walker recurses into it. Counts the explicit ids, and reads the label of a link written
+/// `[text][]` off its text once what stands below it is known to be bounded.
+fn boundLeaf(a: Allocator, nodes: []Node, depth: usize) Error!usize {
+    if (depth > document.max_nesting) return error.TooDeep;
+    var n: usize = 0;
+    for (nodes) |*node| {
+        if (node.id != null) n += 1;
+        n += try boundLeaf(a, @constCast(node.children()), depth + 1);
+        try inline_mod.labelOwnText(a, node);
     }
     return n;
 }
@@ -907,7 +920,7 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) 
     // registered all the same (djot.js); among one leaf's explicit ids the order cannot
     // show, so these go first.
     for (dropped.items) |id| try self.looseId(id);
-    self.defs.ids_parsed += try countIds(nodes, 1);
+    self.defs.ids_parsed += try boundLeaf(a, @constCast(nodes), 1);
     return nodes;
 }
 
@@ -1112,7 +1125,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 }
                 slot.* = null;
                 const n = try self.leafNode(self.nodeAllocator(), c, .caption, 0, 0, stand);
-                self.defs.ids_parsed -= try countIds(&.{n}, 1);
+                self.defs.ids_parsed -= countIds(&.{n});
                 try self.looseIds(n);
                 return;
             };
@@ -1120,7 +1133,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // closed, which stay registered where they were counted (djot.js registers
             // every id it reads): logged into their place in the log, behind whatever
             // stood between the two captions (a definition can), with the counts of then.
-            if (try countIds(t.data.table[0..1], 1) > 0) {
+            if (countIds(t.data.table[0..1]) > 0) {
                 const at = self.captionLogSlot().*.?;
                 var ids: std.ArrayList([]const u8) = .empty;
                 defer ids.deinit(self.gpa);
