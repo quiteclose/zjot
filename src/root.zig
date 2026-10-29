@@ -77,7 +77,7 @@ fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) 
     var last_end: ?SourcePos = null;
     while (try parser.nextBlock()) |block| {
         var node = block.node;
-        const by_reference = ids.assign(&node) catch |err| {
+        const by_reference = ids.assign(&node, block.arena.allocator()) catch |err| {
             parser.recycle(block.arena); // `out.block` owns it from here on, failing or not
             return err;
         };
@@ -142,8 +142,14 @@ const Output = struct {
 
     /// A section open's node with its own copies of the id and attributes it borrows from
     /// its heading, which outlive the heading's arena: `bytes` holds the text, `attrs`
-    /// the pairs.
-    const HeldSection = struct { node: Node, bytes: []u8, attrs: []node_mod.Attr };
+    /// the pairs, `marks` and `span` what the node points at.
+    const HeldSection = struct {
+        node: Node,
+        bytes: []u8 = &.{},
+        attrs: []node_mod.Attr = &.{},
+        marks: Node.Marks = .{},
+        span: Node.Span = undefined,
+    };
 
     fn deinit(self: *Output) void {
         for (self.queue.items[self.head..]) |p| self.drop(p);
@@ -178,7 +184,7 @@ const Output = struct {
         // The arena is the queue's once its block is in; until then a failure returns it.
         var owned = false;
         errdefer if (!owned) self.parser.recycle(arena);
-        const events = self.sections.feed(node);
+        const events = try self.sections.feed(arena.allocator(), node);
         try self.queue.ensureUnusedCapacity(self.a, events.len);
         if (self.hold_sections) try self.open_sections.ensureUnusedCapacity(self.a, 1);
         for (events) |event| {
@@ -187,15 +193,15 @@ const Output = struct {
                 .close => {
                     if (self.mode == .ast) self.indent -= 2;
                     // The heading closing a section gives its end.
-                    if (self.hold_sections) self.endSection(node.end_pos);
+                    if (self.hold_sections) self.endSection(node.endPos());
                 },
                 .open => |section| {
                     if (self.hold_sections) {
                         self.open_sections.appendAssumeCapacity(self.queue.items.len);
                         pending.wait = .section_end;
-                        pending.what = .{ .section = try self.ownSection(section) };
+                        pending.what = .{ .section = try self.ownSection(section, node.startPos()) };
                     } else {
-                        var open = HeldSection{ .node = section, .bytes = &.{}, .attrs = &.{} };
+                        var open = HeldSection{ .node = section };
                         const text = try self.renderText(.{ .section = &open }, pending.indent);
                         pending.what = .{ .text = text };
                     }
@@ -228,7 +234,10 @@ const Output = struct {
 
     fn endSection(self: *Output, end: ?SourcePos) void {
         const pending = &self.queue.items[self.open_sections.pop().?];
-        pending.what.section.node.end_pos = end;
+        const held = pending.what.section;
+        if (held.node.span != null) {
+            if (end) |e| held.span.end = e else held.node.span = null;
+        }
         pending.wait = .none;
         self.waiting -= 1;
     }
@@ -253,23 +262,24 @@ const Output = struct {
         for (node.children()) |child| try self.numberFootnotes(child);
     }
 
-    /// `section` with its own copies of its id and attributes; `freeSection` takes them back.
-    fn ownSection(self: *Output, section: Node) !*HeldSection {
+    /// `section`, starting at `start`, with its own copies of its id and attributes;
+    /// `freeSection` takes them back. Its end is set as it closes (`endSection`).
+    fn ownSection(self: *Output, section: Node, start: ?SourcePos) !*HeldSection {
         const held = try self.a.create(HeldSection);
         errdefer self.a.destroy(held);
-        var total: usize = if (section.id) |id| id.len else 0;
-        for (section.attrs) |attr| total += attr.key.len + attr.value.len;
+        var total: usize = if (section.id()) |id| id.len else 0;
+        for (section.attrs()) |attr| total += attr.key.len + attr.value.len;
         const bytes = try self.a.alloc(u8, total);
         errdefer self.a.free(bytes);
-        const attrs = try self.a.alloc(node_mod.Attr, section.attrs.len);
+        const attrs = try self.a.alloc(node_mod.Attr, section.attrs().len);
         held.* = .{ .node = section, .bytes = bytes, .attrs = attrs };
         var p: usize = 0;
-        if (section.id) |id| {
+        if (section.id()) |id| {
             @memcpy(bytes[p..][0..id.len], id);
-            held.node.id = bytes[p..][0..id.len];
+            held.marks.id = bytes[p..][0..id.len];
             p += id.len;
         }
-        for (section.attrs, attrs) |attr, *copy| {
+        for (section.attrs(), attrs) |attr, *copy| {
             @memcpy(bytes[p..][0..attr.key.len], attr.key);
             copy.key = bytes[p..][0..attr.key.len];
             p += attr.key.len;
@@ -277,7 +287,12 @@ const Output = struct {
             copy.value = bytes[p..][0..attr.value.len];
             p += attr.value.len;
         }
-        held.node.attrs = attrs;
+        held.marks.attrs = attrs;
+        held.node.marks = if (held.marks.id == null and attrs.len == 0) null else &held.marks;
+        if (start) |st| {
+            held.span = .{ .start = st, .end = st };
+            held.node.span = &held.span;
+        } else held.node.span = null;
         return held;
     }
 
@@ -546,13 +561,13 @@ test "a block is written as it arrives unless a reference-style link holds it" {
     // later one may still change its link) and the third waits behind it.
     const first = blk: {
         var block = (try parser.nextBlock()).?;
-        try out.block(block.node, block.arena, try ids.assign(&block.node));
+        try out.block(block.node, block.arena, try ids.assign(&block.node, block.arena.allocator()));
         break :blk written.written().len;
     };
     try std.testing.expect(first > 0);
     for (0..2) |_| {
         var block = (try parser.nextBlock()).?;
-        try out.block(block.node, block.arena, try ids.assign(&block.node));
+        try out.block(block.node, block.arena, try ids.assign(&block.node, block.arena.allocator()));
         try std.testing.expectEqual(first, written.written().len);
     }
     try std.testing.expectEqual(null, try parser.nextBlock()); // the definition

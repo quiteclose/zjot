@@ -11,8 +11,8 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
     const tag_name = if (is_root and node.data == .section) "doc" else @tagName(node.data);
     try out.appendSlice(a, tag_name);
 
-    if (node.start_pos) |sp| {
-        if (node.end_pos) |ep| {
+    if (node.startPos()) |sp| {
+        if (node.endPos()) |ep| {
             try out.appendSlice(a, try std.fmt.allocPrint(
                 a,
                 " ({d}:{d}:{d}-{d}:{d}:{d})",
@@ -113,20 +113,20 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
 
     // Attributes print as djot.js's text form does: id, class, then the rest in order;
     // the written id over a generated one, an empty `id=""` included (html.zig).
-    const written = for (node.attrs) |attr| {
+    const written = for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) break attr.value;
     } else null;
-    if (written orelse node.id) |id| {
+    if (written orelse node.id()) |id| {
         try out.appendSlice(a, " id=");
         try appendJsonStr(a, out, id);
     }
-    for (node.attrs) |attr| {
+    for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "class")) {
             try out.appendSlice(a, " class=");
             try appendJsonStr(a, out, attr.value);
         }
     }
-    for (node.attrs) |attr| {
+    for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "class") or std.mem.eql(u8, attr.key, "id")) continue;
         try out.append(a, ' ');
         try out.appendSlice(a, attr.key);

@@ -739,7 +739,7 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
         const idx = cur.i + (@intFromPtr(str.ptr) - @intFromPtr(r.ptr));
         const text_idx = idx + (@intFromPtr(text.ptr) - @intFromPtr(str.ptr));
         if (text.len > 0) try self.addLeafSlice(text, cur.at(text_idx), cur.line);
-        cell.* = .{
+        cell.* = try self.spanned(a, .{
             .data = .{
                 .cell = .{
                     // No line end follows a cell, which stands under its row and table.
@@ -747,15 +747,10 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
                     .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
                 },
             },
-            .start_pos = if (self.track_pos) cur.at(idx - 1) else null,
-            .end_pos = if (self.track_pos) cur.at(idx + str.len) else null,
-        };
+        }, cur.at(idx - 1), cur.at(idx + str.len));
     }
-    try c.children.append(self.gpa, .{
-        .data = .{ .row = .{ .children = cells } },
-        .start_pos = if (self.track_pos) cur.pos() else null,
-        .end_pos = if (self.track_pos) afterBlanks(cur.line, " \t") else null, // a row's trailing tab is not content
-    });
+    // A row's trailing tab is not content.
+    try c.children.append(self.gpa, try self.spanned(a, .{ .data = .{ .row = .{ .children = cells } } }, cur.pos(), afterBlanks(cur.line, " \t")));
 }
 
 /// The line at `cur` as the open code block's next line: it loses the fence's
@@ -889,14 +884,14 @@ fn looseId(self: *Parser, id: []const u8) Error!void {
 /// Keeps the explicit ids on `node` and its descendants registered as the node is
 /// dropped, logged where they are counted now (the caller uncounted them first).
 fn looseIds(self: *Parser, node: Node) Error!void {
-    if (node.id) |id| try self.looseId(id);
+    if (node.id()) |id| try self.looseId(id);
     for (node.children()) |child| try self.looseIds(child);
 }
 
 /// The explicit ids among `nodes` and their descendants.
 /// Every id in `node`'s tree, in tree order.
 fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Allocator.Error!void {
-    if (node.id) |id| try ids.append(gpa, id);
+    if (node.id()) |id| try ids.append(gpa, id);
     for (node.children()) |child| try collectIds(gpa, child, ids);
 }
 
@@ -904,7 +899,7 @@ fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Alloc
 fn countIds(nodes: []const Node) usize {
     var n: usize = 0;
     for (nodes) |node| {
-        if (node.id != null) n += 1;
+        if (node.id() != null) n += 1;
         n += countIds(node.children());
     }
     return n;
@@ -913,14 +908,14 @@ fn countIds(nodes: []const Node) usize {
 /// The first walk over a leaf's fresh inlines, `depth` theirs: a node deeper than
 /// `document.max_nesting` is `error.TooDeep` here, before any walker recurses into it.
 /// With `push`, which opens no container past the limit, and `bound`, which makes no other
-/// node past it, the parser is the one checker: every later walk meets nodes no deeper. Counts the explicit ids, and keys the
-/// label of a link written by reference (`[text][]` off its text) once what stands below
-/// it is known to be bounded.
+/// node past it, the parser is the one checker: every later walk meets nodes no deeper.
+/// Counts the explicit ids, and keys the label of a link written by reference (`[text][]`
+/// off its text) once what stands below it is known to be bounded.
 fn boundLeaf(a: Allocator, nodes: []Node, depth: usize) Error!usize {
     if (nodes.len > 0 and depth > document.max_nesting) return error.TooDeep;
     var n: usize = 0;
     for (nodes) |*node| {
-        if (node.id != null) n += 1;
+        if (node.id() != null) n += 1;
         n += try boundLeaf(a, @constCast(node.children()), depth + 1);
         try inline_mod.keyLabel(a, node);
     }
@@ -1117,11 +1112,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             self.defs.headings_parsed += 1;
             break :blk n;
         },
-        .thematic_break => |tb| .{
-            .data = .thematic_break,
-            .start_pos = if (pos) c.start else null,
-            .end_pos = if (pos) tb.end else null,
-        },
+        .thematic_break => |tb| try self.spanned(a, .{ .data = .thematic_break }, c.start, tb.end),
         .attributes => |at| {
             if (at.attrs) |attrs| {
                 // Waits for the next block in the container it was written in.
@@ -1143,11 +1134,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const attrs_from = try self.failedAttrsFrom();
             return self.closeAs(try self.leafNode(self.nodeAllocator(), c, .para, 0, attrs_from, stand), stand);
         },
-        .block_quote => .{
-            .data = .{ .block_quote = try a.dupe(Node, c.children.items) },
-            .start_pos = if (pos) c.start else null,
-            .end_pos = if (pos) stand.pos else null,
-        },
+        .block_quote => try self.spanned(a, .{ .data = .{ .block_quote = try a.dupe(Node, c.children.items) } }, c.start, stand.pos),
         .list => |l| blk: {
             const children = try a.dupe(Node, c.children.items);
             const data: node_mod.Payload = switch (l.style) {
@@ -1165,11 +1152,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                     } };
                 },
             };
-            break :blk .{
-                .data = data,
-                .start_pos = if (pos) c.start else null,
-                .end_pos = if (pos) stand.pos else null,
-            };
+            break :blk try self.spanned(a, .{ .data = data }, c.start, stand.pos);
         },
         .list_item => |it| blk: {
             const items = c.children.items;
@@ -1179,7 +1162,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 const has_term = items.len > 0 and items[0].data == .para;
                 // The term keeps the paragraph's inlines, not its node: an id written
                 // before it was counted as it opened and is logged where it stood.
-                if (has_term) if (items[0].id) |id| try self.logReserved(c.term_reserved.?, &.{id});
+                if (has_term) if (items[0].id()) |id| try self.logReserved(c.term_reserved.?, &.{id});
                 const pair = try a.alloc(Node, 2);
                 pair[0] = .{ .data = .{ .term = if (has_term) items[0].data.para else &.{} } };
                 pair[1] = .{ .data = .{ .definition = try a.dupe(Node, if (has_term) items[1..] else items) } };
@@ -1188,11 +1171,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
                 .{ .task_list_item = .{ .checked = checked, .children = try a.dupe(Node, items) } }
             else
                 .{ .list_item = try a.dupe(Node, items) };
-            break :blk .{
-                .data = data,
-                .start_pos = if (pos) c.start else null,
-                .end_pos = if (pos) stand.before else null,
-            };
+            break :blk try self.spanned(a, .{ .data = data }, c.start, stand.before);
         },
         .footnote => |f| {
             // Recorded for the document, where its content was allocated, with the block
@@ -1212,22 +1191,19 @@ fn close(self: *Parser, stand: Stand) Error!void {
             self.defs.log.items[f.log_index].what = .{ .footnote = stored };
             return;
         },
-        .div => |dv| .{
-            .data = .{ .div = try a.dupe(Node, c.children.items) },
-            .attrs = if (dv.class) |cls| try a.dupe(Attr, &.{.{ .key = "class", .value = cls }}) else &.{},
-            .start_pos = if (pos) c.start else null,
+        .div => |dv| blk: {
+            var n: Node = .{ .data = .{ .div = try a.dupe(Node, c.children.items) } };
+            if (dv.class) |cls| n = try n.withMarks(a, null, try a.dupe(Attr, &.{.{ .key = "class", .value = cls }}));
             // Closed, a div ends on its fence; unclosed, where its container does.
-            .end_pos = if (pos) (dv.end orelse stand.pos) else null,
+            break :blk try self.spanned(a, n, c.start, dv.end orelse stand.pos);
         },
         .code_block => |cb| blk: {
             const text = try self.leafText(a);
             const raw = cb.lang != null and cb.lang.?[0] == '=';
-            break :blk .{
+            // Closed, it ends on its fence; unclosed, where its container does.
+            break :blk try self.spanned(a, .{
                 .data = if (raw) .{ .raw_block = .{ .format = cb.lang.?[1..], .text = text } } else .{ .code_block = .{ .lang = cb.lang, .text = text } },
-                .start_pos = if (pos) c.start else null,
-                // Closed, it ends on its fence; unclosed, where its container does.
-                .end_pos = if (pos) (cb.end orelse stand.pos) else null,
-            };
+            }, c.start, cb.end orelse stand.pos);
         },
         .table => blk: {
             // djot.js gives every table a caption, empty until one follows it.
@@ -1235,11 +1211,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const children = try a.alloc(Node, c.children.items.len + 1);
             children[0] = .{ .data = .{ .caption = &.{} } };
             @memcpy(children[1..], c.children.items);
-            break :blk .{
-                .data = .{ .table = children },
-                .start_pos = if (pos) c.start else null,
-                .end_pos = if (pos) stand.pos else null,
-            };
+            break :blk try self.spanned(a, .{ .data = .{ .table = children } }, c.start, stand.pos);
         },
         .caption => {
             // Joins the table before it, if that is what stands before it, with the block
@@ -1281,7 +1253,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             slot.* = null;
             @constCast(t.data.table)[0] = n; // the placeholder, made with the table
             if (self.stack.items.len == 0) {
-                self.pending.?.last = n.end_pos;
+                self.pending.?.last = n.endPos();
                 self.last_block_line = if (stand.eof) self.line_count else self.line_count - 1;
             }
             return;
@@ -1313,19 +1285,21 @@ fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
     return if (self.leaf_last_newline or text.len == 0) text else text[0 .. text.len - 1];
 }
 
+/// `n` standing from `start` to `end`, when positions are tracked.
+fn spanned(self: *const Parser, a: Allocator, n: Node, start: SourcePos, end: SourcePos) Error!Node {
+    return if (self.track_pos) n.withSpan(a, start, end) else n;
+}
+
 /// A paragraph, heading (of `level`) or caption over the open leaf's inlines.
 fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, level: u8, attrs_from: usize, stand: Stand) Error!Node {
     const children = try self.leafInlines(a, attrs_from, true, c.depth + 1);
-    return .{
-        .data = switch (tag) {
-            .para => .{ .para = children },
-            .heading => .{ .heading = .{ .level = level, .children = children } },
-            .caption => .{ .caption = children },
-            else => unreachable,
-        },
-        .start_pos = if (self.track_pos) c.start else null,
-        .end_pos = if (self.track_pos) leafEnd(c, children, stand) else null,
-    };
+    const n: Node = .{ .data = switch (tag) {
+        .para => .{ .para = children },
+        .heading => .{ .heading = .{ .level = level, .children = children } },
+        .caption => .{ .caption = children },
+        else => unreachable,
+    } };
+    return if (self.track_pos) n.withSpan(a, c.start, leafEnd(c, children, stand)) else n;
 }
 
 /// `node`, with the block attributes waiting for it, joins its parent or is done.
@@ -1347,7 +1321,7 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         // made first, so that failing leaves every arena owned once.
         const next = self.spare orelse try newArena(self.gpa);
         self.spare = null;
-        const block = Block{ .node = n, .arena = self.arena, .last = n.end_pos };
+        const block = Block{ .node = n, .arena = self.arena, .last = n.endPos() };
         if (n.data == .table or self.done != null) self.pending = block else self.done = block;
         self.arena = next;
         self.a = next.allocator();

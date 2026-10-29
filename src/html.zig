@@ -413,7 +413,7 @@ pub fn renderSectionOpen(a: Allocator, out: *std.ArrayList(u8), section: Node) !
 pub const section_close = "</section>\n";
 
 fn nodeClass(node: Node) ?[]const u8 {
-    for (node.attrs) |attr| if (std.mem.eql(u8, attr.key, "class")) return attr.value;
+    for (node.attrs()) |attr| if (std.mem.eql(u8, attr.key, "class")) return attr.value;
     return null;
 }
 
@@ -423,7 +423,7 @@ pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
 
 /// The attributes of a node whose id the tag has already written (a footnote reference's).
 fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
-    for (node.attrs) |attr| {
+    for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) continue;
         try renderAttr(a, out, attr.key, attr.value);
     }
@@ -433,11 +433,11 @@ fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void 
 /// first when the document gave it (a generated heading id); `skip_class` leaves the class
 /// to a tag that writes its own.
 fn renderFilteredAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node, skip_class: bool) !void {
-    const id_written = for (node.attrs) |attr| {
+    const id_written = for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) break true;
     } else false;
-    if (node.id != null and !id_written) try renderAttr(a, out, "id", node.id.?);
-    for (node.attrs) |attr| {
+    if (node.id() != null and !id_written) try renderAttr(a, out, "id", node.id().?);
+    for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) {
             // The written id, where it was written, over a generated one: djot.js renders
             // its written attributes over its generated ones, an empty `id=""` included.

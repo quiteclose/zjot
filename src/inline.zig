@@ -145,16 +145,13 @@ const Scanner = struct {
         while (sc.parens.items.len > 0 and sc.parens.items[sc.parens.items.len - 1] >= from) _ = sc.parens.pop();
     }
 
-    fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) Node {
+    fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) !Node {
         const map = sc.map orelse return node;
-        var n = node;
-        n.start_pos = map.resolve(start);
-        n.end_pos = map.resolve(end);
-        return n;
+        return node.withSpan(sc.a, map.resolve(start), map.resolve(end));
     }
 
     fn emit(sc: *Scanner, node: Node, start: usize, end: usize) !void {
-        try sc.items.append(sc.scratch, .{ .node = sc.positioned(node, start, end) });
+        try sc.items.append(sc.scratch, .{ .node = try sc.positioned(node, start, end) });
     }
 
     fn within(sc: *const Scanner, slice: []const u8) bool {
@@ -165,31 +162,31 @@ const Scanner = struct {
 
     /// A text node over a slice of `src`, positioned by where the slice lies; a slice
     /// from elsewhere (a curly quote) gets no position.
-    fn strNode(sc: *const Scanner, slice: []const u8) Node {
+    fn strNode(sc: *const Scanner, slice: []const u8) !Node {
         const node = Node{ .data = .{ .str = slice } };
         if (slice.len == 0 or !sc.within(slice)) return node;
         const start = @intFromPtr(slice.ptr) - @intFromPtr(sc.src.ptr);
         return sc.positioned(node, start, start + slice.len - 1);
     }
 
-    fn setText(sc: *const Scanner, node: *Node, slice: []const u8) void {
+    fn setText(sc: *const Scanner, node: *Node, slice: []const u8) !void {
         node.data.str = slice;
         if (!sc.within(slice)) return; // a curly quote keeps the position it was given
-        const fresh = sc.strNode(slice);
-        node.start_pos = fresh.start_pos;
-        node.end_pos = fresh.end_pos;
+        node.span = (try sc.strNode(slice)).span;
     }
 
     /// Extends the text node `last` by `slice` when the two are contiguous in `src` and
     /// `last` carries no attributes: djot.js reports such text as one `str`.
-    fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) bool {
+    fn extendStr(sc: *const Scanner, last: *Node, slice: []const u8) !bool {
         if (last.data != .str) return false;
         const sofar = last.data.str;
         if (sofar.ptr + sofar.len != slice.ptr) return false;
-        if (last.id != null or last.attrs.len > 0) return false;
+        if (last.marks != null) return false;
         last.data.str = sofar.ptr[0 .. sofar.len + slice.len];
-        if (sc.map) |m| if (sc.within(last.data.str)) {
-            last.end_pos = m.resolve(@intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1);
+        // The span grows in place: the scanner made it for this node alone, and a join
+        // that made a fresh one would leave the old behind for every joined run.
+        if (sc.map) |m| if (sc.within(last.data.str)) if (last.span) |span| {
+            @constCast(span).end = m.resolve(@intFromPtr(sofar.ptr) - @intFromPtr(sc.src.ptr) + sofar.len + slice.len - 1);
         };
         return true;
     }
@@ -201,11 +198,11 @@ const Scanner = struct {
         const open_bracket = sc.openers.items.len > 0 and sc.openers.items[sc.openers.items.len - 1].item_idx + 1 == n_items;
         if (n_items > 0 and !open_bracket) {
             switch (sc.items.items[n_items - 1]) {
-                .node => |*n| if (sc.extendStr(n, slice)) return,
+                .node => |*n| if (try sc.extendStr(n, slice)) return,
                 else => {},
             }
         }
-        try sc.items.append(sc.scratch, .{ .node = sc.strNode(slice) });
+        try sc.items.append(sc.scratch, .{ .node = try sc.strNode(slice) });
     }
 
     fn run(sc: *Scanner) !void {
@@ -222,7 +219,7 @@ const Scanner = struct {
                         // A backslash ending the block is a hard break on its newline, as
                         // djot.js; ending a cell, which has none, it is text.
                         if (sc.ends_line) {
-                            sc.trimLastText(pos, " \t");
+                            try sc.trimLastText(pos, " \t");
                             try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                         } else {
                             try sc.text(src[pos .. pos + 1]);
@@ -231,7 +228,7 @@ const Scanner = struct {
                     } else {
                         const next = src[pos + 1];
                         if (next == '\n') {
-                            sc.trimLastText(pos, " \t");
+                            try sc.trimLastText(pos, " \t");
                             try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                             pos += 2;
                         } else if (next == ' ' or next == '\t') {
@@ -240,7 +237,7 @@ const Scanner = struct {
                             if ((skip < src.len and src[skip] == '\n') or (skip >= src.len and sc.ends_line)) {
                                 // A hard break, at the input's end too (djot.js ends its
                                 // subject with a newline); it spans from the backslash on.
-                                sc.trimLastText(pos, " \t");
+                                try sc.trimLastText(pos, " \t");
                                 try sc.emit(.{ .data = .hard_break }, pos + 1, skip);
                                 pos = @min(skip + 1, src.len);
                             } else if (next == ' ') {
@@ -337,7 +334,7 @@ const Scanner = struct {
                     }
                     // The bracket is an item of its own: the opener's index points at it.
                     try sc.pushOpener(.{ .char = '[', .item_idx = sc.items.items.len, .src_pos = pos });
-                    try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 1]) });
+                    try sc.items.append(sc.scratch, .{ .node = try sc.strNode(src[pos .. pos + 1]) });
                     pos += 1;
                     text_start = pos;
                 },
@@ -347,7 +344,7 @@ const Scanner = struct {
                     if (pos + 1 < src.len and src[pos + 1] == '[' and sc.footnoteRefEnd(pos + 1) == null) {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
                         try sc.pushOpener(.{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
-                        try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 2]) });
+                        try sc.items.append(sc.scratch, .{ .node = try sc.strNode(src[pos .. pos + 2]) });
                         pos += 2;
                         text_start = pos;
                     } else {
@@ -457,7 +454,7 @@ const Scanner = struct {
         }
 
         if (pos > text_start) try sc.text(src[text_start..pos]);
-        sc.trimLastText(src.len, " ");
+        try sc.trimLastText(src.len, " ");
     }
 
     /// Drops `blanks` from the end of the last text node when it ends at `end` of `src`,
@@ -465,13 +462,13 @@ const Scanner = struct {
     /// trailing tab being content there): djot.js trims its last match only when that
     /// match is text, so the spaces before an empty attribute or a comment, which make no
     /// node, stay.
-    fn trimLastText(sc: *Scanner, end: usize, blanks: []const u8) void {
+    fn trimLastText(sc: *Scanner, end: usize, blanks: []const u8) !void {
         if (sc.items.items.len == 0) return;
         switch (sc.items.items[sc.items.items.len - 1]) {
             .node => |*n| if (n.data == .str and sc.within(n.data.str) and
                 @intFromPtr(n.data.str.ptr) + n.data.str.len == @intFromPtr(sc.src.ptr) + end)
             {
-                sc.setText(n, std.mem.trimEnd(u8, n.data.str, blanks));
+                try sc.setText(n, std.mem.trimEnd(u8, n.data.str, blanks));
                 if (n.data.str.len == 0) _ = sc.items.pop();
             },
             else => {},
@@ -663,7 +660,7 @@ const Scanner = struct {
             sc.truncateOpeners(i + 1);
             sc.dropParens(op.src_pos);
             sc.openers.items[i].link = .{ .reference = src[next] == '[', .item_idx = sc.items.items.len, .src_pos = p, .dropped_len = sc.dropped.items.len };
-            try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[p .. p + 2]) });
+            try sc.items.append(sc.scratch, .{ .node = try sc.strNode(src[p .. p + 2]) });
             if (src[next] == '(') {
                 sc.destination = true;
                 sc.parens.clearRetainingCapacity();
@@ -677,7 +674,7 @@ const Scanner = struct {
             // (djot.js). An image's `!` is text before it.
             const is_image = op.char == '!';
             const children = try sc.collectChildren(op.item_idx);
-            if (is_image) try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
+            if (is_image) try sc.items.append(sc.scratch, .{ .node = try sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
             const span_node = Node{ .data = .{ .span = children } };
             const start = if (is_image) op.src_pos + 1 else op.src_pos;
             if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
@@ -857,30 +854,30 @@ const Scanner = struct {
     }
 
     /// The text of an opener that never closed.
-    fn openerNode(sc: *const Scanner, op: OpenerInfo) Node {
+    fn openerNode(sc: *const Scanner, op: OpenerInfo) !Node {
         if (op.char == '\'' or op.char == '"') {
             const curly: []const u8 = if (op.marked)
                 (if (op.char == '\'') left_single else left_double)
             else
                 (if (op.char == '\'') right_single else left_double);
-            return sc.positioned(.{ .data = .{ .str = curly } }, op.src_pos, op.src_pos + @as(usize, if (op.marked) 1 else 0));
+            return try sc.positioned(.{ .data = .{ .str = curly } }, op.src_pos, op.src_pos + @as(usize, if (op.marked) 1 else 0));
         }
         const len: usize = if (op.marked) 2 else 1;
-        return sc.strNode(sc.src[op.src_pos .. op.src_pos + len]);
+        return try sc.strNode(sc.src[op.src_pos .. op.src_pos + len]);
     }
 
     /// Appends the text of an opener that never closed. A marked one starts a text node of
     /// its own, as djot.js's open marker breaks the run of text before it; the text after
     /// it joins it (in a cell djot.js joins no text at all, AST difference 12).
     fn appendOpener(sc: *const Scanner, nodes: *std.ArrayList(Node), op: OpenerInfo) !void {
-        const node = sc.openerNode(op);
+        const node = try sc.openerNode(op);
         if (op.marked) nodes.appendAssumeCapacity(node) else try sc.appendNode(nodes, node);
     }
 
     /// Appends a node, joining text to the previous node when it can: an opener that did
     /// not close leaves text djot.js reports as one `str`.
     fn appendNode(sc: *const Scanner, nodes: *std.ArrayList(Node), node: Node) !void {
-        if (node.data == .str and nodes.items.len > 0 and sc.extendStr(&nodes.items[nodes.items.len - 1], node.data.str)) return;
+        if (node.data == .str and nodes.items.len > 0 and try sc.extendStr(&nodes.items[nodes.items.len - 1], node.data.str)) return;
         nodes.appendAssumeCapacity(node);
     }
 
@@ -923,10 +920,10 @@ const Scanner = struct {
                 }
                 if (word_start == last_text.len) return sc.dropId(ba);
                 const kids = try sc.a.alloc(Node, 1);
-                kids[0] = sc.strNode(last_text[word_start..]);
-                const span_node = try applyBlockAttrsToNode(sc.a, .{ .data = .{ .span = kids }, .start_pos = kids[0].start_pos, .end_pos = kids[0].end_pos }, ba);
+                kids[0] = try sc.strNode(last_text[word_start..]);
+                const span_node = try applyBlockAttrsToNode(sc.a, try (Node{ .data = .{ .span = kids } }).withSpan(sc.a, kids[0].startPos(), kids[0].endPos()), ba);
                 if (word_start > 0) {
-                    sc.setText(last, last_text[0..word_start]);
+                    try sc.setText(last, last_text[0..word_start]);
                     nodes.appendAssumeCapacity(span_node);
                 } else {
                     last.* = span_node;
@@ -958,7 +955,7 @@ const Scanner = struct {
 
     fn attachToLast(sc: *Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
         const last = &nodes.items[nodes.items.len - 1];
-        if (last.id) |old| {
+        if (last.id()) |old| {
             if (ba.writesId()) try sc.dropped.append(sc.scratch, old);
         }
         last.* = try applyLaterAttrsToNode(sc.a, last.*, ba);
@@ -969,26 +966,19 @@ const Scanner = struct {
 /// (a div's class) keeps them after the block attribute's, classes joined, as djot.js:
 /// `{.x}` before `::: y` gives `class="x y"`.
 pub fn applyBlockAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
-    var result = node;
-    if (node.attrs.len > 0 and ba.attrs.len > 0) {
-        const merged = try ba.merge(.{ .attrs = node.attrs }, a);
-        result.attrs = merged.attrs;
-    } else if (ba.attrs.len > 0) {
-        result.attrs = ba.attrs;
-    }
-    if (ba.id) |id| result.id = id;
-    return result;
+    const own = node.attrs();
+    const node_attrs = if (own.len > 0 and ba.attrs.len > 0)
+        (try ba.merge(.{ .attrs = own }, a)).attrs
+    else if (ba.attrs.len > 0) ba.attrs else own;
+    return node.withMarks(a, ba.id orelse node.id(), node_attrs);
 }
 
 /// A later inline attribute applied to a node that has one: the first keeps its places,
 /// the later's values win and its classes join after, as djot.js's attribute object
 /// (`[x]{#i .c}{.d}` gives `id="i" class="c d"`).
 fn applyLaterAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
-    const merged = try (BlockAttrs{ .id = node.id, .attrs = node.attrs }).merge(ba, a);
-    var result = node;
-    result.attrs = merged.attrs;
-    result.id = merged.id;
-    return result;
+    const merged = try (BlockAttrs{ .id = node.id(), .attrs = node.attrs() }).merge(ba, a);
+    return node.withMarks(a, merged.id, merged.attrs);
 }
 
 /// Where a raw format opening at `pos` (`{=`) ends: its `}`, with one or more bytes
@@ -1312,21 +1302,16 @@ fn join(a: Allocator, lines: []const []const u8, terminated: bool) ![]const u8 {
 /// A reference link's attributes with its definition's, as djot.js: the definition's that
 /// the link does not set come first, then the link's own in their order; nothing joins.
 pub fn mergeRefAttrs(node: Node, ref_attrs: BlockAttrs, a: Allocator) !Node {
-    var result = node;
-    if (result.id == null) result.id = ref_attrs.id;
-    if (ref_attrs.attrs.len == 0) return result;
-    if (result.attrs.len == 0) {
-        result.attrs = ref_attrs.attrs;
-        return result;
-    }
+    const node_id = node.id() orelse ref_attrs.id;
+    const own = node.attrs();
+    if (ref_attrs.attrs.len == 0 or own.len == 0) return node.withMarks(a, node_id, if (own.len == 0) ref_attrs.attrs else own);
     var merged: std.ArrayList(@import("node.zig").Attr) = .empty;
     for (ref_attrs.attrs) |ra| {
-        const overridden = for (result.attrs) |na| {
+        const overridden = for (own) |na| {
             if (std.mem.eql(u8, ra.key, na.key)) break true;
         } else false;
         if (!overridden) try merged.append(a, ra);
     }
-    for (result.attrs) |na| try merged.append(a, na);
-    result.attrs = try merged.toOwnedSlice(a);
-    return result;
+    for (own) |na| try merged.append(a, na);
+    return node.withMarks(a, node_id, try merged.toOwnedSlice(a));
 }
