@@ -227,7 +227,8 @@ pub const Ids = struct {
         std.debug.assert(depth <= max_nesting); // the parser refuses anything deeper
         if (n.id()) |id| try self.claim(id);
         var by_reference = switch (n.data) {
-            .link, .image => |l| l.reference != null and l.destination == null,
+            // An empty label resolves to nothing, so nothing waits for it (`Resolver`).
+            .link, .image => |l| l.destination == null and if (l.reference) |r| r.len > 0 else false,
             else => false,
         };
         if (n.data == .heading) {
@@ -345,8 +346,9 @@ pub const Resolver = struct {
 
     fn resolveNode(self: *const Resolver, ba: Allocator, n: *Node) Allocator.Error!void {
         switch (n.data) {
-            .link, .image => |*l| if (l.destination == null) if (l.reference) |label| {
-                // Keyed as parsed: normalized, an empty `[]` already the link's text.
+            // Keyed as parsed: normalized, an empty `[]` already the link's text. A label
+            // that is empty still resolves to nothing, as djot.js tests the label's truth.
+            .link, .image => |*l| if (l.destination == null) if (l.reference) |label| if (label.len > 0) {
                 if (self.defs.ref_defs.get(label)) |def| {
                     l.destination = def.url;
                     if (def.attrs) |attrs| n.* = try inline_mod.mergeRefAttrs(n.*, attrs, ba);

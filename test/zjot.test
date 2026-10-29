@@ -10887,3 +10887,37 @@ a {.c}
 <p>a　<span class="c">b</span></p>
 <p>a </p>
 ````
+
+`[^]:` is a reference definition labelled `^`, not a footnote, as djot.js: a footnote's label has a byte after its caret.
+````
+[^]: /u
+
+[x][^]
+
+[^]:
+
+para
+.
+<p><a href="">x</a></p>
+<p>para</p>
+````
+
+A link whose label is empty resolves to nothing, as djot.js, which tests the label's truth: a heading with no text gives it no target.
+````
+#
+
+[][]
+
+# ![](u)
+
+[![](u)][]
+.
+<section id="s-1">
+<h1></h1>
+<p><a></a></p>
+</section>
+<section id="s-2">
+<h1><img alt="" src="u"></h1>
+<p><a><img alt="" src="u"></a></p>
+</section>
+````

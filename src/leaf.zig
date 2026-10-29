@@ -114,8 +114,9 @@ pub fn definitionLabel(line: []const u8) ?DefinitionLabel {
     const close = std.mem.indexOfScalar(u8, trimmed[1..], ']') orelse return null;
     if (close + 2 >= trimmed.len or trimmed[close + 2] != ':') return null;
     const label = trimmed[1 .. close + 1];
-    const is_footnote = label.len > 0 and label[0] == '^';
-    if (is_footnote and label.len < 2) return null;
+    // A footnote's label has a byte after its caret; `[^]:` is a reference labelled `^`,
+    // as djot.js.
+    const is_footnote = label.len > 1 and label[0] == '^';
     const after_colon = trimmed[close + 3 ..];
     const rest = std.mem.trim(u8, after_colon, " \t");
     const rest_lead = after_colon.len - std.mem.trimStart(u8, after_colon, " \t").len;
