@@ -483,6 +483,27 @@ test "nesting deeper than max_nesting levels is error.TooDeep, before any walker
     written.clearRetainingCapacity();
     try render(a, ("> " ** (max_nesting - 2)) ++ "x\n", &written.writer, .{});
     try std.testing.expect(written.written().len > 0);
+    written.clearRetainingCapacity();
+    // A definition's inlines count from where it stands: under 600 quotes, 600 levels of
+    // emphasis are too deep, as 600 quotes inside it are.
+    try std.testing.expectError(error.TooDeep, render(a, ("> " ** 600) ++ "[^a]: x" ++ ("_" ** 600) ++ "x" ++ ("_" ** 600) ++ "\n\n[^a]\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    // And it is walked from there, not from the claim that brings it due: a definition
+    // between two headings 600 deep in one quote nests about 600 levels, and renders.
+    try render(a, "> " ++ ("> " ** 600) ++ "# h1\n>\n> [^a]: x" ++ ("_" ** 600) ++ "x" ++ ("_" ** 600) ++ "\n>\n> " ++ ("> " ** 600) ++ "# h2\n\n[^a]\n", &written.writer, .{});
+    try std.testing.expect(written.written().len > 0);
+    written.clearRetainingCapacity();
+    // Nodes made with no container of their own are bounded too: an empty cell under its
+    // row and table, an empty definition item's term and definition.
+    try std.testing.expectError(error.TooDeep, render(a, ("> " ** (max_nesting - 2)) ++ "||\n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    try std.testing.expectError(error.TooDeep, render(a, ("> " ** (max_nesting - 2)) ++ ": \n", &written.writer, .{}));
+    written.clearRetainingCapacity();
+    try render(a, ("> " ** (max_nesting - 3)) ++ "||\n", &written.writer, .{});
+    written.clearRetainingCapacity();
+    // A failed attribute block that becomes an item's term is counted as the term.
+    try render(a, ("> " ** (max_nesting - 4)) ++ ": {\n" ++ ("> " ** (max_nesting - 4)) ++ "  x\n", &written.writer, .{});
+    try std.testing.expect(written.written().len > 0);
 }
 
 /// `n` footnote definitions each nested in the one before, each but the innermost followed

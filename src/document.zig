@@ -62,18 +62,22 @@ pub const FootnoteDef = struct {
 /// starts, with the headings and explicit ids parsed before it, so the log is in source
 /// order and what is due is a prefix of it, as djot.js's event order has it. A definition's
 /// `footnote` is null while its content is parsed and set as it closes.
-/// How deep blocks and inline elements nest at most, the top-level block at 1 and a
-/// footnote definition's blocks under the place the definition stands (`assignDue`
-/// re-enters the walk there, on this one budget). The tree walkers (`Ids.assignNode`, the
-/// resolver, the renderers) recurse once per level, and a Debug build's 16 MiB stack holds
-/// about 1250 of the largest frames; djot.js fails near 1400. Deeper is `error.TooDeep`
-/// from `Ids.assign`, or from the parser's first walk over a leaf's inlines, before any
-/// other walker runs.
+/// How deep blocks and inline elements nest at most: a node's depth in its block's tree,
+/// the top-level block at 1, a footnote definition a level where it stands with its blocks
+/// under it. The parser alone checks it (no node is made past it: no container, no row,
+/// cell or term, and a leaf's inlines are counted from the leaf's depth); `Ids` walks a
+/// definition from where it stands (`takeDue`), so no walk recurses deeper. The tree
+/// walkers (`Ids.assignNode`, the resolver, the renderers) recurse once per level, and a
+/// Debug build's 16 MiB stack holds about 1250 of the largest frames; djot.js fails near
+/// 1400.
 pub const max_nesting = 1000;
 
 pub const Logged = struct {
     headings_before: usize,
     ids_before: usize,
+    /// A footnote definition's depth where it stands (its blocks one under), for `Ids` to
+    /// walk it from there; an id read off a node has none.
+    depth: usize = 0,
     what: union(enum) { footnote: ?*FootnoteDef, id: []const u8 },
 };
 
@@ -121,15 +125,20 @@ pub const Ids = struct {
     /// a prefix of it, up to the first definition still open or the first standing after a
     /// heading or an explicit id not yet assigned (no more headings and explicit ids were
     /// parsed before a due one than have been assigned). A definition's blocks are assigned,
-    /// an id read off a node is registered. Called before each block, each heading and each
-    /// explicit id, so a definition's headings and an id read off a node take their place
-    /// where they stand, as djot.js registers in source order; `finish` takes what is left
-    /// at the end. Each entry is looked at once as it comes due, however many headings a
-    /// document's definitions hold. `depth` is the nesting of the place the call stands
-    /// at, which a definition's blocks nest under: a definition holding a heading that
-    /// brings the next definition due re-enters this walk, and the one budget bounds the
-    /// recursion however the definitions nest.
-    pub fn assignDue(self: *Ids, depth: usize) Error!void {
+    /// an id read off a node is registered, so each takes its place where it stands, as
+    /// djot.js registers in source order; `finish` takes what is left at the end. Each
+    /// entry is looked at once as it comes due.
+    ///
+    /// A definition is taken where it stands: `depth` is the depth of the nodes the walk
+    /// is between, and a definition is taken there only when it stands at that depth, so
+    /// its blocks are walked from no deeper than the source nests them. The walk calls this
+    /// before and after every child, so it passes each definition's depth after the
+    /// definition and before anything that stands after it; a claim (`depth` null) finds
+    /// every due definition taken, since what stands after one below its depth is reached
+    /// only through containers that open after it. Two nodes are written out of their
+    /// source order, and each follows a pass where what stood before it stands: a table's
+    /// caption (at the table's depth) and a definition item's term (at the definition's).
+    fn takeDue(self: *Ids, depth: ?usize) Error!void {
         const log = self.defs.log.items;
         while (self.cursor < log.len) {
             const entry = log[self.cursor];
@@ -137,8 +146,10 @@ pub const Ids = struct {
             switch (entry.what) {
                 .footnote => |closed| {
                     const def = closed orelse break; // still open: what follows is inside it
+                    if (depth) |d| if (d != entry.depth) break;
+                    std.debug.assert(depth != null);
                     self.cursor += 1;
-                    try self.assignDef(def, depth);
+                    try self.assignDef(def, entry.depth);
                 },
                 .id => |id| {
                     self.cursor += 1;
@@ -149,18 +160,19 @@ pub const Ids = struct {
     }
 
     /// A definition's own id (the block attributes written before it, which djot.js
-    /// registers where they stand), then its blocks, which the parser built for it alone.
+    /// registers where they stand), then its blocks, one under its `depth`, which the
+    /// parser built for it alone.
     fn assignDef(self: *Ids, def: *FootnoteDef, depth: usize) Error!void {
         if (def.attrs) |attrs| {
-            if (attrs.id) |id| try self.claim(id, depth);
+            if (attrs.id) |id| try self.claim(id);
         }
-        for (@constCast(def.blocks)) |*block| _ = try self.assignNode(block, depth + 1);
+        _ = try self.assignChildren(@constCast(def.blocks), depth + 1);
     }
 
     /// An explicit id on a node, reached: what stands before it in the source takes its
     /// place first.
-    fn claim(self: *Ids, id: []const u8, depth: usize) Error!void {
-        try self.assignDue(depth);
+    fn claim(self: *Ids, id: []const u8) Error!void {
+        try self.takeDue(null);
         try self.register(id);
     }
 
@@ -174,13 +186,13 @@ pub const Ids = struct {
     /// After the last block: every entry left, in log order, whatever the counts say (every
     /// definition has closed, so none may be left).
     pub fn finish(self: *Ids) Error!void {
-        try self.assignDue(0);
+        try self.takeDue(1);
         const log = self.defs.log.items;
         while (self.cursor < log.len) {
             const entry = log[self.cursor];
             self.cursor += 1;
             switch (entry.what) {
-                .footnote => |closed| try self.assignDef(closed.?, 0),
+                .footnote => |closed| try self.assignDef(closed.?, entry.depth),
                 .id => |id| try self.register(id),
             }
         }
@@ -191,17 +203,28 @@ pub const Ids = struct {
     /// into the tree, which the parser built for this block alone. Returns whether the
     /// block holds a link or image by reference, which the definitions may still change
     /// until the input ends (what `Resolver.resolve` fills in).
-    pub const Error = Allocator.Error || error{TooDeep};
+    pub const Error = Allocator.Error;
 
     pub fn assign(self: *Ids, block: *Node) Error!bool {
         // What is due stands before this block in the source.
-        try self.assignDue(0);
+        try self.takeDue(1);
         return self.assignNode(block, 1);
     }
 
+    /// `nodes`, at `depth`, with what is due taken before and after each.
+    fn assignChildren(self: *Ids, nodes: []Node, depth: usize) Error!bool {
+        var by_reference = false;
+        for (nodes) |*child| {
+            try self.takeDue(depth);
+            if (try self.assignNode(child, depth)) by_reference = true;
+        }
+        try self.takeDue(depth);
+        return by_reference;
+    }
+
     fn assignNode(self: *Ids, n: *Node, depth: usize) Error!bool {
-        if (depth > max_nesting) return error.TooDeep; // before any walker recurses that far
-        if (n.id) |id| try self.claim(id, depth);
+        std.debug.assert(depth <= max_nesting); // the parser refuses anything deeper
+        if (n.id) |id| try self.claim(id);
         var by_reference = switch (n.data) {
             .link, .image => |l| l.reference != null and l.destination == null,
             else => false,
@@ -212,7 +235,7 @@ pub const Ids = struct {
             for (@constCast(n.children())) |*child| {
                 if (try self.assignNode(child, depth + 1)) by_reference = true;
             }
-            try self.assignDue(depth);
+            try self.takeDue(null);
             self.assigned_headings += 1;
             _ = self.scratch.reset(.retain_capacity);
             const text = try inline_mod.getPlainText(self.scratch.allocator(), n.*);
@@ -224,6 +247,9 @@ pub const Ids = struct {
             }
             return by_reference;
         }
+        // A definition written first in an item stands before the paragraph after it,
+        // which the item's close made its term and which is walked first.
+        if (n.data == .definition_list_item) try self.takeDue(depth + 2);
         // A table holds its caption first, as it is written, but the caption stands after
         // the rows in the source, where the parser counted its ids: the rows claim theirs first.
         if (n.data == .table and n.data.table.len > 0) {
@@ -231,12 +257,12 @@ pub const Ids = struct {
             for (t[1..]) |*row| {
                 if (try self.assignNode(row, depth + 1)) by_reference = true;
             }
+            // What stood between the table and its caption stands at the table's depth.
+            try self.takeDue(depth);
             if (try self.assignNode(&t[0], depth + 1)) by_reference = true;
             return by_reference;
         }
-        for (@constCast(n.children())) |*child| {
-            if (try self.assignNode(child, depth + 1)) by_reference = true;
-        }
+        if (try self.assignChildren(@constCast(n.children()), depth + 1)) by_reference = true;
         return by_reference;
     }
 
