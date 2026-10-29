@@ -857,15 +857,15 @@ fn countIds(nodes: []const Node) usize {
 
 /// The first walk over a leaf's fresh inlines, and the only one before `Ids.assign` bounds
 /// the block: deeper than `document.max_nesting` is `error.TooDeep` here, before any
-/// walker recurses into it. Counts the explicit ids, and reads the label of a link written
-/// `[text][]` off its text once what stands below it is known to be bounded.
+/// walker recurses into it. Counts the explicit ids, and keys the label of a link written
+/// by reference (`[text][]` off its text) once what stands below it is known to be bounded.
 fn boundLeaf(a: Allocator, nodes: []Node, depth: usize) Error!usize {
     if (depth > document.max_nesting) return error.TooDeep;
     var n: usize = 0;
     for (nodes) |*node| {
         if (node.id != null) n += 1;
         n += try boundLeaf(a, @constCast(node.children()), depth + 1);
-        try inline_mod.labelOwnText(a, node);
+        try inline_mod.keyLabel(a, node);
     }
     return n;
 }
