@@ -115,6 +115,10 @@ const Reserved = struct { index: usize, headings_before: usize, ids_before: usiz
 
 const Container = struct {
     start: SourcePos,
+    /// Its node's depth in the block's tree, the top-level block at 1 and a footnote
+    /// definition's under the place it stands (`depthOpening`): the one depth every limit
+    /// and walk counts.
+    depth: usize,
     children: std.ArrayList(Node),
     /// Parser attributes waiting for this container's next child block.
     pending_attrs: ?BlockAttrs = null,
@@ -417,7 +421,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             // Failed at its line end, a blank line makes it a paragraph that ends here, and
             // the line is the list's blank line too (djot.js converts on the failing line).
             if (at.failed == .eol and cur.atEol()) {
-                c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+                try self.convertToPara(c);
                 return false;
             }
             // Lines indented past the opener keep the attribute going until it parses.
@@ -446,7 +450,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
                         .failed_at => |p| if (p == line.len) {
                             at.failed = .eol;
                         } else if (leaf.isBlank(line[p + 1 ..])) {
-                            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+                            try self.convertToPara(c);
                         } else {
                             at.failed = .elsewhere;
                         },
@@ -458,7 +462,7 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
             // It never parsed: its lines are a paragraph, and this line continues it or
             // not as a paragraph's would; a blank line that ends it here was the attribute's
             // (djot.js converts on it and fires no blank line for the list around).
-            c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+            try self.convertToPara(c);
             self.blank_taken = cur.atEol();
             return !cur.atEol();
         },
@@ -600,6 +604,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
             try self.defs.log.append(self.defs.gpa, .{
                 .headings_before = self.defs.headings_parsed,
                 .ids_before = self.defs.ids_parsed,
+                .depth = self.depthOpening(false, false),
                 .what = .{ .footnote = null },
             });
             if (self.attrsSlot().*) |ba| {
@@ -724,6 +729,7 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
         }
         return;
     }
+    try bound(c.depth + 2); // the row, and its cells under it
     const strs = try leaf.rowCells(a, r);
     const cells = try a.alloc(Node, strs.len);
     for (strs, cells, 0..) |str, *cell, i| {
@@ -736,7 +742,8 @@ fn tableRow(self: *Parser, c: *Container, cur: *Cursor) Error!void {
         cell.* = .{
             .data = .{
                 .cell = .{
-                    .children = try self.leafInlines(a, 0, false), // no line end follows a cell
+                    // No line end follows a cell, which stands under its row and table.
+                    .children = try self.leafInlines(a, 0, false, c.depth + 3),
                     .cell_align = if (i < c.data.table.aligns.len) c.data.table.aligns[i] else .default,
                 },
             },
@@ -768,11 +775,13 @@ fn divClass(class: ?[]const u8) bool {
 
 fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Error!void {
     // Bounded as it is built: past the limit no container opens, so a line costs at most
-    // the limit to match and the tree walk's own check is never deeper than this.
-    if (self.stack.items.len >= document.max_nesting) return error.TooDeep;
+    // the limit to match.
+    const depth = self.depthOpening(data == .para, data == .caption and self.tableBefore() != null);
+    if (depth > document.max_nesting) return error.TooDeep;
     self.listEvent(data == .list, data == .list_item);
     const c = Container{
         .start = start,
+        .depth = depth,
         .children = self.spare_lists.pop() orelse .empty,
         .data = data,
     };
@@ -811,13 +820,59 @@ fn logReserved(self: *Parser, at: Reserved, ids: []const []const u8) Error!void 
     }
 }
 
+/// The depth of a node opening now: one under its parent's, one more under a definition
+/// item's `definition` (anything but the item's term), and one more for a caption, which
+/// joins the table before it.
+fn depthOpening(self: *const Parser, para: bool, caption: bool) usize {
+    return depthUnder(self.stack.items, para, caption);
+}
+
+/// The table a caption opening or closing now joins: the block before it, if a table.
+fn tableBefore(self: *Parser) ?*Node {
+    if (self.stack.items.len > 0) {
+        const siblings = self.tip().children.items;
+        return if (siblings.len > 0 and siblings[siblings.len - 1].data == .table) &siblings[siblings.len - 1] else null;
+    }
+    if (self.pending) |*p| if (p.node.data == .table) return &p.node;
+    return null;
+}
+
+/// The depth of a node opening under the containers `s` (`depthOpening`).
+fn depthUnder(s: []const Container, para: bool, caption: bool) usize {
+    var depth: usize = if (s.len == 0) 1 else s[s.len - 1].depth + 1;
+    if (definitionItem(s) and !(para and s[s.len - 1].children.items.len == 0)) depth += 1;
+    if (caption) depth += 1;
+    return depth;
+}
+
+/// A node the parser makes with no container of its own (a table's rows, cells and
+/// caption placeholder, a definition item's term and definition), at `depth`: past the
+/// limit it is `error.TooDeep`, as `push` makes a container.
+fn bound(depth: usize) Error!void {
+    if (depth > document.max_nesting) return error.TooDeep;
+}
+
+/// Whether the innermost container is a definition list's item.
+fn inDefinitionItem(self: *const Parser) bool {
+    return definitionItem(self.stack.items);
+}
+
+fn definitionItem(s: []const Container) bool {
+    return s.len >= 2 and s[s.len - 1].data == .list_item and s[s.len - 2].data == .list and s[s.len - 2].data.list.style == .definition;
+}
+
+/// A failed attribute block becomes a paragraph where it stands, with the depth one
+/// opening there has (an item's term, when it is the item's first child).
+fn convertToPara(self: *Parser, c: *Container) Error!void {
+    c.data = .{ .para = .{ .attrs_from = try self.failedAttrsFrom(), .converted = true } };
+    const at = (@intFromPtr(c) - @intFromPtr(self.stack.items.ptr)) / @sizeOf(Container);
+    c.depth = depthUnder(self.stack.items[0..at], true, false);
+}
+
 /// Whether a paragraph opening now is the first child of a definition list's item: its
 /// term, once the item closes.
 fn opensTerm(self: *Parser) bool {
-    const s = self.stack.items;
-    if (s.len < 2) return false;
-    const item = s[s.len - 1];
-    return item.data == .list_item and item.children.items.len == 0 and s[s.len - 2].data == .list and s[s.len - 2].data.list.style == .definition;
+    return self.inDefinitionItem() and self.tip().children.items.len == 0;
 }
 
 /// Registers `id`, read off any node, where it stands: counted now and logged with the
@@ -855,12 +910,14 @@ fn countIds(nodes: []const Node) usize {
     return n;
 }
 
-/// The first walk over a leaf's fresh inlines, and the only one before `Ids.assign` bounds
-/// the block: deeper than `document.max_nesting` is `error.TooDeep` here, before any
-/// walker recurses into it. Counts the explicit ids, and keys the label of a link written
-/// by reference (`[text][]` off its text) once what stands below it is known to be bounded.
+/// The first walk over a leaf's fresh inlines, `depth` theirs: a node deeper than
+/// `document.max_nesting` is `error.TooDeep` here, before any walker recurses into it.
+/// With `push`, which opens no container past the limit, and `bound`, which makes no other
+/// node past it, the parser is the one checker: every later walk meets nodes no deeper. Counts the explicit ids, and keys the
+/// label of a link written by reference (`[text][]` off its text) once what stands below
+/// it is known to be bounded.
 fn boundLeaf(a: Allocator, nodes: []Node, depth: usize) Error!usize {
-    if (depth > document.max_nesting) return error.TooDeep;
+    if (nodes.len > 0 and depth > document.max_nesting) return error.TooDeep;
     var n: usize = 0;
     for (nodes) |*node| {
         if (node.id != null) n += 1;
@@ -976,7 +1033,8 @@ fn trimEndKeepingEscape(text: []const u8, blanks: []const u8) []const u8 {
     return if (trimmed.len < text.len and trimmed.len > 0 and trimmed[trimmed.len - 1] == '\\') text[0 .. trimmed.len + 1] else trimmed;
 }
 
-fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) Error![]const Node {
+/// `depth`: the inlines' own, one under the leaf's node.
+fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool, depth: usize) Error![]const Node {
     defer self.dropLeaf();
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
     if (src.len == 0) return &.{};
@@ -988,7 +1046,7 @@ fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool) 
     // registered all the same (djot.js); among one leaf's explicit ids the order cannot
     // show, so these go first.
     for (dropped.items) |id| try self.looseId(id);
-    self.defs.ids_parsed += try boundLeaf(a, @constCast(nodes), 1);
+    self.defs.ids_parsed += try boundLeaf(a, @constCast(nodes), depth);
     return nodes;
 }
 
@@ -1117,6 +1175,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             const items = c.children.items;
             const data: node_mod.Payload = if (self.tip().data.list.style == .definition) definition: {
                 // The first paragraph is the term; the rest is the definition.
+                try bound(c.depth + 1);
                 const has_term = items.len > 0 and items[0].data == .para;
                 // The term keeps the paragraph's inlines, not its node: an id written
                 // before it was counted as it opened and is logged where it stood.
@@ -1172,6 +1231,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
         },
         .table => blk: {
             // djot.js gives every table a caption, empty until one follows it.
+            try bound(c.depth + 1);
             const children = try a.alloc(Node, c.children.items.len + 1);
             children[0] = .{ .data = .{ .caption = &.{} } };
             @memcpy(children[1..], c.children.items);
@@ -1185,11 +1245,7 @@ fn close(self: *Parser, stand: Stand) Error!void {
             // Joins the table before it, if that is what stands before it, with the block
             // attributes waiting; else it is dropped, as djot.js. Its nodes live where the
             // table's do.
-            const table: ?*Node = if (self.stack.items.len > 0) blk: {
-                const siblings = self.tip().children.items;
-                break :blk if (siblings.len > 0 and siblings[siblings.len - 1].data == .table) &siblings[siblings.len - 1] else null;
-            } else if (self.pending) |*p| (if (p.node.data == .table) &p.node else null) else null;
-            const t = table orelse {
+            const t = self.tableBefore() orelse {
                 // Dropped, but the ids it holds were read (djot.js registers every id it
                 // reads): the waiting attributes', taken as it opened, then its content's.
                 const slot = self.attrsSlot();
@@ -1259,7 +1315,7 @@ fn leafText(self: *Parser, a: Allocator) Error![]const u8 {
 
 /// A paragraph, heading (of `level`) or caption over the open leaf's inlines.
 fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, level: u8, attrs_from: usize, stand: Stand) Error!Node {
-    const children = try self.leafInlines(a, attrs_from, true);
+    const children = try self.leafInlines(a, attrs_from, true, c.depth + 1);
     return .{
         .data = switch (tag) {
             .para => .{ .para = children },
