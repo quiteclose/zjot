@@ -4,7 +4,7 @@
 
 A [Djot](https://djot.net/) parser written in Zig. Produces HTML or AST output from Djot markup.
 
-zjot passes all 261 test cases from the canonical [djot.js](https://github.com/jgm/djot.js) test suite.
+zjot passes all 261 test cases of the canonical [djot.js](https://github.com/jgm/djot.js) test suite that do not need its Lua filters.
 
 ## Build
 
@@ -20,7 +20,7 @@ zig build
 zjot [OPTIONS] [--] [FILE]
 ```
 
-If `FILE` is omitted or is `-`, reads from stdin. `--` ends the options, so a file whose name starts with `-` can follow it. The input is read a buffer at a time and the output is written block by block (reaching stdout through a 4 KiB buffer), so memory tracks the largest block rather than the document, until a block holds a reference-style link: that block waits as a tree and the output after it as text until the input ends, since a later definition may still change the link. Under `--ast --sourcepos`, a section's output waits until the heading that closes it. The one size limit is 2^64 - 1 bytes or lines (16 EiB), and the one depth limit is 1000 nested levels, blocks and inline elements together, a footnote definition counting as a level where it stands, its content under it (djot.js fails near 1400); past either, zjot exits non-zero with a message. Source positions are 32-bit, so past 4 GiB of input (or that many lines, or a line that long) they saturate at 4294967295 under `--sourcepos`, and nothing else is affected. If zjot exits non-zero part-way through a document, stdout holds what was rendered before the failure, flushed before the message: the document up to the block that failed, or up to the first block still waiting as above.
+If `FILE` is omitted or is `-`, reads from stdin. `--` ends the options, so a file whose name starts with `-` can follow it (a file named `-` itself is `./-`). The input is read a buffer at a time and the output is written block by block (reaching stdout through a 4 KiB buffer), so memory tracks the largest block rather than the document, until a block holds a reference-style link: that block waits as a tree and the output after it as text until the input ends, since a later definition may still change the link. Under `--ast --sourcepos`, a section's output waits until the heading that closes it. The one size limit is 2^64 - 1 bytes or lines (16 EiB), and the one depth limit is 1000 nested levels, blocks and inline elements together, a footnote definition counting as a level where it stands, its content under it (djot.js 0.3.2 on Node 26 overflows its stack at about 1110 nested levels in HTML, though its AST output survives 2000); past either, zjot exits non-zero with a message. Source positions are 32-bit, so past 4 GiB of input (or that many lines, or a line that long) they saturate at 4294967295 under `--sourcepos`, and nothing else is affected. If zjot exits non-zero part-way through a document, stdout holds what was rendered before the failure, flushed before the message: the document up to the block that failed, or up to the first block still waiting as above.
 
 **Options:**
 
@@ -101,23 +101,30 @@ const ast_pos = try zjot.toAstOpts(allocator, input, true);
 | `toAst(allocator, input) ![]const u8` | Parse Djot and render to AST text |
 | `toAstOpts(allocator, input, sourcepos) ![]const u8` | Parse Djot and render to AST text with optional source positions |
 | `render(allocator, input, writer, opts) !void` | Render to a `std.Io.Writer` block by block; `opts` is `.{ .mode = .html \| .ast, .sourcepos = bool }` |
-| `renderReader(allocator, reader, writer, opts) !void` | As `render`, reading the document from a `std.Io.Reader` a line at a time, so it need not be in memory |
+| `renderReader(allocator, reader, writer, opts) !void` | As `render`, reading the document from a buffered `std.Io.Reader` a line at a time (a line longer than the buffer spills into a growing one), so it need not be in memory; an unbuffered reader is `error.UnbufferedReader` |
+
+Errors: `error.TooDeep` past `max_nesting` (1000) levels, `error.InputTooLarge` at 2^64
+bytes or lines, a reader's `error.ReadFailed`, a writer's `error.WriteFailed`
+(`error.OutOfMemory` from the `to*` functions), and allocation failure. `RenderOpts` and
+`Mode` are exported for `opts`.
 
 The `to*` functions return owned slices that should be freed by the caller. `render` and
 `renderReader` keep nothing past the call. Nodes are freed block by block as blocks are
 written; what lives for the whole call is the definitions (all footnote content included),
-the heading ids, in HTML every footnote label referenced (about 120 bytes each, so that a
-repeated reference gets its first number) and what waits to be written. A block holding a reference-style link
-waits as a tree until the input ends, since a later definition may still change the link,
-and the blocks after it wait as rendered text; under `--ast --sourcepos` a section's blocks
-wait as text until the heading that closes it. Otherwise memory tracks the largest block,
-not the document, and with `renderReader` not the input either. A block is held whole
-until it closes, at roughly 130 to 270 bytes a node of its tree (72 the node itself, the
-rest its text, line copies and working lists), so about 450 to 500 bytes a line of
-paragraph text, 300 to 400 a list item, 550 to 700 a table row, several KB a line dense
-with inline markup, and a code block about 50 bytes a line and 4 a byte (measured in
-HTML; under `--ast --sourcepos`, where every node carries its positions, about 2 to 4
-times that, a code block's the same).
+every id, generated or written (about 40 bytes each), and each heading text's implicit
+reference (about 170 bytes a heading with its id), in HTML every footnote label referenced
+(about 120 bytes each, so that a repeated reference gets its first number), and what waits
+to be written. A block holding a reference-style link waits as a tree until the input
+ends, since a later definition may still change the link, and the blocks after it wait as
+rendered text; under `--ast --sourcepos` a section's blocks wait as text until the heading
+that closes it. Otherwise memory tracks the largest block, not the document, and with
+`renderReader` not the input either. A block is held whole until it closes, at roughly 110
+to 290 bytes a node of its tree (72 the node itself, the rest its text, line copies and
+working lists), so about 450 bytes a line of paragraph text plus 2 a byte of it (some 570
+for a 60-byte line), 330 to 500 a list item, about 100 a table row plus 200 a cell,
+several KB a line dense with inline markup, and a code block about 50 bytes a line and 4
+a byte (measured in HTML; under `--ast --sourcepos`, where every node carries its
+positions, about 1.5 to 4 times that, a code block's the same).
 
 ## Tests
 
@@ -125,11 +132,11 @@ times that, a code block's the same).
 zig build test
 ```
 
-Runs 261 test cases vendored from the djot.js test suite, covering attributes, block quotes, code blocks, definition lists, emphasis, escapes, fenced divs, footnotes, headings, insert/delete/mark, links and images, lists, math, paragraphs, raw content, regressions, smart punctuation, spans, source positions, super/subscript, symbols, tables, task lists, thematic breaks, and verbatim, plus 685 cases of zjot's own in `test/zjot.test` and 115 in `test/grid.test` (every block family bare, under a block attribute, in a block quote and in a list item), all with expected output generated by djot.js 0.3.2.
+Runs the Zig unit tests, the CLI goldens, and 261 test cases vendored from the djot.js test suite, covering attributes, block quotes, code blocks, definition lists, emphasis, escapes, fenced divs, footnotes, headings, insert/delete/mark, links and images, lists, math, paragraphs, raw content, regressions, smart punctuation, spans, source positions, super/subscript, symbols, tables, task lists, thematic breaks, and verbatim, whose expectations are the suite's own (`filters.test`'s 3 cases, which need djot.js's Lua filters, are not run), plus 687 cases of zjot's own in `test/zjot.test` and 115 in `test/grid.test` (every block family bare, under a block attribute, in a block quote and in a list item, and the shapes that make a block wait for a later one); the expectations in these two files are generated by djot.js 0.3.2.
 
 ## Architecture
 
-zjot is a block-streaming renderer in one pass. The block parser is a container stack over the input's lines, the shape of djot.js's block parser: each line continues the open containers from the outermost in, opens new blocks while the innermost holds blocks, and what remains is lazy text or a blank line; it yields one block at a time (`Parser.nextBlock`) as a `Node` tree for that block alone, and there is no intermediate event stream and no tree of the whole document. Each block gets its heading ids as it arrives and is written as soon as nothing in it can still change: Djot lets a block refer to a later one, so a block holding a reference-style link waits in a queue until the input ends and the definitions are final, and the blocks behind it are rendered as they arrive and wait as text. Only the definitions, the ids and what waits live for the whole document.
+zjot is a block-streaming renderer in one pass. The block parser is a container stack over the input's lines, the shape of djot.js's block parser: each line continues the open containers from the outermost in, opens new blocks while the innermost holds blocks, and what remains is lazy text for an open paragraph, heading or caption, a blank line, or the innermost container's own text; it yields one block at a time (`Parser.nextBlock`) as a `Node` tree for that block alone, and there is no intermediate event stream and no tree of the whole document. Each block gets its heading ids as it arrives and is written as soon as nothing in it can still change: Djot lets a block refer to a later one, so a block holding a reference-style link waits in a queue until the input ends and the definitions are final, and the blocks behind it are rendered as they arrive and wait as text. Under `--ast --sourcepos` a section's opening waits too, for the heading that closes it and gives its end, and the parser holds a closed top-level table until a block follows it or the input ends, since a caption may still join it. Only the definitions, the ids, in HTML the footnote labels, and what waits live for the whole document.
 
 ```
 src/

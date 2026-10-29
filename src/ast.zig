@@ -1,4 +1,6 @@
-//! Renders a djot AST as indented text. Format follows djot.js conventions.
+//! Renders a node as indented text, in the form test/tools/djot2ast.py gives djot.js's
+//! JSON AST (`-t ast`), so vendored `a`/`ap` cases compare directly; the `zjot.test`
+//! header lists where zjot's differs.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -22,7 +24,9 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
     }
 
     switch (node.data) {
-        // As djot.js's text form: a url, an email and math print no text.
+        // As the converter renders djot.js's JSON (test/tools/djot2ast.py), which `ap`
+        // cases are pinned against: a url, an email and math print no text, where
+        // djot.js's own `astpretty` prints it.
         .str, .verbatim, .footnote_reference => |text| if (text.len > 0) {
             try out.appendSlice(a, " text=");
             try appendJsonStr(a, out, text);
@@ -111,8 +115,9 @@ pub fn renderAstNode(a: Allocator, out: *std.ArrayList(u8), node: Node, indent: 
         else => {},
     }
 
-    // Attributes print as djot.js's text form does: id, class, then the rest in order;
-    // the written id over a generated one, an empty `id=""` included (html.zig).
+    // Attributes print as the converter orders them (test/tools/djot2ast.py): id, class,
+    // then the rest in source order; djot.js's `astpretty` keeps source order throughout.
+    // The written id wins over a generated one, an empty `id=""` included (html.zig).
     const written = for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) break attr.value;
     } else null;

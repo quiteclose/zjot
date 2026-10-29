@@ -3,8 +3,9 @@
 //! rest of it (`Ids`, `Resolver`) and the section structure that headings imply
 //! (`Sections`). The input is read once: each block gets its ids as it arrives, and a
 //! block that refers to a definition is resolved when the definitions are final.
-//! Everything that outlives a block lives in the allocator the consumer keeps for the
-//! document.
+//! Everything that outlives a block is allocated from the allocator the consumer keeps for
+//! the document; the maps and the log that index it grow on the general allocator, which
+//! each `deinit` frees.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -55,23 +56,27 @@ pub const FootnoteDef = struct {
     end_pos: ?SourcePos = null,
 };
 
-/// What `Ids` takes where it stands in the source: a footnote definition, whose blocks are
-/// assigned there, or an explicit id read off a node, registered there (a replaced
-/// caption's, a reference definition's, one a later attribute line on the same block
-/// overrode: djot.js registers every id it reads, whether it lands or not). Logged as it
-/// starts, with the headings and explicit ids parsed before it, so the log is in source
-/// order and what is due is a prefix of it, as djot.js's event order has it. A definition's
-/// `footnote` is null while its content is parsed and set as it closes.
 /// How deep blocks and inline elements nest at most: a node's depth in its block's tree,
 /// the top-level block at 1, a footnote definition a level where it stands with its blocks
 /// under it. The parser alone checks it (no node is made past it: no container, no row,
 /// cell or term, and a leaf's inlines are counted from the leaf's depth); `Ids` walks a
 /// definition from where it stands (`takeDue`), so no walk recurses deeper. The tree
 /// walkers (`Ids.assignNode`, the resolver, the renderers) recurse once per level, and a
-/// Debug build's 16 MiB stack holds about 1250 of the largest frames; djot.js fails near
-/// 1400.
+/// Debug build's 16 MiB stack holds about 1620 levels of the largest frames, the HTML
+/// renderer's; djot.js's HTML renderer fails at 1110.
 pub const max_nesting = 1000;
 
+/// What `Ids` takes where it stands in the source: a footnote definition, whose blocks are
+/// assigned there, or an explicit id read off a node, registered there (an inline
+/// attribute's attached to nothing or overridden, a definition item's term's, a dropped or
+/// replaced caption's, a reference definition's, one a later attribute line on the same
+/// block overrode: djot.js registers every id it reads, whether it lands or not). Each
+/// carries the headings and explicit ids parsed before it, so the log is in source order
+/// and what is due is a prefix of it, as djot.js's event order has it. A definition is
+/// logged as it opens, an id as the parser lets it go; the ids of a node discarded after
+/// more was parsed (a term's, a replaced caption's) are inserted at the place reserved
+/// where that node's ids began to be counted, with the counts of then (`Parser.Reserved`).
+/// A definition's `footnote` is null while its content is parsed and set as it closes.
 pub const Logged = struct {
     headings_before: usize,
     ids_before: usize,
@@ -132,12 +137,14 @@ pub const Ids = struct {
     /// A definition is taken where it stands: `depth` is the depth of the nodes the walk
     /// is between, and a definition is taken there only when it stands at that depth, so
     /// its blocks are walked from no deeper than the source nests them. The walk calls this
-    /// before and after every child, so it passes each definition's depth after the
-    /// definition and before anything that stands after it; a claim (`depth` null) finds
-    /// every due definition taken, since what stands after one below its depth is reached
-    /// only through containers that open after it. Two nodes are written out of their
-    /// source order, and each follows a pass where what stood before it stands: a table's
-    /// caption (at the table's depth) and a definition item's term (at the definition's).
+    /// before and after every child of a container (`assignChildren`), so it passes each
+    /// definition's depth after the definition and before anything that stands after it; a
+    /// heading's inlines and a table's rows, among which no definition stands, are walked
+    /// without it. A claim (`depth` null) finds every due definition taken, since what
+    /// stands after one below its depth is reached only through containers that open after
+    /// it. Two nodes are written out of their source order, and each follows a pass where
+    /// what stood before it stands: a table's caption (at the table's depth) and a
+    /// definition item's term (at the definition's).
     fn takeDue(self: *Ids, depth: ?usize) Error!void {
         const log = self.defs.log.items;
         while (self.cursor < log.len) {
@@ -183,8 +190,9 @@ pub const Ids = struct {
         if (!seen.found_existing) seen.key_ptr.* = try self.a.dupe(u8, id);
     }
 
-    /// After the last block: every entry left, in log order, whatever the counts say (every
-    /// definition has closed, so none may be left).
+    /// After the last block: what is due at the top level, as before a block, then every
+    /// entry left, in log order, whatever the counts say (every definition has closed by
+    /// now, so none is still open).
     pub fn finish(self: *Ids) Error!void {
         try self.takeDue(1);
         const log = self.defs.log.items;
@@ -198,14 +206,15 @@ pub const Ids = struct {
         }
     }
 
-    /// Sets every heading's id in `block` and claims its implicit reference, assigning
-    /// the footnote definitions that stand among its headings where they stand. Writes
-    /// into the tree, which the parser built for this block alone. Returns whether the
-    /// block holds a link or image by reference, which the definitions may still change
-    /// until the input ends (what `Resolver.resolve` fills in).
     pub const Error = Allocator.Error;
 
-    /// `a` is the block's own allocator, for a generated id's place on its node.
+    /// Sets every heading's id in `block` and claims its implicit reference, assigning
+    /// the footnote definitions that stand among its headings where they stand. Writes
+    /// into the tree, which the parser built for this block alone; `a` is the block's own
+    /// allocator, for a generated id's place on its node. Returns whether the block holds
+    /// a link or image by reference, which is final only once the input ends: a later
+    /// definition may define or replace its label, and a later heading may claim it (what
+    /// `Resolver.resolve` fills in).
     pub fn assign(self: *Ids, block: *Node, a: Allocator) Error!bool {
         // What is due stands before this block in the source.
         try self.takeDue(1);
@@ -333,9 +342,10 @@ pub const Ids = struct {
 
 /// Resolves one block against the definitions, once they are final: a link or image
 /// written by reference takes a definition's destination and attributes, else the target
-/// the heading with that text claimed. Writes into the tree, which is the block's alone;
-/// `ba` is the block's allocator, for what the labels and merged attributes need, and a
-/// footnote definition's content is resolved on the definitions' own, as it lives there.
+/// the heading with that text claimed. Writes into the tree, which is the block's alone.
+/// The parser has keyed every label already (`inline.keyLabel`), so resolving a link
+/// allocates only its merged attributes' marks: on `ba`, the block's allocator, and for a
+/// footnote definition's content on the definitions' own, as it lives there.
 pub const Resolver = struct {
     defs: *const Definitions,
     ids: *const Ids,
@@ -361,8 +371,10 @@ pub const Resolver = struct {
         for (@constCast(n.children())) |*child| try self.resolveNode(ba, child);
     }
 
-    /// The footnote definition `label`, its links resolved; without blocks when nothing
-    /// defines it.
+    /// The footnote definition `label` as a `footnote` node, without blocks when nothing
+    /// defines it: its blocks resolved in place, on the definitions' allocator, as they
+    /// live there, and the node, with the definition's span and the block attributes
+    /// written before it, made on `ba`.
     pub fn footnote(self: *const Resolver, ba: Allocator, label: []const u8) !Node {
         const def = self.defs.footnote_defs.get(label) orelse return .{ .data = .{ .footnote = .{ .label = label } } };
         for (@constCast(def.blocks)) |*block| try self.resolveNode(self.defs.a, block);
@@ -372,13 +384,15 @@ pub const Resolver = struct {
 };
 
 /// The section structure as events, so a consumer can write around headings without
-/// building a tree. A heading closes every open section of its level or deeper, opens its own,
-/// and moves its id onto it, and its written attributes only when they hold an id (djot.js
-/// moves `attributes` with the id in them, and the generated id alone). Open levels strictly increase, so the
-/// stack is at most six deep and one block yields at most eight events. A section's
+/// building a tree. A heading closes every open section of its level or deeper, opens its
+/// own, and moves its id onto it, and its written attributes only when they hold a
+/// non-empty id (djot.js moves `attributes` with such an id in them, and the generated id
+/// alone; an empty `id=""` leaves them on the heading). Open levels strictly increase, so
+/// the stack is at most six deep and one block yields at most eight events. A section's
 /// positions are the consumer's to give: it starts where its heading does, and ends where
-/// the heading that closes it ends, as djot.js (`parse.js` pops sections at the
-/// `-heading` event), or at the document's end.
+/// the heading that closes it ends, as djot.js (`parse.js` pops sections at the `-heading`
+/// event); one still open at the end ends at djot.js's last block event, the last
+/// top-level block's end or, when lines follow that block, the input's end.
 pub const Sections = struct {
     levels: [6]u8 = undefined,
     depth: usize = 0,

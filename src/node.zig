@@ -111,7 +111,9 @@ pub const Payload = union(Tag) {
     // blocks
     para: []const Node,
     heading: struct { level: u8, children: []const Node = &.{} },
-    /// The document root is a section of level 0.
+    /// A section a heading opens. It has no children: its blocks follow it as output
+    /// events (`document.Sections`). Level 0, childless, stands for the document in the
+    /// AST's `doc` line.
     section: struct { level: u8 = 0, children: []const Node = &.{} },
     thematic_break,
     code_block: struct { lang: ?[]const u8 = null, text: []const u8 },

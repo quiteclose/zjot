@@ -25,14 +25,17 @@ pub const max_nesting = document.max_nesting;
 /// Renders `input` to `w` one block at a time, reading the input once. Each block is
 /// parsed into an arena of its own, given its heading ids, and written as soon as nothing
 /// in it can still change: a block holding a reference-style link waits for the input's
-/// end, since a later definition replaces an earlier one (djot.js), and under `--ast
-/// --sourcepos` a section waits for the heading that closes it, which gives its end. The
-/// blocks behind a waiting one are rendered as they arrive and their text waits with it,
-/// so the output after the first reference-style link is buffered to the end. What lives
-/// for the whole call is the definitions (footnote content included), the ids, the trees
-/// of the blocks waiting and the text of those behind them. Output already written stays
-/// written if a later block fails. A document nested more than `max_nesting` levels deep
-/// is `error.TooDeep`.
+/// end, since a later definition may define or replace its label (djot.js) and a later
+/// heading may claim it, and under `--ast --sourcepos` a section waits for the heading that
+/// closes it, which gives its end. The blocks behind a waiting one are rendered as they
+/// arrive and their text waits with it, so the output after the first reference-style link
+/// is buffered to the end, and under `--ast --sourcepos` the output after a heading until
+/// its section closes. What lives for the whole call is the definitions (footnote content
+/// included), the ids, in HTML the labels of the footnotes referenced, the trees of the
+/// blocks waiting and the text of those behind them, and what the reused buffers retain
+/// (the parser's spare arena keeps the capacity of the largest block built in it). Output
+/// already written stays written if a later block fails. A document nested more than
+/// `max_nesting` levels deep is `error.TooDeep`.
 pub fn render(a: Allocator, input: []const u8, w: *std.Io.Writer, opts: RenderOpts) !void {
     return renderLines(a, Lines.fromSlice(input), w, opts);
 }
@@ -57,7 +60,7 @@ fn renderLines(a: Allocator, lines: Lines, w: *std.Io.Writer, opts: RenderOpts) 
     defer defs.deinit();
     var ids = document.Ids{ .a = da, .gpa = a, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
     defer ids.deinit();
-    var parser = try Parser.init(a, da, lines, &defs);
+    var parser = try Parser.init(a, lines, &defs);
     defer parser.deinit();
     parser.track_pos = opts.sourcepos;
     var out = Output{
@@ -118,7 +121,8 @@ const Output = struct {
     /// added behind them are rendered on arrival.
     waiting: usize = 0,
     /// Queue indices of the section opens awaiting their end (`hold_sections`), innermost
-    /// last. Valid because a held entry keeps the queue from being emptied and compacted.
+    /// last. A held entry keeps the queue from being emptied, and `drain` shifts them as it
+    /// compacts the queue.
     open_sections: std.ArrayList(usize) = .empty,
     /// For rendering what has no arena of its own: the root, section opens, footnotes.
     scratch: std.heap.ArenaAllocator,
@@ -389,9 +393,11 @@ const Output = struct {
         // Once the body has referenced a note (djot.js writes endnotes only then), every
         // definition's references take their numbers before any endnote is written, in the
         // order djot.js walks its definitions object: labels that are array indexes first,
-        // ascending, then the rest as they closed. A note first referenced inside another
-        // is numbered by where its definition stands in that walk, and one referenced only
-        // from a definition nothing references gets an endnote all the same.
+        // ascending, then the rest in the order they first closed (a label defined again
+        // keeps its first place, with its new content). A note first referenced inside
+        // another is numbered at the turn of the definition that references it, not at its
+        // own, and one referenced only from a definition nothing references gets an
+        // endnote all the same.
         if (self.mode == .html and self.footnotes.order.count() > 0) {
             const labels = self.resolver.defs.footnote_defs.keys();
             const defs = self.resolver.defs.footnote_defs.values();
@@ -417,8 +423,10 @@ const Output = struct {
     }
 
     /// The label of the `n`-th footnote to write after the document, if there is one: in
-    /// HTML the `n`-th referenced (writing an endnote may reference more), in the AST the
-    /// `n`-th defined, since the AST prints every definition, as djot.js's JSON holds them.
+    /// HTML the `n`-th numbered (`finish` numbers every reference before the first
+    /// endnote), in the AST the `n`-th defined, in the order the labels first closed, since
+    /// the AST prints every definition, as djot.js's JSON holds them; that JSON puts labels
+    /// that are array indexes first (`zjot.test`, "Footnotes in the AST text form").
     fn footnoteLabel(self: *Output, n: usize) ?[]const u8 {
         const labels = switch (self.mode) {
             .html => self.footnotes.order.keys(),
@@ -552,7 +560,7 @@ test "a block is written as it arrives unless a reference-style link holds it" {
     defer defs.deinit();
     var ids = document.Ids{ .a = da, .gpa = a, .defs = &defs, .scratch = std.heap.ArenaAllocator.init(a) };
     defer ids.deinit();
-    var parser = try Parser.init(a, da, Lines.fromSlice(input), &defs);
+    var parser = try Parser.init(a, Lines.fromSlice(input), &defs);
     defer parser.deinit();
     var out = Output{ .a = a, .w = &written.writer, .mode = .html, .hold_sections = false, .parser = &parser, .resolver = .{ .defs = &defs, .ids = &ids }, .footnotes = .{ .a = da }, .scratch = std.heap.ArenaAllocator.init(a) };
     defer out.deinit();

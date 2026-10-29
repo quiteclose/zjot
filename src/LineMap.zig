@@ -1,10 +1,13 @@
+//! Maps byte offsets in joined inline text back to source positions. Built by the block
+//! parser when it joins a leaf's content lines and positions are tracked
+//! (`Parser.leafLineMap`, `--sourcepos`), used by the inline parser to position each node
+//! as it is made.
+
 const std = @import("std");
 const Allocator = std.mem.Allocator;
 const SourcePos = @import("node.zig").SourcePos;
 
-/// Maps byte offsets in joined inline text back to source positions. Built by the
-/// block parser when it joins a block's content lines (`Parser.leafLineMap`),
-/// used by the inline parser to position each node as it is made.
+/// One per joined line, in order, the first at 0.
 segments: []const Segment = &.{},
 /// The length of the joined text, and the position just past it (the newline after the
 /// last line, or the document's end), where a hard break ending the block sits. Offsets

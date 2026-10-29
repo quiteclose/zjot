@@ -77,15 +77,8 @@ pub const Renderer = struct {
         const a = self.a;
         const out = self.out;
         switch (node.data) {
-            .section => |s| {
-                if (s.level > 0) {
-                    try renderSectionOpen(a, out, node);
-                    for (s.children) |child| try self.renderBlock(child, tight);
-                    try out.appendSlice(a, section_close);
-                } else {
-                    for (s.children) |child| try self.renderBlock(child, tight);
-                }
-            },
+            // Sections reach HTML as events, written by `renderSectionOpen`.
+            .section => unreachable,
             .para => try self.renderParagraph(node, tight, ""),
             .heading => |h| {
                 const tag = switch (h.level) {
@@ -262,8 +255,9 @@ pub const Renderer = struct {
                 try out.appendSlice(a, "</a>");
             },
             .image => |l| {
-                // The alt text is djot.js's `getStringContent`: the source behind smart
-                // punctuation, a newline for a break, a footnote reference's label.
+                // The alt text is djot.js's `getStringContent`: the source behind an
+                // ellipsis, a dash or a lone quote, nothing for a matched pair's quotes or a
+                // symbol, a newline for a break, a footnote reference's label.
                 try out.appendSlice(a, "<img alt=\"");
                 try appendAttrEscaped(a, out, try inline_mod.getLabelText(a, .{ .data = .{ .span = l.children } }));
                 try out.appendSlice(a, "\"");
@@ -382,8 +376,8 @@ pub const Renderer = struct {
         }
     }
 
-    /// The string content of an image's children, as djot.js: every leaf's text (a
-    /// footnote reference's label included), a break as a space, a symbol as nothing.
+    /// A list item: a task item's checkbox, then its blocks, paragraphs without `<p>`
+    /// when `tight`.
     fn renderListItem(self: *Renderer, item: Node, tight: bool) Allocator.Error!void {
         const a = self.a;
         const out = self.out;
@@ -421,7 +415,8 @@ pub fn renderAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     try renderFilteredAttrs(a, out, node, false);
 }
 
-/// The attributes of a node whose id the tag has already written (a footnote reference's).
+/// The attributes of a node whose tag writes an id of its own (a footnote reference's
+/// `fnrefN`): the node's id is dropped, not written twice (difference 3).
 fn renderAttrsExceptId(a: Allocator, out: *std.ArrayList(u8), node: Node) !void {
     for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) continue;
@@ -439,8 +434,10 @@ fn renderFilteredAttrs(a: Allocator, out: *std.ArrayList(u8), node: Node, skip_c
     if (node.id() != null and !id_written) try renderAttr(a, out, "id", node.id().?);
     for (node.attrs()) |attr| {
         if (std.mem.eql(u8, attr.key, "id")) {
-            // The written id, where it was written, over a generated one: djot.js renders
+            // The written id, where it was written, over the document's: djot.js renders
             // its written attributes over its generated ones, an empty `id=""` included.
+            // A heading's generated id moves to its section (`document.Sections`), so
+            // here the document's is one an attribute wrote.
             try renderAttr(a, out, "id", attr.value);
             continue;
         }

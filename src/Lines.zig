@@ -1,10 +1,10 @@
 //! The line source: the input one line at a time with each line's position, from a
 //! resident slice or from a `std.Io.Reader`. A line is its bytes without the newline and
 //! without the one carriage return a CRLF ending puts before it; its position is where it
-//! starts. The newline
-//! after the last line yields no empty line, so line counts match the visible content,
-//! and `end` says where the input ended, as djot.js reports it: on its final newline, or
-//! one past the last character when there is none. The counts are 64-bit, and an input of
+//! starts. The newline after the last line yields no empty line, so line counts match
+//! the visible content, and `end` says where the input ended, as djot.js reports it for
+//! LF input: on its final newline, or one past the last character when there is none
+//! (under CRLF it is still the newline, where djot.js ends on the `\r`). The counts are 64-bit, and an input of
 //! 2^64 bytes or lines is `error.InputTooLarge`, the one size limit; a position is 32-bit
 //! (`SourcePos`) and saturates past 4 GiB of input, that many lines, or a line that long,
 //! which only `--sourcepos` output can show.
@@ -184,16 +184,17 @@ test "an input of 2^64 bytes or lines is error.InputTooLarge" {
     try std.testing.expectEqual(max, bytes.offset);
 }
 
-/// Every line of `input` through `lines`, with the end, for comparison.
+/// The lines a source yields, copied, and its end, for comparison.
 const Taken = struct { lines: []const Line, end: SourcePos };
 
+/// Every line `lines` yields and its end.
 fn takeAll(a: Allocator, lines: *Lines) !Taken {
     var list: std.ArrayList(Line) = .empty;
     while (try lines.next()) |line| try list.append(a, .{ .bytes = try a.dupe(u8, line.bytes), .pos = line.pos, .eol = line.eol, .newline = line.newline, .newline_before = line.newline_before });
     return .{ .lines = try list.toOwnedSlice(a), .end = lines.end() };
 }
 
-/// Through a reader whose buffer holds `buffer_len` bytes, so longer lines spill.
+/// `input` through a reader over `buffer`, so lines longer than it spill.
 fn takeAllBuffered(a: Allocator, input: []const u8, buffer: []u8) !Taken {
     var fixed = std.Io.Reader.fixed(input);
     var limited = fixed.limited(.unlimited, buffer);

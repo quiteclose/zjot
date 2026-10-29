@@ -280,10 +280,10 @@ pub const OrderedStyles = struct {
         return false;
     }
 
-    /// Whether `m` continues the list: its styles share one with the list's, which then
-    /// narrow to the shared ones (djot.js narrows as an item opens, so a marker that opens
-    /// a sublist instead leaves the list's styles alone). The first item is always accepted.
-    pub fn accept(self: *OrderedStyles, m: Marker, first: bool) bool {
+    /// Narrows the list's styles to those `m` shares with them, as an item opens on `m`
+    /// (djot.js narrows then, so a marker that opens a sublist instead leaves the list's
+    /// styles alone). The caller has checked `matches` first.
+    pub fn accept(self: *OrderedStyles, m: Marker) void {
         var shared: [2]?ListStyle = .{ null, null };
         var n_shared: u2 = 0;
         for (0..self.n) |pi| {
@@ -296,21 +296,17 @@ pub const OrderedStyles = struct {
                 }
             }
         }
-        if (first) return true;
-        if (n_shared == 0) return false;
+        if (n_shared == 0) return;
         self.possible = shared;
         self.n = n_shared;
-        return true;
     }
 };
 
-/// A list marker opening an item: where its content starts, and what the list reads to
-/// accept the next item (the bullet character; an ordered marker's text and the number
-/// styles it may be).
+/// A list marker opening an item: what follows it on the line, and what the list reads to
+/// accept the next item (the bullet character; an ordered marker's text, its delimiter
+/// and the number styles it may be).
 pub const Marker = struct {
     rest: []const u8,
-    indent: usize,
-    content_col: usize,
     bullet: u8 = 0,
     marker_text: []const u8 = "",
     styles: [2]?ListStyle = .{ null, null },
@@ -341,7 +337,7 @@ pub fn parseBulletMarker(line: []const u8) ?Marker {
         if (isThematicBreak(line)) return null;
     }
     const rest = if (trimmed.len > 1) trimmed[2..] else "";
-    return .{ .rest = rest, .indent = indent, .content_col = indent + 2, .bullet = trimmed[0] };
+    return .{ .rest = rest, .bullet = trimmed[0] };
 }
 
 pub fn parseOrderedMarker(line: []const u8) ?Marker {
@@ -364,7 +360,7 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
         const delim = after_paren[i];
         if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
             const marker_len = start + i + 1;
-            return finishMarker(trimmed, indent, marker_len, .decimal, .decimal, after_paren[0..i], delimKind(paren_open, delim));
+            return finishMarker(trimmed, marker_len, .decimal, .decimal, after_paren[0..i], delimKind(paren_open, delim));
         }
     }
 
@@ -375,9 +371,9 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanLower(c)) {
-                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .lower_roman, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, .lower_alpha, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .lower_alpha, .lower_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 }
             }
         }
@@ -386,9 +382,9 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
             if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                 const marker_len = start + 2;
                 if (isRomanUpper(c)) {
-                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .upper_roman, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 } else {
-                    return finishMarker(trimmed, indent, marker_len, .upper_alpha, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .upper_alpha, .upper_alpha, after_paren[0..1], delimKind(paren_open, delim));
                 }
             }
         }
@@ -399,7 +395,7 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    return finishMarker(trimmed, indent, marker_len, .lower_roman, .lower_roman, after_paren[0..j], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .lower_roman, .lower_roman, after_paren[0..j], delimKind(paren_open, delim));
                 }
             }
         }
@@ -410,7 +406,7 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
                 const delim = after_paren[j];
                 if ((!paren_open and (delim == '.' or delim == ')')) or (paren_open and delim == ')')) {
                     const marker_len = start + j + 1;
-                    return finishMarker(trimmed, indent, marker_len, .upper_roman, .upper_roman, after_paren[0..j], delimKind(paren_open, delim));
+                    return finishMarker(trimmed, marker_len, .upper_roman, .upper_roman, after_paren[0..j], delimKind(paren_open, delim));
                 }
             }
         }
@@ -419,12 +415,10 @@ pub fn parseOrderedMarker(line: []const u8) ?Marker {
     return null;
 }
 
-fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8, delim: Delim) ?Marker {
+fn finishMarker(trimmed: []const u8, marker_len: usize, style1: ListStyle, style2: ListStyle, marker_text: []const u8, delim: Delim) ?Marker {
     if (marker_len < trimmed.len and trimmed[marker_len] != ' ' and trimmed[marker_len] != '\t') return null;
     return .{
         .rest = if (marker_len < trimmed.len) trimmed[marker_len + 1 ..] else "",
-        .indent = indent,
-        .content_col = indent + marker_len + 1,
         .marker_text = marker_text,
         .styles = .{ style1, if (style1 != style2) style2 else null },
         .n_styles = if (style1 != style2) 2 else 1,
@@ -432,7 +426,9 @@ fn finishMarker(trimmed: []const u8, indent: usize, marker_len: usize, style1: L
     };
 }
 
-/// The number an ordered marker starts at; 64 bits on every target, as djot.js's number.
+/// The number an ordered marker starts at, a u64 on every target: exact past 2^53, where
+/// djot.js's double rounds, and 1 for a decimal that does not fit 64 bits (`zjot.test`
+/// differences 6 and 18).
 pub fn getListStart(marker_text: []const u8, style: ListStyle) u64 {
     return switch (style) {
         .decimal => std.fmt.parseInt(u64, marker_text, 10) catch 1,
