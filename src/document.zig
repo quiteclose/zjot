@@ -166,7 +166,7 @@ pub const Ids = struct {
         if (def.attrs) |attrs| {
             if (attrs.id) |id| try self.claim(id);
         }
-        _ = try self.assignChildren(@constCast(def.blocks), depth + 1);
+        _ = try self.assignChildren(@constCast(def.blocks), depth + 1, self.defs.a);
     }
 
     /// An explicit id on a node, reached: what stands before it in the source takes its
@@ -205,26 +205,27 @@ pub const Ids = struct {
     /// until the input ends (what `Resolver.resolve` fills in).
     pub const Error = Allocator.Error;
 
-    pub fn assign(self: *Ids, block: *Node) Error!bool {
+    /// `a` is the block's own allocator, for a generated id's place on its node.
+    pub fn assign(self: *Ids, block: *Node, a: Allocator) Error!bool {
         // What is due stands before this block in the source.
         try self.takeDue(1);
-        return self.assignNode(block, 1);
+        return self.assignNode(block, 1, a);
     }
 
     /// `nodes`, at `depth`, with what is due taken before and after each.
-    fn assignChildren(self: *Ids, nodes: []Node, depth: usize) Error!bool {
+    fn assignChildren(self: *Ids, nodes: []Node, depth: usize, a: Allocator) Error!bool {
         var by_reference = false;
         for (nodes) |*child| {
             try self.takeDue(depth);
-            if (try self.assignNode(child, depth)) by_reference = true;
+            if (try self.assignNode(child, depth, a)) by_reference = true;
         }
         try self.takeDue(depth);
         return by_reference;
     }
 
-    fn assignNode(self: *Ids, n: *Node, depth: usize) Error!bool {
+    fn assignNode(self: *Ids, n: *Node, depth: usize, a: Allocator) Error!bool {
         std.debug.assert(depth <= max_nesting); // the parser refuses anything deeper
-        if (n.id) |id| try self.claim(id);
+        if (n.id()) |id| try self.claim(id);
         var by_reference = switch (n.data) {
             .link, .image => |l| l.reference != null and l.destination == null,
             else => false,
@@ -233,16 +234,16 @@ pub const Ids = struct {
             // Its inline ids come first, as the parser counted them (djot.js registers an
             // attribute's id as it is read, the heading's own as the heading ends).
             for (@constCast(n.children())) |*child| {
-                if (try self.assignNode(child, depth + 1)) by_reference = true;
+                if (try self.assignNode(child, depth + 1, a)) by_reference = true;
             }
             try self.takeDue(null);
             self.assigned_headings += 1;
             _ = self.scratch.reset(.retain_capacity);
             const text = try inline_mod.getPlainText(self.scratch.allocator(), n.*);
-            if (n.id == null) n.id = try self.generate(text);
+            if (n.id() == null) n.* = try n.withId(a, try self.generate(text));
             const label = try inline_mod.normalizeLabel(self.scratch.allocator(), text);
             if (!self.auto_refs.contains(label)) {
-                const dest = try std.fmt.allocPrint(self.a, "#{s}", .{n.id.?});
+                const dest = try std.fmt.allocPrint(self.a, "#{s}", .{n.id().?});
                 try self.auto_refs.put(self.gpa, try self.a.dupe(u8, label), dest);
             }
             return by_reference;
@@ -255,14 +256,14 @@ pub const Ids = struct {
         if (n.data == .table and n.data.table.len > 0) {
             const t = @constCast(n.data.table);
             for (t[1..]) |*row| {
-                if (try self.assignNode(row, depth + 1)) by_reference = true;
+                if (try self.assignNode(row, depth + 1, a)) by_reference = true;
             }
             // What stood between the table and its caption stands at the table's depth.
             try self.takeDue(depth);
-            if (try self.assignNode(&t[0], depth + 1)) by_reference = true;
+            if (try self.assignNode(&t[0], depth + 1, a)) by_reference = true;
             return by_reference;
         }
-        if (try self.assignChildren(@constCast(n.children()), depth + 1)) by_reference = true;
+        if (try self.assignChildren(@constCast(n.children()), depth + 1, a)) by_reference = true;
         return by_reference;
     }
 
@@ -332,7 +333,8 @@ pub const Ids = struct {
 /// Resolves one block against the definitions, once they are final: a link or image
 /// written by reference takes a definition's destination and attributes, else the target
 /// the heading with that text claimed. Writes into the tree, which is the block's alone;
-/// `ba` is the block's allocator, for what the labels and merged attributes need.
+/// `ba` is the block's allocator, for what the labels and merged attributes need, and a
+/// footnote definition's content is resolved on the definitions' own, as it lives there.
 pub const Resolver = struct {
     defs: *const Definitions,
     ids: *const Ids,
@@ -361,8 +363,8 @@ pub const Resolver = struct {
     /// defines it.
     pub fn footnote(self: *const Resolver, ba: Allocator, label: []const u8) !Node {
         const def = self.defs.footnote_defs.get(label) orelse return .{ .data = .{ .footnote = .{ .label = label } } };
-        for (@constCast(def.blocks)) |*block| try self.resolveNode(ba, block);
-        const n = Node{ .data = .{ .footnote = .{ .label = label, .children = def.blocks } }, .start_pos = def.start_pos, .end_pos = def.end_pos };
+        for (@constCast(def.blocks)) |*block| try self.resolveNode(self.defs.a, block);
+        const n = try (Node{ .data = .{ .footnote = .{ .label = label, .children = def.blocks } } }).withSpan(ba, def.start_pos, def.end_pos);
         return if (def.attrs) |attrs| try inline_mod.applyBlockAttrsToNode(ba, n, attrs) else n;
     }
 };
@@ -371,23 +373,27 @@ pub const Resolver = struct {
 /// building a tree. A heading closes every open section of its level or deeper, opens its own,
 /// and moves its id onto it, and its written attributes only when they hold an id (djot.js
 /// moves `attributes` with the id in them, and the generated id alone). Open levels strictly increase, so the
-/// stack is at most six deep and one block yields at most eight events. A section's end
-/// is the consumer's to fill in when it closes: where the heading that closes it ends, as
-/// djot.js (`parse.js` pops sections at the `-heading` event), or the document's end.
+/// stack is at most six deep and one block yields at most eight events. A section's
+/// positions are the consumer's to give: it starts where its heading does, and ends where
+/// the heading that closes it ends, as djot.js (`parse.js` pops sections at the
+/// `-heading` event), or at the document's end.
 pub const Sections = struct {
     levels: [6]u8 = undefined,
     depth: usize = 0,
     events: [8]Event = undefined,
 
     pub const Event = union(enum) {
-        /// A section node without children or end; its id and attributes came from the heading that follows.
+        /// A section node without children or positions; its id and attributes came from
+        /// the heading that follows, its positions are the consumer's to give.
         open: Node,
         close,
         block: Node,
     };
 
-    /// The events for one block, valid until the next call.
-    pub fn feed(self: *Sections, block: Node) []const Event {
+    /// The events for one block, valid until the next call. The marks a heading's id and
+    /// attributes move into (the section's and the heading copy's) are made on `a`, the
+    /// block's allocator: a consumer keeping the section past the block copies them.
+    pub fn feed(self: *Sections, a: Allocator, block: Node) Allocator.Error![]const Event {
         if (block.data != .heading) {
             self.events[0] = .{ .block = block };
             return self.events[0..1];
@@ -401,18 +407,12 @@ pub const Sections = struct {
         }
         self.levels[self.depth] = level;
         self.depth += 1;
-        const explicit = for (block.attrs) |attr| {
+        const explicit = for (block.attrs()) |attr| {
             if (std.mem.eql(u8, attr.key, "id") and attr.value.len > 0) break true;
         } else false;
-        var heading = block;
-        heading.id = null;
-        if (explicit) heading.attrs = &.{};
-        self.events[n] = .{ .open = .{
-            .data = .{ .section = .{ .level = level } },
-            .id = block.id,
-            .attrs = if (explicit) block.attrs else &.{},
-            .start_pos = block.start_pos,
-        } };
+        const heading = try block.withMarks(a, null, if (explicit) &.{} else block.attrs());
+        const section = try (Node{ .data = .{ .section = .{ .level = level } } }).withMarks(a, block.id(), if (explicit) block.attrs() else &.{});
+        self.events[n] = .{ .open = section };
         self.events[n + 1] = .{ .block = heading };
         return self.events[0 .. n + 2];
     }
@@ -445,20 +445,22 @@ test "heading ids: the next free suffix per base, found without a search" {
 }
 
 test "sections: a heading closes deeper and equal levels, then opens its own" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
     var sections = Sections{};
     const h = struct {
         fn at(level: u8) Node {
-            return .{ .data = .{ .heading = .{ .level = level } }, .id = "x" };
+            return .{ .data = .{ .heading = .{ .level = level } }, .marks = &Node.Marks{ .id = "x" } };
         }
     };
-    try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(1)).len); // open, block
-    try std.testing.expectEqual(@as(usize, 1), sections.feed(.{ .data = .{ .para = &.{} } }).len);
-    try std.testing.expectEqual(@as(usize, 2), sections.feed(h.at(3)).len); // nests under 1
-    const back_to_two = sections.feed(h.at(2)); // closes 3, not 1
+    try std.testing.expectEqual(@as(usize, 2), (try sections.feed(arena.allocator(), h.at(1))).len); // open, block
+    try std.testing.expectEqual(@as(usize, 1), (try sections.feed(arena.allocator(), .{ .data = .{ .para = &.{} } })).len);
+    try std.testing.expectEqual(@as(usize, 2), (try sections.feed(arena.allocator(), h.at(3))).len); // nests under 1
+    const back_to_two = try sections.feed(arena.allocator(), h.at(2)); // closes 3, not 1
     try std.testing.expectEqual(@as(usize, 3), back_to_two.len);
     try std.testing.expect(back_to_two[0] == .close);
     try std.testing.expect(back_to_two[1] == .open);
     try std.testing.expect(back_to_two[1].open.data == .section);
-    try std.testing.expect(back_to_two[2].block.id == null); // moved onto the section
+    try std.testing.expect(back_to_two[2].block.id() == null); // moved onto the section
     try std.testing.expectEqual(@as(usize, 2), sections.finish().len); // closes 2 and 1
 }

@@ -106,11 +106,18 @@ const ast_pos = try zjot.toAstOpts(allocator, input, true);
 The `to*` functions return owned slices that should be freed by the caller. `render` and
 `renderReader` keep nothing past the call. Nodes are freed block by block as blocks are
 written; what lives for the whole call is the definitions (all footnote content included),
-the heading ids and what waits to be written. A block holding a reference-style link
+the heading ids, in HTML every footnote label referenced (about 120 bytes each, so that a
+repeated reference gets its first number) and what waits to be written. A block holding a reference-style link
 waits as a tree until the input ends, since a later definition may still change the link,
 and the blocks after it wait as rendered text; under `--ast --sourcepos` a section's blocks
 wait as text until the heading that closes it. Otherwise memory tracks the largest block,
-not the document, and with `renderReader` not the input either.
+not the document, and with `renderReader` not the input either. A block is held whole
+until it closes, at roughly 130 to 270 bytes a node of its tree (72 the node itself, the
+rest its text, line copies and working lists), so about 450 to 500 bytes a line of
+paragraph text, 300 to 400 a list item, 550 to 700 a table row, several KB a line dense
+with inline markup, and a code block about 50 bytes a line and 4 a byte (measured in
+HTML; under `--ast --sourcepos`, where every node carries its positions, about 2 to 4
+times that, a code block's the same).
 
 ## Tests
 

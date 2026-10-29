@@ -1,7 +1,11 @@
-//! The syntax tree's node: what every node has (the attributes written on it, the id the
-//! document gave it, its positions) and, by tag, what only its kind carries (`Payload`): a
-//! container's children, a leaf's text, a list's style, a cell's alignment. `Tag` names
-//! every kind the parser produces; a tag that carries nothing is a bare variant.
+//! The syntax tree's node: by tag, what only its kind carries (`Payload`): a container's
+//! children, a leaf's text, a list's style, a cell's alignment; and behind two pointers
+//! what few nodes carry (the attributes written on it, the id the document gave it) and
+//! what only `--sourcepos` builds (its positions). `Tag` names every kind the parser produces; a tag that carries nothing is a
+//! bare variant.
+
+const std = @import("std");
+const Allocator = std.mem.Allocator;
 
 pub const Tag = enum {
     // blocks
@@ -163,17 +167,70 @@ pub const Payload = union(Tag) {
     en_dash,
 };
 
+/// A node: its payload, and pointers to what few nodes carry and what only `--sourcepos`
+/// builds, so that the common node is its payload and two words (a block is held whole
+/// until it closes, its nodes with it). `withMarks` and `withSpan` make a fresh one, so a
+/// node copied before keeps its own; the inline scanner grows a text node's span in place,
+/// having made it for that node alone, and a held section points at its own copies.
 pub const Node = struct {
     data: Payload,
-    /// The id the document gave the node: written in a block or inline attribute, or
-    /// generated for a heading. Rendered where an `id` attribute was written, else first.
-    id: ?[]const u8 = null,
-    attrs: []const Attr = &.{},
-    start_pos: ?SourcePos = null,
-    end_pos: ?SourcePos = null,
+    /// The node's id and attributes, which few nodes have.
+    marks: ?*const Marks = null,
+    /// Where the node stands in the source, which only `--sourcepos` builds.
+    span: ?*const Span = null,
+
+    pub const Marks = struct {
+        /// The id the document gave the node: written in a block or inline attribute, or
+        /// generated for a heading. Rendered where an `id` attribute was written, else
+        /// first.
+        id: ?[]const u8 = null,
+        attrs: []const Attr = &.{},
+    };
+
+    pub const Span = struct { start: SourcePos, end: SourcePos };
 
     pub fn tag(n: Node) Tag {
         return n.data;
+    }
+
+    pub fn id(n: Node) ?[]const u8 {
+        return if (n.marks) |m| m.id else null;
+    }
+
+    pub fn attrs(n: Node) []const Attr {
+        return if (n.marks) |m| m.attrs else &.{};
+    }
+
+    pub fn startPos(n: Node) ?SourcePos {
+        return if (n.span) |s| s.start else null;
+    }
+
+    pub fn endPos(n: Node) ?SourcePos {
+        return if (n.span) |s| s.end else null;
+    }
+
+    /// `n` with the id and attributes given, on `a`; with none, without marks.
+    pub fn withMarks(n: Node, a: Allocator, node_id: ?[]const u8, node_attrs: []const Attr) Allocator.Error!Node {
+        var r = n;
+        r.marks = if (node_id == null and node_attrs.len == 0) null else try create(a, Marks{ .id = node_id, .attrs = node_attrs });
+        return r;
+    }
+
+    pub fn withId(n: Node, a: Allocator, node_id: ?[]const u8) Allocator.Error!Node {
+        return n.withMarks(a, node_id, n.attrs());
+    }
+
+    /// `n` standing from `start` to `end`, on `a`; with either unknown, without a span.
+    pub fn withSpan(n: Node, a: Allocator, start: ?SourcePos, end: ?SourcePos) Allocator.Error!Node {
+        var r = n;
+        r.span = if (start == null or end == null) null else try create(a, Span{ .start = start.?, .end = end.? });
+        return r;
+    }
+
+    fn create(a: Allocator, value: anytype) Allocator.Error!*const @TypeOf(value) {
+        const p = try a.create(@TypeOf(value));
+        p.* = value;
+        return p;
     }
 
     /// The node's content nodes; none for a leaf.
