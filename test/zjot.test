@@ -149,7 +149,9 @@ converter renders it, so no `ap` case can pin it:
    `<p></p>`. Decided 2026-10-24, the CRLF attribute 2026-10-26, the div 2026-10-29, the
    rest 2026-10-27.
 5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
-   nodes where djot.js prints `smart_punctuation`.
+   nodes where djot.js prints `smart_punctuation`; an inline attribute after an ellipsis
+   or a dash attaches to nothing here (its id registered), to the `smart_punctuation`
+   there (`a...{.d}`). The HTML is the same.
 6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
 7. Reference links print the resolved `destination`; djot.js prints the `reference` only.
 8. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
@@ -174,8 +176,9 @@ converter renders it, so no `ap` case can pin it:
 
 Ordered lists in the AST text form print their `style` as djot.js's JSON has it, the first
 number with its delimiter (`1.`, `1)`, `(1)`, `a.`, `i.`), and no `start`; the HTML renders
-`start` and `type` from the list's markers, before any attributes. Attributes print as id, class, then the rest in source order, as
-djot.js's text form (the HTML keeps source order, see the HTML difference below).
+`start` and `type` from the list's markers, before any attributes. Attributes print as id,
+class, then the rest in source order, as test/tools/djot2ast.py renders djot.js's JSON (the
+HTML keeps source order, see the HTML difference below).
 
 Footnotes in the AST text form: a reference prints its label, and every footnote
 definition follows the document as a `footnote` block with its `label` and span, in
@@ -212,7 +215,7 @@ Paragraph
 </section>
 ````
 
-Footnote heading ids follow the endnotes' order, not the definitions'.
+Footnotes are written in the order of their first reference, not their definitions'.
 ````
 [^a]:
     > # P
@@ -10945,5 +10948,44 @@ A link whose label is empty resolves to nothing, as djot.js, which tests the lab
 <section id="s-2">
 <h1><img alt="" src="u"></h1>
 <p><a><img alt="" src="u"></a></p>
+</section>
+````
+
+A failed block attribute's text reads no inline attribute, a bracketed span's included, as djot.js reparses it with attributes off.
+````
+{k="[x]{.c}"
+} z
+.
+<p>{k=“<span>x</span>{.c}”
+} z</p>
+````
+
+Heading ids inside footnotes follow the definitions' order, though the endnotes are written in the order of first reference.
+````
+[^a]:
+    > # P
+
+[^b]:
+    > # P
+
+text[^b] [^a]
+.
+<p>text<a id="fnref1" href="#fn1" role="doc-noteref"><sup>1</sup></a> <a id="fnref2" href="#fn2" role="doc-noteref"><sup>2</sup></a></p>
+<section role="doc-endnotes">
+<hr>
+<ol>
+<li id="fn1">
+<blockquote>
+<h1 id="P-1">P</h1>
+</blockquote>
+<p><a href="#fnref1" role="doc-backlink">↩︎</a></p>
+</li>
+<li id="fn2">
+<blockquote>
+<h1 id="P">P</h1>
+</blockquote>
+<p><a href="#fnref2" role="doc-backlink">↩︎</a></p>
+</li>
+</ol>
 </section>
 ````

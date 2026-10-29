@@ -5,15 +5,16 @@ const std = @import("std");
 const Allocator = std.mem.Allocator;
 const Attr = @import("node.zig").Attr;
 
-/// `attrs` hold every attribute as djot.js's attribute object holds them: a key keeps its
-/// first position and takes its last value, whether written `#x` or `id=x`, `.c` or
-/// `class=c` (`setAttr`); `id` is the `id` among them.
+/// `attrs` hold every attribute as djot.js's attribute object holds them (`AttrObject`):
+/// a key keeps its first position and takes its last value, `id=x` the same key as `#x`;
+/// a `.c` joins the classes before it and `class=c` starts them over. `id` is the
+/// non-empty `id` among them.
 pub const BlockAttrs = struct {
     id: ?[]const u8 = null,
     attrs: []const Attr = &.{},
     /// What the list can grow to in place before `apply` reallocates it, 0 for a slice
     /// this object does not own (a node's, a parsed one's), which the first application
-    /// copies. An object applied to again and again grows by doubling, so a run of
+    /// copies. An object applied to again and again grows geometrically, so a run of
     /// applications costs what its result holds, not the sum of what it held.
     attrs_cap: usize = 0,
     /// The same for the buffer the class value is joined in.
@@ -32,8 +33,10 @@ pub const BlockAttrs = struct {
         return if (id.len > 0) id else null;
     }
 
-    /// `other` applied over `self` in place, as djot.js applies one block attribute's
-    /// object to the one before it: each key set as `setAttr` sets it, the classes joined.
+    /// `other` applied over `self` in place, as djot.js applies one attribute's object to
+    /// the one before it: each key set as `AttrObject.set` sets it, a `class` joined to the
+    /// classes before it (a later block attribute, or a later inline attribute on the same
+    /// node).
     pub fn apply(self: *BlockAttrs, other: BlockAttrs, a: Allocator) !void {
         var obj = AttrObject{ .list = .{ .items = @constCast(self.attrs), .capacity = self.attrs_cap }, .class_cap = self.class_cap, .index = self.index };
         if (self.attrs_cap == 0) { // not this object's to write: copied first, with room
@@ -80,7 +83,8 @@ pub const BlockAttrs = struct {
 
 /// An attribute object under construction, djot.js's: `set` keeps a key's first position
 /// and gives it the last value, `join` adding the value after the one there with a space
-/// (a `.class`, and a class merged from a later block attribute); `class=c` written as a
+/// (a `.class`, and a class merged from a later block attribute or a later inline
+/// attribute on the same node); `class=c` written as a
 /// key starts the classes over, and `id=x` is the id as `#x` is. A key is found by a
 /// scan of the list while the list is short and by an index once it is not, so a run of
 /// a thousand keys costs a thousand sets, not a million comparisons.
@@ -182,6 +186,9 @@ pub const AttrParser = struct {
         };
     }
 
+    /// Steps through `src[startpos..endpos]`, `endpos` included, without feeding a line
+    /// end after it: `done` at the `}`, `fail` at the byte that failed, else `continue` at
+    /// the last byte fed.
     pub fn feed(self: *AttrParser, startpos: usize, endpos: usize) !struct { status: AttrParseStatus, position: usize } {
         var pos = startpos;
         while (pos <= endpos and pos < self.src.len) {
@@ -201,8 +208,9 @@ pub const AttrParser = struct {
 
     /// Feeds `line`, the block attribute's next line as written, and the line end after
     /// it, as djot.js feeds each line to the parser its container keeps. The attributes
-    /// keep slices of `line`, so it must outlive them. A name, id or class ends at the
-    /// line end; a quoted value runs on, its text so far kept and the next line's read
+    /// keep slices of `line`, so it must outlive them. An id, a class or a bare value ends
+    /// at the line end, a comment runs on, and a key or a `=` still waiting for its value
+    /// fails there; a quoted value runs on, its text so far kept and the next line's read
     /// from that line's start (`valueFrom`).
     pub fn feedLine(self: *AttrParser, line: []const u8) !Fed {
         self.src = line;
@@ -480,24 +488,9 @@ pub const AttrParser = struct {
     }
 };
 
-pub fn tryParseBlockAttr(a: Allocator, line: []const u8) !?BlockAttrs {
-    const trimmed = std.mem.trim(u8, line, " \t");
-    if (trimmed.len < 2) return null;
-    if (trimmed[0] != '{') return null;
-    if (trimmed[trimmed.len - 1] != '}') return null;
-    return parseAttrsFromStr(a, trimmed);
-}
-
-pub fn parseAttrsFromStr(a: Allocator, src: []const u8) !?BlockAttrs {
-    if (src.len < 2 or src[0] != '{') return null;
-    var parser = AttrParser.init(a, src);
-    const result = try parser.feed(0, src.len -| 1);
-    if (result.status == .done) return try parser.finish();
-    return null;
-}
-
-/// Whether `line` opens a block attribute it does not close: `{` followed by attribute
-/// syntax that is still incomplete at the end of the line.
+/// Whether `line`, a block attribute's first line, leaves the attribute open: `{` followed
+/// by attribute syntax still incomplete at its last byte. The line end is not fed, as
+/// `feedLine` feeds it; the caller passes only lines `feedLine` opened.
 pub fn opensAttr(a: Allocator, line: []const u8) !bool {
     const trimmed = std.mem.trim(u8, line, " \t");
     if (trimmed.len < 1 or trimmed[0] != '{') return false;

@@ -1,11 +1,14 @@
 //! The block parser: a container stack, the shape of djot.js's `block.js`, in one pass
 //! over the lines. Each line is run against the open containers from the outermost in
 //! (`continues`), then against the block starts while the innermost matched container
-//! holds blocks (`tryOpen`); what remains is lazy text for an open paragraph or heading, a
-//! blank line, or text for the innermost container. A container closes when a line neither
-//! continues it nor is lazy text for it, and its `Node` ends where the parser stands;
-//! `nextBlock` returns each top-level block's tree as it closes, never generating ids or
-//! resolving references, which the document does. Definitions are recorded as they close.
+//! holds blocks or list items (`tryOpen`); what remains is lazy text for an open paragraph,
+//! heading or caption, a blank line, or text for the innermost container. A container
+//! closes when a line neither continues it nor is lazy text for it, and its `Node` ends
+//! where the parser stands (`Stand`), on its closing fence, or after its last content.
+//! `nextBlock` returns each top-level block's tree as it closes, a table once a block
+//! follows it or the input ends (a caption may join it until then), never generating ids
+//! or resolving references, which the document does. Definitions are recorded as they
+//! close.
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -35,7 +38,9 @@ pub const Error = Allocator.Error || error{ ReadFailed, InputTooLarge, TooDeep }
 /// stands, as djot.js counts them: its end, or its caption's.
 pub const Block = struct { node: Node, arena: *std.heap.ArenaAllocator, last: ?SourcePos };
 
-/// The block arenas come from here.
+/// The block arenas come from here, and the parser's own buffers (the stack, the open
+/// leaf's lines, spare children lists) grow on it, so a buffer outgrown is freed rather
+/// than left in an arena for the document.
 gpa: Allocator,
 /// The arena of the block being built, and its allocator. The parser swaps in a fresh
 /// one the moment a top-level block closes, so whatever opens on the line that closed
@@ -44,10 +49,6 @@ arena: *std.heap.ArenaAllocator,
 a: Allocator,
 /// A written block's arena, reused for the next block.
 spare: ?*std.heap.ArenaAllocator = null,
-/// The document's arena, for what the definitions keep. The parser's own buffers (the
-/// stack, the open leaf's lines, spare children lists) grow on `gpa`, so a buffer
-/// outgrown is freed rather than left in the arena for the document.
-da: Allocator,
 defs: *Definitions,
 track_pos: bool = false,
 lines: Lines,
@@ -71,8 +72,10 @@ leaf_last_newline: bool = true,
 spare_lists: std.ArrayList(std.ArrayList(Node)) = .empty,
 /// Open footnotes: their content is allocated for the document, not the block.
 footnote_depth: usize = 0,
-/// Set by a start or continuation that took the whole line (a fence): nothing else
-/// on it is read.
+/// Set by a line a code fence (opening or closing), a div's opening fence or a table row
+/// took, as djot.js's `finishedLine`: nothing else on it is read. A div's closing fence, a
+/// thematic break, a definition and an attribute line also take the line but leave it
+/// unset.
 finished_line: bool = false,
 /// Whether the blank line being parsed was taken by a block attribute it failed: then it
 /// is the paragraph's, and no blank line for the list around (djot.js), so not loosening.
@@ -103,14 +106,13 @@ const ListStyle = union(enum) {
     ordered: struct { styles: leaf.OrderedStyles, delim: node_mod.Delim },
 };
 
-/// Where the log stood, and the counts, as the last caption joined a table: a caption
-/// replacing it logs the replaced one's ids there, where they were counted.
 /// A place in the log kept for a node that may be discarded with the ids counted on it:
 /// a definition item's first paragraph, whose term keeps its inlines and not its node
 /// (so not the id written before it), and a table's caption, which a later caption
 /// replaces. Taken where the node's ids start to be counted, with the counts of then;
-/// the ids of a node discarded at its close go in there (`logReserved`), so the log stays
-/// in source order and `Ids` registers them where djot.js read them.
+/// the node's ids, when it is discarded (a term's node as its item closes, a replaced
+/// caption as the next caption closes), go in there (`logReserved`), so the log stays in
+/// source order and `Ids` registers them where djot.js read them.
 const Reserved = struct { index: usize, headings_before: usize, ids_before: usize };
 
 const Container = struct {
@@ -126,12 +128,15 @@ const Container = struct {
     /// hold both, so each has its place.
     term_reserved: ?Reserved = null,
     caption_reserved: ?Reserved = null,
-    /// For a leaf: one past the last non-blank character of its last line (djot.js ends
-    /// paragraphs and headings there, trailing whitespace excluded).
+    /// For a paragraph, heading or attribute block: one past the last byte of its last line
+    /// that is not a trailing space (a tab is content, as djot.js), or the first byte of a
+    /// kept blank line. A caption ignores it (`leafEnd`).
     leaf_end: SourcePos = undefined,
     data: union(Kind) {
-        /// `attrs_from`: no inline attribute is read before this joined offset (a failed
-        /// block attribute's first line is text, as djot.js reparses it).
+        /// `attrs_from`: no inline attribute is read before this joined offset, the end of
+        /// the lines a failed block attribute took (djot.js reparses them as text,
+        /// `failedAttrsFrom`). `converted`: it was such an attribute, turned paragraph by a
+        /// line, so it takes the attributes waiting before it as it closes.
         para: struct { attrs_from: usize = 0, converted: bool = false },
         heading: struct {
             level: u8,
@@ -152,8 +157,8 @@ const Container = struct {
             failed: enum { no, eol, elsewhere } = .no,
         },
         block_quote: void,
-        /// `blanklines` and `tight` as `parse.js` keeps them: a blank line marks the list
-        /// and the next event that is not a blank line, a list start or a list or item end
+        /// `blanklines` and `tight` as `parse.js` keeps them: a blank line marks the list,
+        /// and the next event that is not a blank line or a list's or item's start or end
         /// makes it loose.
         list: struct { style: ListStyle, indent: usize, marker: [32]u8, marker_len: u8, blanklines: bool = false, tight: bool = true },
         list_item: struct { indent: usize, checked: ?bool },
@@ -183,7 +188,8 @@ const Container = struct {
     }
 
     /// Whether the container becomes a node of its parent (a definition, an attribute
-    /// block and a caption do not), which is what ends a held table's wait.
+    /// block and a caption do not): such a container counts the id waiting for it as it
+    /// opens, and ends a held table's wait.
     fn makesNode(self: Container) bool {
         return switch (self.data) {
             .attributes, .footnote, .caption, .reference_definition => false,
@@ -206,7 +212,8 @@ const Stand = struct {
     /// ending in a hard break ends; the input's end at the end.
     line_first: SourcePos,
     eof: bool = false,
-    /// Whether the current line belongs to the block closing (its closing fence).
+    /// Whether the block closing ended on the current line (a code block's closing fence),
+    /// for `trailing`. A div's closing fence does not: djot.js's events run on past it.
     inclusive: bool = false,
 };
 
@@ -254,11 +261,11 @@ const Cursor = struct {
     }
 };
 
-/// `gpa` backs the block arenas; `da` is the document's arena, for the parser's own
-/// buffers and what definitions keep.
-pub fn init(gpa: Allocator, da: Allocator, lines: Lines, defs: *Definitions) Allocator.Error!Parser {
+/// `gpa` backs the block arenas and the parser's own buffers; what definitions keep goes
+/// on `defs.a`.
+pub fn init(gpa: Allocator, lines: Lines, defs: *Definitions) Allocator.Error!Parser {
     const arena = try newArena(gpa);
-    return .{ .gpa = gpa, .arena = arena, .a = arena.allocator(), .da = da, .defs = defs, .lines = lines, .scratch = std.heap.ArenaAllocator.init(gpa) };
+    return .{ .gpa = gpa, .arena = arena, .a = arena.allocator(), .defs = defs, .lines = lines, .scratch = std.heap.ArenaAllocator.init(gpa) };
 }
 
 pub fn deinit(self: *Parser) void {
@@ -300,8 +307,8 @@ pub fn endPos(self: *const Parser) SourcePos {
     return self.lines.end();
 }
 
-/// Whether lines followed the last top-level block (blank lines, definitions,
-/// attributes), which carry djot.js's events to the input's end.
+/// Whether lines followed the last top-level block (blank lines, a div's closing fence,
+/// definitions, attributes), which carry djot.js's events to the input's end.
 pub fn trailing(self: *const Parser) bool {
     return self.line_count > self.last_block_line;
 }
@@ -343,8 +350,8 @@ fn nodeAllocator(self: *const Parser) Allocator {
     return if (self.footnote_depth > 0) self.defs.a else self.a;
 }
 
-/// Whether the container at depth `n` (none when `n` is 0) holds blocks or items, so
-/// starts are tried after it.
+/// Whether the `n`th open container (none when `n` is 0) holds blocks or items, so starts
+/// are tried after it.
 fn holdsBlocks(self: *const Parser, n: usize) bool {
     if (n == 0) return true;
     return switch (self.stack.items[n - 1].content()) {
@@ -365,7 +372,9 @@ fn parseLine(self: *Parser, line: Line) Error!void {
         matched += 1;
     }
     if (self.finished_line) {
-        // A closing code fence: the containers above its block close, and the line is done.
+        // A line a closing code fence or a table row took whole (`finished_line`): a fence
+        // closes its code block, which ends on this line (`inclusive`); a row closes
+        // nothing. Nothing else on the line is read.
         var stand = cur.stand();
         stand.inclusive = true;
         return self.closeFrom(matched, stand);
@@ -380,8 +389,8 @@ fn parseLine(self: *Parser, line: Line) Error!void {
         if (self.finished_line) return;
         cur.skipSpace();
     }
-    // The rest of the line: lazy text continues an open paragraph or heading that no
-    // longer matched, when nothing opened and the line is not blank; otherwise the
+    // The rest of the line: lazy text continues an open paragraph, heading or caption that
+    // no longer matched, when nothing opened and the line is not blank; otherwise the
     // containers that did not match close here.
     cur.skipSpace();
     const blank = cur.atEol();
@@ -473,8 +482,9 @@ fn continues(self: *Parser, c: *Container, cur: *Cursor) Error!bool {
         },
         .list => |*l| {
             if (cur.atEol() or cur.indent > l.indent) return true;
-            // A marker of the list's style continues it, whatever its indent (djot.js),
-            // narrowing an ordered list's possible styles.
+            // A marker of the list's style at or left of its indent continues it (djot.js);
+            // for an ordered list, of a style it may still be. The item that opens on it
+            // narrows those styles (`tryOpen`).
             const m = listMarker(cur.rest()) orelse return false;
             return switch (l.style) {
                 .bullet => |ch| m.style == .bullet and m.style.bullet == ch,
@@ -553,8 +563,9 @@ fn listMarker(r: []const u8) ?Marker {
 }
 
 /// Tries the block starts at `cur`, in djot.js's order; on one, closes the containers
-/// above `matched`, pushes the new one and moves `cur` past its marker. After a list,
-/// only its item can open.
+/// above `matched`, pushes the new one and moves `cur` past its marker, or to the line's
+/// end for a start that takes the line. A list leaves `cur` on its marker, where its item
+/// opens next; after a list, only its item can open.
 fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
     const r = cur.rest();
     const stand = cur.stand();
@@ -563,7 +574,7 @@ fn tryOpen(self: *Parser, cur: *Cursor, matched: usize) Error!bool {
         try self.closeFrom(matched, stand);
         // An item joining an ordered list narrows the styles it may still be (djot.js).
         switch (self.tip().data.list.style) {
-            .ordered => |*o| _ = o.styles.accept(m.ordered.?, false),
+            .ordered => |*o| o.styles.accept(m.ordered.?),
             else => {},
         }
         try self.push(.{ .list_item = .{ .indent = cur.indent, .checked = m.checked } }, cur.pos());
@@ -792,7 +803,9 @@ fn push(self: *Parser, data: @FieldType(Container, "data"), start: SourcePos) Er
 /// Counts the explicit id waiting for a block that opens, before its content, where
 /// djot.js registers it (`Definitions.ids_parsed`); the block's node carries it, and
 /// `Ids` registers it there. A paragraph opening a definition list item is its term,
-/// whose node the item's close discards with the id, so the item reserves its place.
+/// whose node the item's close discards with the id, so the item reserves its place. A
+/// failed block attribute counts it as it closes as a paragraph (`close`), having opened
+/// as no node.
 fn countOpeningId(self: *Parser, para: bool) void {
     if (para and self.opensTerm()) self.tip().term_reserved = self.reserve();
     self.defs.ids_parsed += 1;
@@ -888,7 +901,6 @@ fn looseIds(self: *Parser, node: Node) Error!void {
     for (node.children()) |child| try self.looseIds(child);
 }
 
-/// The explicit ids among `nodes` and their descendants.
 /// Every id in `node`'s tree, in tree order.
 fn collectIds(gpa: Allocator, node: Node, ids: *std.ArrayList([]const u8)) Allocator.Error!void {
     if (node.id()) |id| try ids.append(gpa, id);
@@ -932,8 +944,8 @@ fn listNode(self: *Parser) ?*Container {
 }
 
 /// `parse.js`'s rule on every event but a blank line: after blank lines, anything but a
-/// list start or a list or item end makes the list loose, and anything but an item
-/// boundary clears the blank lines seen.
+/// list's or item's start or end makes the list loose, and anything but an item's start
+/// or end clears the blank lines seen.
 fn listEvent(self: *Parser, is_list: bool, is_item: bool) void {
     const ln = self.listNode() orelse return;
     const l = &ln.data.list;
@@ -981,7 +993,8 @@ fn addLeafLine(self: *Parser, cur: Cursor) Error!void {
     if (self.tip().data == .heading) self.tip().data.heading.bare_at = null;
 }
 
-/// Where a leaf line's content starts, and the newline before the line, which the line
+/// Where a leaf line's content starts, and where the join before it lies: the newline
+/// ending the leaf's previous content line (its own newline for the first), which the line
 /// source places (its `LineMap` segment keeps it for the join, rather than subtract it).
 const LeafStart = struct { pos: SourcePos, join: SourcePos };
 
@@ -1020,15 +1033,18 @@ fn leafLineMap(self: *Parser, a: Allocator) Error!LineMap {
     return .{ .segments = segs, .total = joined - 1, .end = self.leaf_last_eol };
 }
 
-/// The inline content of the open leaf, which empties the leaf buffers.
-/// `text` without its trailing `blanks`, except one right after a backslash: that one is
-/// escaped, a hard break or a non-breaking space, not trailing blank.
+/// `text` without its trailing `blanks`, except one right after a backslash, which may
+/// escape it (a hard break or a non-breaking space); after an escaped backslash the kept
+/// blank is trailing, and the inline parser drops it.
 fn trimEndKeepingEscape(text: []const u8, blanks: []const u8) []const u8 {
     const trimmed = std.mem.trimEnd(u8, text, blanks);
     return if (trimmed.len < text.len and trimmed.len > 0 and trimmed[trimmed.len - 1] == '\\') text[0 .. trimmed.len + 1] else trimmed;
 }
 
-/// `depth`: the inlines' own, one under the leaf's node.
+/// The inline content of the open leaf, which empties the leaf buffers. `attrs_from`: no
+/// inline attribute is read before this joined offset; `ends_line`: whether a line end
+/// follows the text (a cell's does not); `depth`: the inlines' own, one under the leaf's
+/// node.
 fn leafInlines(self: *Parser, a: Allocator, attrs_from: usize, ends_line: bool, depth: usize) Error![]const Node {
     defer self.dropLeaf();
     const src = try inline_mod.joinLines(a, self.leaf_slices.items);
@@ -1051,7 +1067,8 @@ fn dropLeaf(self: *Parser) void {
     self.leaf_starts.clearRetainingCapacity();
 }
 
-/// One past the last non-blank character of `line`: its newline unless whitespace trails.
+/// One past the last byte of `line` that is not a trailing space: its newline unless spaces
+/// trail. A trailing tab is content, as djot.js.
 fn afterContent(line: Line) SourcePos {
     return afterBlanks(line, " "); // spaces, not tabs, as djot.js: a trailing tab is content
 }
@@ -1065,8 +1082,9 @@ fn afterBlanks(line: Line, blanks: []const u8) SourcePos {
     return .{ .line = line.pos.line, .col = content +| 1, .offset = line.pos.offset +| content };
 }
 
-/// Where a paragraph or heading ends, as djot.js: after its last non-blank character, or
-/// one past a hard break that ends it.
+/// Where a paragraph, heading or caption ends, as djot.js: a caption one before where the
+/// parser stands; the others after their last byte that is not a trailing space, or,
+/// ending in a hard break, at the next line's first byte (a heading's first bare `#` line).
 fn leafEnd(c: Container, children: []const Node, stand: Stand) SourcePos {
     // A caption ends one before where the parser stands as it closes, whatever closed it
     // (djot.js: `pos - 1` of the closing line); a paragraph or heading after its last
@@ -1078,13 +1096,15 @@ fn leafEnd(c: Container, children: []const Node, stand: Stand) SourcePos {
     return c.leaf_end;
 }
 
-/// Closes the containers from depth `from` up, innermost first.
+/// Closes the open containers past the first `from`, innermost first.
 fn closeFrom(self: *Parser, from: usize, stand: Stand) Error!void {
     while (self.stack.items.len > from) try self.close(stand);
 }
 
-/// Closes the tip: its node, ending where the parser stands, joins its parent's
-/// children, or is the top-level block `nextBlock` returns; a footnote is recorded.
+/// Closes the tip. Its node joins its parent's children or, at the top, is the block
+/// `nextBlock` returns (a table once its wait ends, `closeAs`). A footnote or reference
+/// definition is recorded instead; a complete attribute block waits for the next block,
+/// one never completed is a paragraph; a caption joins the table before it or is dropped.
 fn close(self: *Parser, stand: Stand) Error!void {
     self.listEvent(self.tip().isList(), self.tip().data == .list_item);
     var c = self.stack.pop().?;
@@ -1302,7 +1322,9 @@ fn leafNode(self: *Parser, a: Allocator, c: Container, tag: node_mod.Tag, level:
     return if (self.track_pos) n.withSpan(a, c.start, leafEnd(c, children, stand)) else n;
 }
 
-/// `node`, with the block attributes waiting for it, joins its parent or is done.
+/// `node`, with the block attributes waiting for it, joins its parent or, at the top, is
+/// done: a table waits in `pending` for a caption, as does a block closing while another
+/// is already due.
 fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
     if (self.stack.items.len > 0) {
         const parent = self.tip();
@@ -1326,7 +1348,7 @@ fn closeAs(self: *Parser, node: Node, stand: Stand) Error!void {
         self.arena = next;
         self.a = next.allocator();
         // The block ended on the line before the one that closed it, unless that line was
-        // its own (a closing fence) or the last.
+        // its own (a code block's closing fence) or the last.
         self.last_block_line = if (stand.eof or stand.inclusive) self.line_count else self.line_count - 1;
     }
 }

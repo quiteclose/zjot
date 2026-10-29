@@ -1,8 +1,12 @@
-//! Inline parsing using an opener stack. Handles emphasis, links, images,
-//! smart quotes, super/subscript, insert/delete/mark, math, verbatim,
-//! raw spans, symbols, autolinks, and inline attributes. Every node is made
-//! with the span of source it came from; given a `LineMap`, the span becomes
-//! the node's document position as it is made.
+//! Inline parsing using an opener stack: emphasis, links, images, bracketed spans, smart
+//! quotes and punctuation, super/subscript, insert/delete/mark, math, verbatim, raw
+//! inlines, symbols, autolinks, footnote references, escapes and breaks, and inline
+//! attributes. Every node is made with the span of source it came from; given a
+//! `LineMap`, the span becomes the node's document position as it is made. Also the
+//! helpers the parser, document and renderers share: label keying (`normalizeLabel`,
+//! `keyLabel`, `getPlainText`, `getLabelText`), attribute merging
+//! (`applyBlockAttrsToNode`, `mergeRefAttrs`), line joining, and JavaScript's `\s`
+//! (`jsSpaceLen`).
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -51,14 +55,14 @@ const LinkOpen = struct {
     dropped_len: usize,
 };
 
-/// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
-/// the document position of the source it came from; without, none does. No inline
-/// attribute is read before `attrs_from` (the text of a failed block attribute). An id read
-/// but attached to no node, or overridden by a later attribute's, goes to `dropped`: djot.js
-/// registers it all the same.
-/// `ends_line` says whether a line end follows `src` (a table cell's does not), which is
-/// where a backslash ending it is a hard break (djot.js ends a block's subject with a
-/// newline, a cell's not).
+/// Parses `src`, one leaf's joined lines (a paragraph, heading, caption or table cell).
+/// With `map`, every node carries the document position of the source it came from;
+/// without, none does. No inline attribute is read before `attrs_from` (the text of a
+/// failed block attribute). An id read but attached to no node, or overridden by a later
+/// attribute's, goes to `dropped`: djot.js registers it all the same.
+/// `ends_line` says whether a line end follows `src` (a table cell's does not). Where one
+/// does, a backslash ending `src` is a hard break and an unclosed verbatim or math loses
+/// its trailing spaces (djot.js ends a block's subject with a newline, a cell's not).
 /// `a` is for what the nodes keep; `scratch` for the scanner's working lists, which the
 /// caller may reset once the nodes are returned (`dropped` grows on it too).
 pub fn parseInlineContent(a: Allocator, scratch: Allocator, src: []const u8, map: ?LineMap, attrs_from: usize, dropped: *std.ArrayList([]const u8), ends_line: bool) Allocator.Error![]const Node {
@@ -68,8 +72,8 @@ pub fn parseInlineContent(a: Allocator, scratch: Allocator, src: []const u8, map
 }
 
 /// The scanner's state over one run of joined text. Nodes enter `items` through `emit`
-/// (a span of `src`, both ends inclusive) or `text` (a slice of `src`), so no node is
-/// made without the source it came from.
+/// (a span of `src`, both ends inclusive), `text` or `strNode` (a slice of `src`), so no
+/// node is made without the source it came from.
 const Scanner = struct {
     a: Allocator,
     scratch: Allocator,
@@ -83,8 +87,8 @@ const Scanner = struct {
     /// The nearest open opener of each kind (its char, marked or not), chained down
     /// through `OpenerInfo.prev_same`, as djot.js keys its openers by kind: a closer
     /// finds its opener, or learns there is none, without walking the openers of other
-    /// kinds above it, which a line of unmatched openers would make quadratic. Small, as
-    /// it is cleared for every leaf.
+    /// kinds above it, which a line of unmatched openers would make quadratic. A fixed
+    /// array of `kinds` entries, fresh with each scanner and so with each leaf.
     tops: [kinds]?usize = .{null} ** kinds,
     /// Set at a `](` and cleared when a link closes on its `)`, as djot.js's
     /// `destination`, which a destination never closed leaves set: while set, `(` and
@@ -235,8 +239,10 @@ const Scanner = struct {
                             var skip = pos + 1;
                             while (skip < src.len and (src[skip] == ' ' or src[skip] == '\t')) skip += 1;
                             if ((skip < src.len and src[skip] == '\n') or (skip >= src.len and sc.ends_line)) {
-                                // A hard break, at the input's end too (djot.js ends its
-                                // subject with a newline); it spans from the backslash on.
+                                // A hard break, at the end of `src` too when a line end
+                                // follows it (djot.js ends its subject with a newline); as
+                                // djot.js's, it spans from the blank after the backslash to
+                                // the newline.
                                 try sc.trimLastText(pos, " \t");
                                 try sc.emit(.{ .data = .hard_break }, pos + 1, skip);
                                 pos = @min(skip + 1, src.len);
@@ -457,11 +463,11 @@ const Scanner = struct {
         try sc.trimLastText(src.len, " ");
     }
 
-    /// Drops `blanks` from the end of the last text node when it ends at `end` of `src`,
-    /// before a line break (spaces and tabs) or at the paragraph's end (spaces only, a
-    /// trailing tab being content there): djot.js trims its last match only when that
-    /// match is text, so the spaces before an empty attribute or a comment, which make no
-    /// node, stay.
+    /// Drops `blanks` from the end of the last text node when it ends at `end` of `src`:
+    /// before a hard break (spaces and tabs) or at the leaf's end (spaces only, a trailing
+    /// tab being content there); before a soft break they stay. djot.js trims its last
+    /// match only when that match is text, so the spaces before an empty attribute or a
+    /// comment, which make no node, stay.
     fn trimLastText(sc: *Scanner, end: usize, blanks: []const u8) !void {
         if (sc.items.items.len == 0) return;
         switch (sc.items.items[sc.items.items.len - 1]) {
@@ -483,16 +489,18 @@ const Scanner = struct {
         return if (sc.ends_line) std.mem.trimEnd(u8, rest, " ") else rest;
     }
 
-    /// The innermost marked opener `{X` for `char`, when its pair with the closer at `p`
-    /// is not empty: an empty one closes nothing and ends the search, as djot.js
-    /// (`{_a {__} b_}` keeps the first `{_` open and makes the inner `_}` text).
+    /// The top marked opener `{X` for `char`, unless its pair with the closer at `p` would
+    /// be empty: then the closer closes nothing and no opener below is tried, as djot.js
+    /// (`{_a {__} b_}`: the first `_}` is text and the last closes the inner `{_`, giving
+    /// `{_a <em>_} b</em>`).
     fn markedOpener(sc: *const Scanner, char: u8, p: usize) ?usize {
         const i = sc.topOpener(char, true) orelse return null;
         return if (sc.openers.items[i].touches(p)) null else i;
     }
 
     /// Closes the marked opener `{X` with `X}` at `p` as a node of `tag` spanning both
-    /// braces; false when no opener is there to close, or its pair would be empty.
+    /// braces; false when no opener is there to close, its pair would be empty, or it
+    /// stands before the link whose destination is open (`outsideLink`).
     fn closeMarked(sc: *Scanner, char: u8, tag: Tag, p: usize) !bool {
         const i = sc.markedOpener(char, p) orelse return false;
         if (sc.outsideLink(i)) return false;
@@ -677,7 +685,7 @@ const Scanner = struct {
             if (is_image) try sc.items.append(sc.scratch, .{ .node = try sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
             const span_node = Node{ .data = .{ .span = children } };
             const start = if (is_image) op.src_pos + 1 else op.src_pos;
-            if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
+            if (if (next >= sc.attrs_from) try attrs.parseInlineAttrs(sc.a, src, next) else null) |parsed| {
                 try sc.emit(try applyBlockAttrsToNode(sc.a, span_node, parsed.attrs), start, p);
                 pos.* = parsed.end;
             } else {
@@ -827,17 +835,17 @@ const Scanner = struct {
             try sc.pushOpener(opener);
             try sc.items.append(sc.scratch, .{ .opener = opener });
         } else {
-            // Can't open or close: emit a typographic quote as literal text.
-            // Single quote becomes right curly (') for apostrophe contexts;
-            // double quote becomes left curly (") as the more common standalone form.
+            // Opening and closing nothing (no opener of its kind, or the pair would be
+            // empty): the quote is text in djot.js's default form, `'` a right single
+            // quote (an apostrophe), `"` a left double quote.
             const curly: []const u8 = if (char == '\'') right_single else left_double;
             try sc.emit(.{ .data = .{ .str = curly } }, p, p);
         }
         pos.* = p + 1;
     }
 
-    /// The nodes after the opener at `opener_idx`, which are removed from `items`. The
-    /// list is sized by its items, each of which makes at most one node (an attribute
+    /// The nodes after the opener whose item is at `opener_idx`; those items and the
+    /// opener's own are removed from `items`. The list is sized by its items, each of which makes at most one node (an attribute
     /// that splits a word into text and span counts for the span), and filled in place
     /// on `a`: no growth, no copy.
     fn collectChildren(sc: *Scanner, opener_idx: usize) ![]const Node {
@@ -899,6 +907,10 @@ const Scanner = struct {
         if (ba.id) |id| try sc.dropped.append(sc.scratch, id);
     }
 
+    /// An inline attribute on the node before it: a text node's last word becomes a span;
+    /// a container, verbatim, math, link, symbol, footnote reference or smart quote takes
+    /// it itself; a break, dash, ellipsis or non-breaking space takes none, and its id is
+    /// dropped (registered all the same).
     fn applyAttrsToResolved(sc: *Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
         if (nodes.items.len == 0) return sc.dropId(ba);
         const last = &nodes.items[nodes.items.len - 1];
@@ -962,9 +974,11 @@ const Scanner = struct {
     }
 };
 
-/// A block attribute applied to the block after it. A block with attributes of its own
-/// (a div's class) keeps them after the block attribute's, classes joined, as djot.js:
-/// `{.x}` before `::: y` gives `class="x y"`.
+/// Attributes applied to a node made for them: a block attribute to the block after it, a
+/// footnote definition's to its footnote, an inline attribute to the span it makes
+/// (`[x]{.c}`, or a word's). A node with attributes of its own (a div's class) keeps them
+/// after the block attribute's, classes joined, as djot.js: `{.x}` before `::: y` gives
+/// `class="x y"`.
 pub fn applyBlockAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
     const own = node.attrs();
     const node_attrs = if (own.len > 0 and ba.attrs.len > 0)
@@ -1061,6 +1075,8 @@ fn findClosingTicks(src: []const u8, start: usize, count: usize) ?usize {
     return null;
 }
 
+/// One space between the content and a backtick at either end goes, as djot.js's
+/// `trimVerbatim`, so a verbatim can start or end with a backtick.
 fn trimVerbatimContent(raw: []const u8) []const u8 {
     var start: usize = 0;
     var end: usize = raw.len;
@@ -1069,7 +1085,8 @@ fn trimVerbatimContent(raw: []const u8) []const u8 {
     return raw[start..end];
 }
 
-/// A reference label as djot.js keys it: a backslash before an escapable byte goes.
+/// A reference label as djot.js keys it: a backslash goes before punctuation, a space or
+/// a line end (`backslashGoes`).
 fn unescapeLabel(a: Allocator, raw: []const u8) ![]const u8 {
     if (std.mem.indexOfScalar(u8, raw, '\\') == null) return raw;
     var out = try std.ArrayList(u8).initCapacity(a, raw.len);
@@ -1081,12 +1098,15 @@ fn unescapeLabel(a: Allocator, raw: []const u8) ![]const u8 {
     return out.items;
 }
 
+/// A destination as djot.js builds it: a line end joins the lines without the next line's
+/// indent, an escaped line end drops the blanks before it, and a backslash before
+/// punctuation or a space goes.
 fn processUrl(a: Allocator, raw: []const u8) ![]const u8 {
     const needs_processing = std.mem.indexOfScalar(u8, raw, '\n') != null or
         std.mem.indexOfScalar(u8, raw, '\\') != null;
     if (!needs_processing) return raw;
     var buf: std.ArrayList(u8) = .empty;
-    var kept: usize = 0; // up to here the bytes came from escapes: never trimmed
+    var kept: usize = 0; // the end of the last escaped byte: the trim before an escaped line end stops here
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '\n') {
@@ -1147,9 +1167,9 @@ fn jsTrim(raw: []const u8) []const u8 {
     return raw[start..end];
 }
 
+/// A label as djot.js keys it: JavaScript's `trim`, then each run of space, tab, CR and
+/// LF one space; `raw` itself when it is so already.
 pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
-    // As djot.js keys labels: JavaScript's `trim`, then each run of space, tab, CR and LF
-    // one space; `raw` itself when it is so already.
     const trimmed = jsTrim(raw);
     const needs_collapse = for (trimmed, 0..) |c, i| {
         if (c == '\n' or c == '\r' or c == '\t' or (c == ' ' and i + 1 < trimmed.len and trimmed[i + 1] == ' ')) break true;
@@ -1175,16 +1195,18 @@ pub fn normalizeLabel(a: Allocator, raw: []const u8) ![]const u8 {
 
 /// The string content of a node, as djot.js's `getStringContent`: every node's text
 /// (a symbol's alias and a footnote reference's label excepted, as the djot.js suite has
-/// it for heading ids), a newline for each break, children otherwise. Heading ids and
-/// reference labels are made from it.
+/// it for heading ids), a newline for each break, children otherwise. Heading ids, and the
+/// implicit reference each heading defines, are made from it; a `[]` label and an image's
+/// alt text use `getLabelText`.
 pub fn getPlainText(a: Allocator, node: Node) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try addPlainText(a, &buf, node, false);
     return buf.toOwnedSlice(a);
 }
 
-/// As `getPlainText`, with a footnote reference's label, as djot.js keys a `[]` label
-/// (the heading-id exclusion is deliberate difference 2).
+/// As `getPlainText`, with a footnote reference's label, as djot.js's `getStringContent`:
+/// the key of an empty `[]` label (`keyLabel`) and an image's alt text (html.zig). Heading
+/// ids leave the label out, deliberate difference 2.
 pub fn getLabelText(a: Allocator, node: Node) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     try addPlainText(a, &buf, node, true);

@@ -1,5 +1,8 @@
-//! Test harness for djot.js `.test` files. Each file contains backtick-fenced
-//! blocks with input/output pairs separated by `.` (HTML) or `!` (AST).
+//! Test harness for `.test` files, djot.js's and zjot's own. Each case is a backtick
+//! fence; its info string holds `a` for AST output and `p` for source positions. The
+//! input runs to a line of `.` alone, the expected output to a closing fence at least as
+//! long as the opening one. (`!`, which djot.js's format uses to introduce a filter, also
+//! ends the input; filters.test is not run.)
 
 const std = @import("std");
 const Allocator = std.mem.Allocator;
@@ -127,6 +130,8 @@ fn runTestFile(a: Allocator, io: std.Io, dir: std.Io.Dir, filename: []const u8) 
     return results;
 }
 
+/// Every vendored file but filters.test, whose cases apply Lua filters zjot does not run,
+/// then zjot's own.
 const test_file_names = [_][]const u8{
     "attributes.test",
     "block_quote.test",

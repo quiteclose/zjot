@@ -93,8 +93,9 @@ pub fn main(init: std.process.Init) !u8 {
     };
     defer if (opts.file_path != null) file.close(init.io);
 
-    // The input is read a buffer at a time and rendered straight onto stdout a block at a
-    // time, so neither the document nor the output is held whole.
+    // The input is read a buffer at a time and rendered onto stdout a block at a time, so
+    // the document is never held whole, and the output only behind a block that waits: one
+    // holding a reference-style link, a section under `--ast --sourcepos` (`zjot.render`).
     var in_buf: [64 * 1024]u8 = undefined;
     var r = file.reader(init.io, &in_buf);
     var out_buf: [4096]u8 = undefined;
@@ -123,8 +124,9 @@ pub fn main(init: std.process.Init) !u8 {
     return 0;
 }
 
-/// std treats a closed descriptor as a program bug and panics on the first read, so
-/// stdin is probed before use. Only Linux has the probe; elsewhere stdin is trusted.
+/// std treats a closed descriptor as a program bug: the first read panics in a Debug
+/// build and fails as `error.Unexpected` otherwise, so stdin is probed before use. Only
+/// Linux has the probe; elsewhere stdin is trusted.
 fn stdinIsOpen() bool {
     return switch (builtin.os.tag) {
         .linux => blk: {
