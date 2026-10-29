@@ -110,6 +110,22 @@ Deliberate differences from djot.js 0.3.2:
     so those give `"  "` and `"a  "` there, while `{k="a` then `  b"}` is `a b` in both.
     Decided 2026-10-27.
 
+18. An ordered list's first number past 2^53 starts it as written: `9007199254740993.`
+    gives `start="9007199254740993"`; djot.js 0.3.2 reads the number as a JavaScript
+    double and rounds it (`9007199254740992`). Past 64 bits, difference 6. Decided
+    2026-10-29.
+
+19. A line of seven or more `#` is a paragraph, as a heading has six levels; djot.js
+    0.3.2 makes `<h7>`, `<h8>` and on of it (`####### a`, `########## a`). Decided
+    2026-10-29.
+
+20. A smart quote takes its form from where it stands; djot.js 0.3.2's quote matcher
+    rewrites a default it holds for the whole process the first time a quote meets a
+    marker, so every later quote of that kind takes the marker's form: `{'a'` gives
+    `‘a‘` there, `"}_"` gives `”_”`, and a second `{.q`, `z="yy"}` reparsed as a paragraph
+    gives `z=”yy”` where the first gave `z=“yy”`. djot.js's main branch keeps the
+    default per call, as zjot reads each quote. Decided 2026-10-29.
+
 AST text form (`--ast`), where zjot's output differs from djot.js's `-t ast` as the
 converter renders it, so no `ap` case can pin it:
 
@@ -120,22 +136,26 @@ converter renders it, so no `ap` case can pin it:
    gives `soft_break (2:0:5-2:0:5)` and the paragraph ends at `3:0:11`; djot.js keeps the
    `\r` in the line, `soft_break (1:5:4-2:0:5)`, paragraph end `2:5:10`, and a document ends
    on its last `\r`. The `.test` format cannot carry CRLF, so this is documented, not
-   pinned; the HTML is the same, but for three shapes. djot.js keeps the `\r` in a code
+   pinned; the HTML is the same, but for four shapes. djot.js keeps the `\r` in a code
    block's and a raw block's text (`code\r\n` renders `code\r` there, `code` here). A
    footnote definition inside a div leaves an empty `<p></p>` after the div there. And
    for an unfinished block attribute whose line fails at its end (`{.a`, `  k`):
    djot.js's attribute parser fails on the `\r` and converts the attribute to a
    paragraph on that line, where with LF it waits (difference 15), so under CRLF a
    following indented line is paragraph text with inline attributes there and attribute
-   text here. Decided 2026-10-24, the CRLF attribute 2026-10-26, the rest 2026-10-27.
+   text here. And inside a fenced div djot.js keeps the `\r` of the last line before the
+   closing fence, so its paragraph or caption ends in a newline (`:::`, `para`, `:::`
+   with CRLF gives `<p>para\n</p>` there) and a table there is followed by an empty
+   `<p></p>`. Decided 2026-10-24, the CRLF attribute 2026-10-26, the div 2026-10-29, the
+   rest 2026-10-27.
 5. Smart punctuation prints as `ellipsis`, `em_dash`, `en_dash` and curly-quote `str`
    nodes where djot.js prints `smart_punctuation`.
 6. An attribute on a word wraps it in a `span`; djot.js puts the attribute on the `str`.
 7. Reference links print the resolved `destination`; djot.js prints the `reference` only.
 8. `raw_block` and `raw_inline` print the format as `lang`; djot.js's `format` is not
    rendered by the converter.
-9. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `); zjot
-   keeps it, so only an image at the start of a paragraph is pinned.
+9. djot.js 0.3.2 drops the text before an inline image (`a ![alt](u)` loses `a `, in
+   its HTML too); zjot keeps it, so only an image at the start of a paragraph is pinned.
 10. djot.js 0.3.2 adds an empty `str` with inverted positions after a cell whose content
     ends in a container inline (`| _a_ |` gives `str (1:6:5-1:5:4)`); zjot does not, so
     cells are pinned with plain text.
@@ -144,7 +164,13 @@ converter renders it, so no `ap` case can pin it:
     there). The HTML is the same, and an id in it is registered in both.
 12. In a table cell, an escaped punctuation byte is part of the `str` around it; djot.js
     0.3.2 prints it as a `str` of its own there (`| a\.b |` gives `"a"`, `"."`, `"b"`),
-    while in a paragraph it joins the text in both. The HTML is the same.
+    while in a paragraph it joins the text in both. djot.js joins no text in a cell at
+    all, so the HTML is the same unless an inline attribute follows: there it takes only
+    the text after the last such byte or unclosed opener (`| a*b{#x} |` gives
+    `a*<span id="x">b</span>` there, a span over `a*b` here).
+13. A reference link prints its definition's attributes merged onto it, as the HTML
+    renders them (`{#q}`, `[a]: u`, blank, `[x][a]` gives `link … id="q"`); djot.js
+    prints the link's own only.
 
 Ordered lists in the AST text form print their `style` as djot.js's JSON has it, the first
 number with its delimiter (`1.`, `1)`, `(1)`, `a.`, `i.`), and no `start`; the HTML renders
