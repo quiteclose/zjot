@@ -93,8 +93,9 @@ pub const SourcePos = struct {
 };
 
 /// A link or image: its destination when written inline or resolved, its reference label
-/// when written by reference, and its content. Written `[text][]` it has neither until the
-/// parser's first walk over its leaf reads the label off its text (`inline.labelOwnText`).
+/// when written by reference, and its content. The label is as written until the parser's
+/// first walk over its leaf keys it (`inline.keyLabel`); written `[text][]`, it is empty
+/// until then and read off the text.
 pub const Link = struct {
     destination: ?[]const u8 = null,
     reference: ?[]const u8 = null,

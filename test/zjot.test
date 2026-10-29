@@ -55,21 +55,18 @@ Deliberate differences from djot.js 0.3.2:
    cell only right after its pipe, so there it is an ordinary row of em dashes; its test
    suite has only the unspaced form. zjot follows the README. Decided 2026-10-25.
 
-8. A reference label is closed by its matching bracket, so `[a][b [c] d]` is a reference
-   link with the label `b [c] d`, and a destination by its matching paren, so
-   `[a](u [b] c)` is a link to `u [b] c`; djot.js 0.3.2 makes both text, the inner `[`
-   shadowing the label or destination on its opener stack. An inner `[c](u)` link
-   restores a label there (`[a][b [c](u) d]` is a reference link in both) but not a
-   destination (`[a](u [b](v) c)` is text around the inner link there, a link to
-   `u [b](v) c` here). Decided 2026-10-26.
+8. Withdrawn 2026-10-28: a link closes where djot.js 0.3.2 closes it, so an inner `[`
+   shadows a label or a destination on the opener stack (pinned).
 
 9. `\\![a](u)` is an escaped backslash and an image; djot.js 0.3.2 reads the raw `\` before
    the `!` and makes `\!` and a link. Decided 2026-10-26.
 
-10. A delimiter opened before a link closes nowhere inside the link's destination:
-    `_[a](b_c)` is `_` and a link to `b_c`; djot.js 0.3.2 runs its inline matchers over
-    the destination, closes the emphasis at the `_` inside it and loses the link. Decided
-    2026-10-26.
+10. Inside an open link destination, a delimiter whose opener stands before the link's
+    `[` is text, as djot.js's suite has it (links_and_images.test) and its main branch
+    after 0.3.2: `_[a](b_c)` is `_` and a link to `b_c`, and `*[a](b*`, whose destination
+    never closes, is text. djot.js 0.3.2 closes the emphasis at the delimiter inside the
+    destination and loses the link (`<em>[a](b</em>c)`, `<strong>[a](b</strong>`).
+    Decided 2026-10-26, the rule 2026-10-28.
 
 11. An image by reference that resolves to nothing keeps its alt text (`![a][]` with no
     definition gives `<img alt="a">`); djot.js 0.3.2 writes `<img>`, setting `alt` only
@@ -10461,4 +10458,432 @@ doc
     superscript (1:12:11-1:14:13)
       str (1:13:12-1:13:12) text="2"
     str (1:15:14-1:21:20) text=" y^^ ^z"
+````
+
+A bracket inside a reference label opens a bracket of its own and shadows the label on the opener stack, as djot.js: neither closes.
+````
+[a][b [c] d]
+
+[b [c] d]: /u
+.
+<p>[a][b [c] d]</p>
+<p>[b [c] d]: /u</p>
+````
+
+A bracket inside a destination shadows the destination the same way.
+````
+[a](u [b] c)
+.
+<p>[a](u [b] c)</p>
+````
+
+A link inside a destination closes there, and its closing paren ends destination mode: the outer link never closes, as djot.js.
+````
+[a](u [b](v) c)
+
+[a]([b](c))
+.
+<p>[a](u <a href="v">b</a> c)</p>
+<p>[a](<a href="c">b</a>)</p>
+````
+
+A verbatim inside a destination or a label is read as verbatim: the paren or bracket inside it does not end the link, as djot.js.
+````
+[a](b`)`)
+
+[a][b`]`]
+
+[b`]`]: /u
+.
+<p><a href="b`)`">a</a></p>
+<p><a>a</a></p>
+<p>[b<code>]</code>]: /u</p>
+````
+
+An autolink inside a destination is read as an autolink: its paren does not end the link.
+````
+[a](<http://x)>)
+.
+<p><a href="&lt;http://x)&gt;">a</a></p>
+````
+
+A closing paren inside a destination closes the innermost paren opened in it; a delimiter that closes over a paren clears it, as djot.js clears every opener inside a match.
+````
+[a](b(c)d) [a](b _(c_ d) e)
+.
+<p><a href="b(c)d">a</a> <a href="b _(c_ d">a</a> e)</p>
+````
+
+A second `](` after an unclosed destination moves the destination there: what came between is link text.
+````
+[a](b](c)
+
+[a](_b_](c)
+.
+<p><a href="c">a](b</a></p>
+<p><a href="c">a](<em>b</em></a></p>
+````
+
+A destination left open before a later link is text, and the later link closes on its own paren.
+````
+[a](b [c](d) e
+.
+<p>[a](b <a href="d">c</a> e</p>
+````
+
+A bracket in a destination may close a reference link or a span there, and the destination still closes on its paren.
+````
+[a](b [c][d] e)
+
+[a](b [c]{.d} e)
+.
+<p><a href="b [c][d] e">a</a></p>
+<p><a href="b [c]{.d} e">a</a></p>
+````
+
+A `]{` after an unclosed destination makes a span of the bracket's text up to it, its `](` included, as djot.js.
+````
+[a](b]{.c} d)
+.
+<p><span class="c">a](b</span> d)</p>
+````
+
+An image's destination is read as a link's.
+````
+![a](b [c] d)
+
+![a](b`)`)
+.
+<p>![a](b [c] d)</p>
+<p><img alt="a" src="b`)`"></p>
+````
+
+Positions of a link whose destination holds a verbatim.
+```` ap
+x [a](b`)`) y
+.
+doc
+  para (1:1:0-2:0:13)
+    str (1:1:0-1:2:1) text="x "
+    link (1:3:2-1:11:10) destination="b`)`"
+      str (1:4:3-1:4:3) text="a"
+    str (1:12:11-1:13:12) text=" y"
+````
+
+An id read inside a destination is text once the link closes: djot.js does not register it, so a heading may take it; one read before a later `](` is the link text's and is registered.
+````
+[a](b{#x}{#y}) [c](d{#z}](e)
+
+# x
+
+# y
+
+# z
+.
+<p><a href="b{#x}{#y}">a</a> <a href="e"><span id="z">c](d</span></a></p>
+<section id="x">
+<h1>x</h1>
+</section>
+<section id="y">
+<h1>y</h1>
+</section>
+<section id="z-1">
+<h1>z</h1>
+</section>
+````
+
+A pair is empty when its delimiters touch in the source, as djot.js: an empty attribute or a comment between them is something, so the pair closes with nothing inside.
+````
+{_{}_}
+
+x {_a {_{}_} b_}
+
+~{}~ ^{}^ _{}_
+
+*{%c%}*
+
+{+{}+} {-{}-} {={}=}
+.
+<p><em></em></p>
+<p>x <em>a <em></em> b</em></p>
+<p><sub></sub> <sup></sup> <em></em></p>
+<p><strong></strong></p>
+<p><ins></ins> <del></del> <mark></mark></p>
+````
+
+The same holds for smart quotes.
+````
+"{}" '{}'
+.
+<p>“” ‘’</p>
+````
+
+Touching delimiters stay an empty pair that closes nothing.
+````
+{__} __ ** {_a {__} b_}
+.
+<p>{__} __ ** {_a <em>_} b</em></p>
+````
+
+Positions of a pair with only an empty attribute inside.
+```` ap
+x _{}_ y
+.
+doc
+  para (1:1:0-2:0:8)
+    str (1:1:0-1:2:1) text="x "
+    emph (1:3:2-1:6:5)
+    str (1:7:6-1:8:7) text=" y"
+````
+
+The text of an unclosed marked opener starts a text node of its own, as djot.js's open marker breaks its run of text; the text after it joins it.
+```` ap
+a {_e
+
+a {+e
+
+a {=e
+
+`a` {=html}
+.
+doc
+  para (1:1:0-2:0:5)
+    str (1:1:0-1:2:1) text="a "
+    str (1:3:2-1:5:4) text="{_e"
+  para (3:1:7-4:0:12)
+    str (3:1:7-3:2:8) text="a "
+    str (3:3:9-3:5:11) text="{+e"
+  para (5:1:14-6:0:19)
+    str (5:1:14-5:2:15) text="a "
+    str (5:3:16-5:5:18) text="{=e"
+  para (7:1:21-8:0:32)
+    verbatim (7:1:21-7:3:23) text="a"
+    str (7:4:24-7:4:24) text=" "
+    str (7:5:25-7:11:31) text="{=html}"
+````
+
+An unclosed verbatim at the paragraph's end loses its trailing spaces, as the text it ends would.
+````
+`a  
+
+x ` 
+.
+<p><code>a</code></p>
+<p>x <code></code></p>
+````
+
+Positions of an unclosed verbatim that lost its trailing spaces.
+```` ap
+`a  
+.
+doc
+  para (1:1:0-1:3:2)
+    verbatim (1:1:0-1:2:1) text="a"
+````
+
+Spaces before an empty attribute or a comment are not at the paragraph's end and stay.
+````
+a {}
+
+a {%x%}
+.
+<p>a </p>
+<p>a </p>
+````
+
+An unclosed math span is math to the paragraph's end, as an unclosed verbatim is verbatim.
+````
+$`a
+
+$$`a b
+
+x $`a  
+.
+<p><span class="math inline">\(a\)</span></p>
+<p><span class="math display">\[a b\]</span></p>
+<p>x <span class="math inline">\(a\)</span></p>
+````
+
+A raw format is one or more bytes other than blanks, braces and backticks, as djot.js; any other brace after a verbatim is text.
+````
+`a`{=ht
+ml}
+
+`a`{=h	t}
+
+`a`{=h{t}
+
+`a`{=html}
+.
+<p><code>a</code>{=ht
+ml}</p>
+<p><code>a</code>{=h	t}</p>
+<p><code>a</code>{=h{t}</p>
+<p>a</p>
+````
+
+An attribute takes the last word of the text node before it, and no text across an escape or an unclosed opener before it.
+````
+a\*b{.c}
+
+x a\*b{.c}
+
+a{_b{.c}
+.
+<p>a<span class="c">*b</span></p>
+<p>x a<span class="c">*b</span></p>
+<p>a<span class="c">{_b</span></p>
+````
+
+An attribute after a smart quote attaches to the quote, which renders no attributes; a word after a quote is its own.
+````
+"{.c}*
+
+"a{.c}
+
+x 'a{.c}
+.
+<p>“*</p>
+<p>“<span class="c">a</span></p>
+<p>x ’<span class="c">a</span></p>
+````
+
+An id attached to a smart quote is registered all the same.
+````
+"{#i}a
+
+# i
+.
+<p>“a</p>
+<section id="i-1">
+<h1>i</h1>
+</section>
+````
+
+An autolink is `<`, one or more bytes other than blanks and angle brackets, and `>`, as djot.js: a blank inside makes it text.
+````
+<http://a b>
+
+<http://a	b>
+
+<http://a b>
+
+<a<http://x>
+.
+<p>&lt;http://a b&gt;</p>
+<p>&lt;http://a	b&gt;</p>
+<p>&lt;http://a b&gt;</p>
+<p>&lt;a<a href="http://x">http://x</a></p>
+````
+
+An autolink is an email when an `@` follows a byte other than a colon, and else a URL when a letter is followed by a colon, as djot.js; anything else is text.
+````
+<foo:bar>
+
+<1a:b>
+
+<a:@b>
+
+<x@y>
+
+<@x>
+
+<mailto:me@x.y>
+
+<ab>
+.
+<p><a href="foo:bar">foo:bar</a></p>
+<p><a href="1a:b">1a:b</a></p>
+<p><a href="a:@b">a:@b</a></p>
+<p><a href="mailto:x@y">x@y</a></p>
+<p>&lt;@x&gt;</p>
+<p><a href="mailto:mailto:me@x.y">mailto:me@x.y</a></p>
+<p>&lt;ab&gt;</p>
+````
+
+Positions of an autolink with a scheme of its own.
+```` ap
+x <foo:bar> y
+.
+doc
+  para (1:1:0-2:0:13)
+    str (1:1:0-1:2:1) text="x "
+    url (1:3:2-1:11:10)
+    str (1:12:11-1:13:12) text=" y"
+````
+
+A `][` clears the parens read inside its bracket's text, as djot.js clears every opener there, so the destination around it closes on its own paren.
+````
+[x](a ([y (][c) d] e)
+
+_[x](a ([y (][c) d] e)_
+
+[x](a (![y (][c) d] e)
+.
+<p><a href="a ([y (][c) d] e">x</a></p>
+<p><em><a href="a ([y (][c) d] e">x</a></em></p>
+<p><a href="a (![y (][c) d] e">x</a></p>
+````
+
+A label holding reference links keeps its text as written, the links inside it read as text.
+```` ap
+[a][b [c][d] e]
+
+[a][[b][c]]
+.
+doc
+  para (1:1:0-2:0:15)
+    link (1:1:0-1:15:14) reference="b [c][d] e"
+      str (1:2:1-1:2:1) text="a"
+  para (3:1:17-4:0:28)
+    link (3:1:17-3:11:27) reference="[b][c]"
+      str (3:2:18-3:2:18) text="a"
+````
+
+Math loses one space next to a backtick at either end, as verbatim does, closed or not (djot.js).
+````
+$`` `a` ``
+
+$`` `a`
+
+$$`` `a`
+
+$`` ` 
+.
+<p><span class="math inline">\(`a`\)</span></p>
+<p><span class="math inline">\(`a`\)</span></p>
+<p><span class="math display">\[`a`\]</span></p>
+<p><span class="math inline">\(`\)</span></p>
+````
+
+A hard break takes the spaces before it only from text that ends there: before an empty attribute or a comment they stay.
+````
+a {}\
+b
+
+a {%c%}\
+b
+
+a	{}\
+b
+.
+<p>a <br>
+b</p>
+<p>a <br>
+b</p>
+<p>a	<br>
+b</p>
+````
+
+An attribute takes the word after the last blank of any kind JavaScript counts as one, a no-break space among them; after such a blank it attaches to nothing.
+````
+a b{.c}
+
+a　b{.c}
+
+a {.c}
+.
+<p>a <span class="c">b</span></p>
+<p>a　<span class="c">b</span></p>
+<p>a </p>
 ````

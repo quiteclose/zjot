@@ -27,6 +27,28 @@ const OpenerInfo = struct {
     marked: bool = false,
     /// The opener of the same kind below this one, if any (`Scanner.tops`).
     prev_same: ?usize = null,
+    /// A bracket whose `](` or `][` has come: djot.js's `explicit_link` or
+    /// `reference_link`, closed by the `)` or `]` the forward pass comes to.
+    link: ?LinkOpen = null,
+
+    /// Whether a closer at `p` would make an empty pair: the delimiters touch in the
+    /// source (djot.js's `opener.endpos === pos - 1`), whatever stood between them made
+    /// no text (`{_{}_}` is an empty emphasis, `{__}` none).
+    fn touches(op: OpenerInfo, p: usize) bool {
+        return op.src_pos + @intFromBool(op.marked) + 1 == p;
+    }
+};
+
+const LinkOpen = struct {
+    reference: bool,
+    /// The item of the `](` or `][`: the link's text is the items before it, and the
+    /// items from it on are the destination or label, which is read off `src` instead.
+    item_idx: usize,
+    /// Where its `]` is in `src`.
+    src_pos: usize,
+    /// `Scanner.dropped` as it was then: an id read in the destination or label is
+    /// text once the link closes, which djot.js does not register.
+    dropped_len: usize,
 };
 
 /// Parses `src`, one paragraph's worth of joined lines. With `map`, every node carries
@@ -64,6 +86,16 @@ const Scanner = struct {
     /// kinds above it, which a line of unmatched openers would make quadratic. Small, as
     /// it is cleared for every leaf.
     tops: [kinds]?usize = .{null} ** kinds,
+    /// Set at a `](` and cleared when a link closes on its `)`, as djot.js's
+    /// `destination`, which a destination never closed leaves set: while set, `(` and
+    /// `)` pair up, and a `)` with no `(` to pair closes the nearest bracket's link when
+    /// that bracket is an explicit link.
+    destination: bool = false,
+    /// Where each `(` read in the destination stands, unpaired so far: djot.js's `(`
+    /// openers, which a match over them clears as it clears every opener inside it.
+    parens: std.ArrayList(usize) = .empty,
+    /// No footnote reference opens before here (`footnoteRefEnd`).
+    no_footnote_before: usize = 0,
 
     const kinds = 22;
 
@@ -98,12 +130,19 @@ const Scanner = struct {
         return sc.tops[kind(char, marked)];
     }
 
-    /// Drops the openers from `len` up, each kind's top falling back to the one below.
+    /// Drops the openers from `len` up, each kind's top falling back to the one below,
+    /// and the parens from where the lowest of them starts.
     fn truncateOpeners(sc: *Scanner, len: usize) void {
+        if (len < sc.openers.items.len) sc.dropParens(sc.openers.items[len].src_pos);
         while (sc.openers.items.len > len) {
             const op = sc.openers.pop().?;
             sc.tops[kind(op.char, op.marked)] = op.prev_same;
         }
+    }
+
+    /// Drops the parens read at or after `from`.
+    fn dropParens(sc: *Scanner, from: usize) void {
+        while (sc.parens.items.len > 0 and sc.parens.items[sc.parens.items.len - 1] >= from) _ = sc.parens.pop();
     }
 
     fn positioned(sc: *const Scanner, node: Node, start: usize, end: usize) Node {
@@ -183,7 +222,7 @@ const Scanner = struct {
                         // A backslash ending the block is a hard break on its newline, as
                         // djot.js; ending a cell, which has none, it is text.
                         if (sc.ends_line) {
-                            sc.stripTrailingSpacesFromLastStr();
+                            sc.trimLastText(pos, " \t");
                             try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                         } else {
                             try sc.text(src[pos .. pos + 1]);
@@ -192,7 +231,7 @@ const Scanner = struct {
                     } else {
                         const next = src[pos + 1];
                         if (next == '\n') {
-                            sc.stripTrailingSpacesFromLastStr();
+                            sc.trimLastText(pos, " \t");
                             try sc.emit(.{ .data = .hard_break }, pos + 1, pos + 1);
                             pos += 2;
                         } else if (next == ' ' or next == '\t') {
@@ -201,7 +240,7 @@ const Scanner = struct {
                             if ((skip < src.len and src[skip] == '\n') or (skip >= src.len and sc.ends_line)) {
                                 // A hard break, at the input's end too (djot.js ends its
                                 // subject with a newline); it spans from the backslash on.
-                                sc.stripTrailingSpacesFromLastStr();
+                                sc.trimLastText(pos, " \t");
                                 try sc.emit(.{ .data = .hard_break }, pos + 1, skip);
                                 pos = @min(skip + 1, src.len);
                             } else if (next == ' ') {
@@ -230,20 +269,16 @@ const Scanner = struct {
                         const after_close = close_pos + tick_len;
                         var node = Node{ .data = .{ .verbatim = content } };
                         var next_pos = after_close;
-                        if (after_close + 1 < src.len and src[after_close] == '{' and src[after_close + 1] == '=') {
-                            if (std.mem.indexOfScalarPos(u8, src, after_close, '}')) |fe| {
-                                const format = src[after_close + 2 .. fe];
-                                if (format.len > 0 and std.mem.indexOfScalar(u8, format, ' ') == null) {
-                                    node = .{ .data = .{ .raw_inline = .{ .format = format, .text = content } } };
-                                    next_pos = fe + 1;
-                                }
-                            }
+                        if (rawFormatEnd(src, after_close)) |fe| {
+                            node = .{ .data = .{ .raw_inline = .{ .format = src[after_close + 2 .. fe], .text = content } } };
+                            next_pos = fe + 1;
                         }
                         // A raw inline ends on its closing ticks, before the format, as djot.js.
                         try sc.emit(node, pos, after_close - 1);
                         pos = next_pos;
                     } else {
-                        try sc.emit(.{ .data = .{ .verbatim = trimVerbatimContent(src[after..]) } }, pos, src.len - 1);
+                        const rest = sc.unclosedRest(after);
+                        try sc.emit(.{ .data = .{ .verbatim = trimVerbatimContent(rest) } }, pos, after + rest.len - 1);
                         pos = src.len;
                     }
                     text_start = pos;
@@ -294,7 +329,7 @@ const Scanner = struct {
                 },
                 '[' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
-                    if (footnoteRefEnd(src, pos)) |close| {
+                    if (sc.footnoteRefEnd(pos)) |close| {
                         try sc.emit(.{ .data = .{ .footnote_reference = try normalizeLabel(sc.a, src[pos + 2 .. close]) } }, pos, close);
                         pos = close + 1;
                         text_start = pos;
@@ -309,7 +344,7 @@ const Scanner = struct {
                 '!' => {
                     // `![^a]` is `!` and a footnote reference: djot.js decides an image at
                     // the closing bracket, where the reference has already matched.
-                    if (pos + 1 < src.len and src[pos + 1] == '[' and footnoteRefEnd(src, pos + 1) == null) {
+                    if (pos + 1 < src.len and src[pos + 1] == '[' and sc.footnoteRefEnd(pos + 1) == null) {
                         if (pos > text_start) try sc.text(src[text_start..pos]);
                         try sc.pushOpener(.{ .char = '!', .item_idx = sc.items.items.len, .src_pos = pos });
                         try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[pos .. pos + 2]) });
@@ -323,6 +358,19 @@ const Scanner = struct {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
                     try sc.handleCloseBracket(&pos);
                     text_start = pos;
+                },
+                '(' => {
+                    if (sc.destination) try sc.parens.append(sc.scratch, pos);
+                    pos += 1;
+                },
+                ')' => {
+                    if (sc.destination and sc.parens.pop() == null) {
+                        if (pos > text_start) try sc.text(src[text_start..pos]);
+                        try sc.handleCloseParen(&pos);
+                        text_start = pos;
+                    } else {
+                        pos += 1;
+                    }
                 },
                 '<' => {
                     if (pos > text_start) try sc.text(src[text_start..pos]);
@@ -341,12 +389,16 @@ const Scanner = struct {
                         const tick_len = countRunAt(src, tick_start, '`');
                         const content_start = tick_start + tick_len;
                         if (findClosingTicks(src, content_start, tick_len)) |close_pos| {
-                            const content = src[content_start..close_pos];
-                            try sc.emit(.{ .data = if (dollar_count == 2) .{ .display_math = content } else .{ .inline_math = content } }, pos, close_pos + tick_len - 1);
+                            try sc.emit(mathNode(dollar_count, trimVerbatimContent(src[content_start..close_pos])), pos, close_pos + tick_len - 1);
                             pos = close_pos + tick_len;
-                            text_start = pos;
-                            continue;
+                        } else {
+                            // Unclosed, math to the end, as an unclosed verbatim (djot.js).
+                            const rest = sc.unclosedRest(content_start);
+                            try sc.emit(mathNode(dollar_count, trimVerbatimContent(rest)), pos, content_start + rest.len - 1);
+                            pos = src.len;
                         }
+                        text_start = pos;
+                        continue;
                     }
                     try sc.text(src[pos .. pos + dollar_count]);
                     pos += dollar_count;
@@ -405,54 +457,48 @@ const Scanner = struct {
         }
 
         if (pos > text_start) try sc.text(src[text_start..pos]);
-        sc.trimTrailingWhitespace();
+        sc.trimLastText(src.len, " ");
     }
 
-    /// Before a line break: spaces and tabs go (djot.js); at the paragraph's end
-    /// (`trimTrailingWhitespace`) only spaces do, a trailing tab being content there.
-    fn stripTrailingSpacesFromLastStr(sc: *Scanner) void {
+    /// Drops `blanks` from the end of the last text node when it ends at `end` of `src`,
+    /// before a line break (spaces and tabs) or at the paragraph's end (spaces only, a
+    /// trailing tab being content there): djot.js trims its last match only when that
+    /// match is text, so the spaces before an empty attribute or a comment, which make no
+    /// node, stay.
+    fn trimLastText(sc: *Scanner, end: usize, blanks: []const u8) void {
         if (sc.items.items.len == 0) return;
         switch (sc.items.items[sc.items.items.len - 1]) {
-            .node => |*n| {
-                if (n.data == .str) {
-                    sc.setText(n, std.mem.trimEnd(u8, n.data.str, " \t"));
-                    if (n.data.str.len == 0) _ = sc.items.pop();
-                }
+            .node => |*n| if (n.data == .str and sc.within(n.data.str) and
+                @intFromPtr(n.data.str.ptr) + n.data.str.len == @intFromPtr(sc.src.ptr) + end)
+            {
+                sc.setText(n, std.mem.trimEnd(u8, n.data.str, blanks));
+                if (n.data.str.len == 0) _ = sc.items.pop();
             },
             else => {},
         }
     }
 
-    fn trimTrailingWhitespace(sc: *Scanner) void {
-        while (sc.items.items.len > 0) {
-            switch (sc.items.items[sc.items.items.len - 1]) {
-                .node => |*n| {
-                    if (n.data == .str) {
-                        sc.setText(n, std.mem.trimEnd(u8, n.data.str, " "));
-                        if (n.data.str.len == 0) {
-                            _ = sc.items.pop();
-                            continue;
-                        }
-                    }
-                    break;
-                },
-                else => break,
-            }
-        }
+    /// The text from `from` to the end, the span an unclosed verbatim or math takes: at a
+    /// paragraph's end its trailing spaces go, as text's would (djot.js trims the last
+    /// match before the closing newline; a cell has none).
+    fn unclosedRest(sc: *const Scanner, from: usize) []const u8 {
+        const rest = sc.src[from..];
+        return if (sc.ends_line) std.mem.trimEnd(u8, rest, " ") else rest;
     }
 
-    /// The innermost marked opener `{X` for `char`, when something follows it: an empty
-    /// one closes nothing and ends the search, as djot.js (`{_a {__} b_}` keeps the first
-    /// `{_` open and makes the inner `_}` text).
-    fn markedOpener(sc: *const Scanner, char: u8) ?usize {
+    /// The innermost marked opener `{X` for `char`, when its pair with the closer at `p`
+    /// is not empty: an empty one closes nothing and ends the search, as djot.js
+    /// (`{_a {__} b_}` keeps the first `{_` open and makes the inner `_}` text).
+    fn markedOpener(sc: *const Scanner, char: u8, p: usize) ?usize {
         const i = sc.topOpener(char, true) orelse return null;
-        return if (sc.openers.items[i].item_idx + 1 < sc.items.items.len) i else null;
+        return if (sc.openers.items[i].touches(p)) null else i;
     }
 
     /// Closes the marked opener `{X` with `X}` at `p` as a node of `tag` spanning both
-    /// braces; false when no opener with content is there to close.
+    /// braces; false when no opener is there to close, or its pair would be empty.
     fn closeMarked(sc: *Scanner, char: u8, tag: Tag, p: usize) !bool {
-        const i = sc.markedOpener(char) orelse return false;
+        const i = sc.markedOpener(char, p) orelse return false;
+        if (sc.outsideLink(i)) return false;
         const op = sc.openers.items[i];
         const children = try sc.collectChildren(op.item_idx);
         try sc.emit(inlineContainer(tag, children), op.src_pos, p + 1);
@@ -506,7 +552,12 @@ const Scanner = struct {
         const can_close = canCloseDelim(src, p) and !marked;
         if (can_close) if (sc.topOpener(char, marked)) |i| {
             const op = sc.openers.items[i];
-            if (op.item_idx + 1 < sc.items.items.len) { // an empty pair closes nothing
+            if (!op.touches(p)) { // an empty pair closes nothing
+                if (sc.outsideLink(i)) {
+                    try sc.text(src[p .. p + 1]);
+                    pos.* = p + 1;
+                    return;
+                }
                 const children = try sc.collectChildren(op.item_idx);
                 try sc.emit(inlineContainer(matchedTag(char), children), op.src_pos, p);
                 sc.truncateOpeners(i);
@@ -536,108 +587,153 @@ const Scanner = struct {
         pos.* = p + 2;
     }
 
+    /// Where a footnote reference opening at `pos` (`[^`) ends: its first `]`, with a label
+    /// of at least one byte on the line between, as djot.js's `[^\]]+` over the line; `[^]`
+    /// is text. A scan that meets the line's end or the input's first has shown every `[^`
+    /// before that point to fail too, which is kept, so a line of them is linear.
+    fn footnoteRefEnd(sc: *Scanner, pos: usize) ?usize {
+        const src = sc.src;
+        if (pos + 1 >= src.len or src[pos + 1] != '^' or pos < sc.no_footnote_before) return null;
+        var close = pos + 2;
+        while (close < src.len and src[close] != ']' and src[close] != '\n') : (close += 1) {}
+        if (close >= src.len or src[close] == '\n') {
+            sc.no_footnote_before = close;
+            return null;
+        }
+        return if (close == pos + 2) null else close;
+    }
+
+    /// The nearest bracket opener of either kind.
+    fn nearestBracket(sc: *const Scanner) ?usize {
+        const b = sc.topOpener('[', false) orelse return sc.topOpener('!', false);
+        const e = sc.topOpener('!', false) orelse return b;
+        return @max(b, e);
+    }
+
+    /// Whether a closer is kept from the opener at `i`: inside an open destination, an
+    /// opener before the link's bracket, which djot.js after 0.3.2 does not match there and
+    /// its suite expects (`*[a](b*)` is `*` and a link). The closer is then text, and
+    /// opens nothing.
+    fn outsideLink(sc: *const Scanner, i: usize) bool {
+        if (!sc.destination) return false;
+        const b = sc.nearestBracket() orelse return false;
+        const open = sc.openers.items[b].link orelse return false;
+        return !open.reference and i < b;
+    }
+
+    /// Closes the link or image the bracket opener `i` began, on the `)` or `]` at `end`:
+    /// its text is the items before its `](` or `][`, and those from it on go.
+    fn closeLink(sc: *Scanner, i: usize, link: node_mod.Link, end: usize) !void {
+        const op = sc.openers.items[i];
+        const open = op.link.?;
+        sc.items.items.len = open.item_idx;
+        sc.dropped.items.len = open.dropped_len;
+        var l = link;
+        l.children = try sc.collectChildren(op.item_idx);
+        const is_image = op.char == '!';
+        // djot.js starts an image on its bracket, not its `!`.
+        try sc.emit(linkNode(is_image, l), if (is_image) op.src_pos + 1 else op.src_pos, end);
+        sc.truncateOpeners(i);
+    }
+
     fn handleCloseBracket(sc: *Scanner, pos: *usize) !void {
         const src = sc.src;
         const p = pos.*;
-        // The nearest bracket of either kind.
-        const nearest: ?usize = if (sc.topOpener('[', false)) |b|
-            (if (sc.topOpener('!', false)) |e| @max(b, e) else b)
-        else
-            sc.topOpener('!', false);
-        if (nearest) |i| {
-            const op = sc.openers.items[i];
-            {
-                const is_image = op.char == '!';
-                // djot.js starts an image on its bracket, not its `!`.
-                const start = if (is_image) op.src_pos + 1 else op.src_pos;
-                const next = p + 1;
+        const i = sc.nearestBracket() orelse {
+            try sc.text(src[p .. p + 1]);
+            pos.* = p + 1;
+            return;
+        };
+        const op = sc.openers.items[i];
+        const next = p + 1;
 
-                if (next < src.len and src[next] == '(') {
-                    if (findMatchingParen(src, next)) |close_paren| {
-                        const children = try sc.collectChildren(op.item_idx);
-                        const raw_dest = src[next + 1 .. close_paren];
-                        const dest = processUrl(sc.a, raw_dest) catch raw_dest;
-                        try sc.emit(linkNode(is_image, .{ .children = children, .destination = dest }), start, close_paren);
-                        pos.* = close_paren + 1;
-                        sc.truncateOpeners(i);
-                        return;
-                    }
-                } else if (next < src.len and src[next] == '[') {
-                    if (findMatchingBracket(src, next)) |close_ref| {
-                        const children = try sc.collectChildren(op.item_idx);
-                        // An empty `[]` stands for the link's text (djot.js's `getStringContent`),
-                        // read off it by `labelOwnText` once the leaf is bounded: until then
-                        // the link has neither destination nor label. Any other label, blanks
-                        // only included, is keyed as written.
-                        const raw_label = src[next + 1 .. close_ref];
-                        const link: node_mod.Link = if (raw_label.len == 0)
-                            .{ .children = children }
-                        else
-                            .{ .children = children, .reference = try normalizeLabel(sc.a, try unescapeLabel(sc.a, raw_label)) };
-                        try sc.emit(linkNode(is_image, link), start, close_ref);
-                        pos.* = close_ref + 1;
-                        sc.truncateOpeners(i);
-                        return;
-                    }
-                } else if (next < src.len and src[next] == '{') {
-                    // A span, with the attributes when they parse; else the brace is text
-                    // (djot.js). An image's `!` is text before it.
-                    const children = try sc.collectChildren(op.item_idx);
-                    if (is_image) try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
-                    const span_node = Node{ .data = .{ .span = children } };
-                    if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
-                        try sc.emit(try applyBlockAttrsToNode(sc.a, span_node, parsed.attrs), start, p);
-                        pos.* = parsed.end;
-                    } else {
-                        try sc.emit(span_node, start, p);
-                        pos.* = next;
-                    }
-                    sc.truncateOpeners(i);
-                    return;
-                }
+        if (op.link) |open| if (open.reference) {
+            // The label as written: `keyLabel` keys it once the leaf is bounded, for the
+            // links that survive it (a label holding links drops them, and keying each
+            // would read every label inside another again).
+            try sc.closeLink(i, .{ .reference = src[open.src_pos + 2 .. p] }, p);
+            pos.* = p + 1;
+            return;
+        };
 
-                // No link or image closes here: the `]` is text, and the bracket stays
-                // open for a later one, text itself should none come. After `](` or `][`
-                // the openers inside the pair are done with (`[x_y](x_` has no emphasis);
-                // after a bare `]` they stay (`[_a]_` has), as djot.js.
-                const clears = next < src.len and (src[next] == '(' or src[next] == '[');
-                try sc.text(src[p .. p + 1]);
-                pos.* = p + 1;
-                if (clears) sc.truncateOpeners(i + 1);
-                return;
+        if (next < src.len and (src[next] == '(' or src[next] == '[')) {
+            // The link closes where the destination or label does, as the pass comes to
+            // it; what follows until then is read as any text. The openers inside the
+            // link's text are done with (`[x_y](x_` has no emphasis), parens among them.
+            sc.truncateOpeners(i + 1);
+            sc.dropParens(op.src_pos);
+            sc.openers.items[i].link = .{ .reference = src[next] == '[', .item_idx = sc.items.items.len, .src_pos = p, .dropped_len = sc.dropped.items.len };
+            try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[p .. p + 2]) });
+            if (src[next] == '(') {
+                sc.destination = true;
+                sc.parens.clearRetainingCapacity();
             }
+            pos.* = p + 2;
+            return;
         }
 
+        if (next < src.len and src[next] == '{') {
+            // A span, with the attributes when they parse; else the brace is text
+            // (djot.js). An image's `!` is text before it.
+            const is_image = op.char == '!';
+            const children = try sc.collectChildren(op.item_idx);
+            if (is_image) try sc.items.append(sc.scratch, .{ .node = sc.strNode(src[op.src_pos .. op.src_pos + 1]) });
+            const span_node = Node{ .data = .{ .span = children } };
+            const start = if (is_image) op.src_pos + 1 else op.src_pos;
+            if (try attrs.parseInlineAttrs(sc.a, src, next)) |parsed| {
+                try sc.emit(try applyBlockAttrsToNode(sc.a, span_node, parsed.attrs), start, p);
+                pos.* = parsed.end;
+            } else {
+                try sc.emit(span_node, start, p);
+                pos.* = next;
+            }
+            sc.truncateOpeners(i);
+            return;
+        }
+
+        // A bare `]` is text, and the openers inside stay (`[_a]_` has emphasis), as djot.js.
         try sc.text(src[p .. p + 1]);
         pos.* = p + 1;
     }
 
+    /// A `)` in a destination with no `(` of its own to pair: it closes the link of the
+    /// nearest bracket when that bracket is an explicit link, as djot.js, and is text
+    /// otherwise.
+    fn handleCloseParen(sc: *Scanner, pos: *usize) !void {
+        const p = pos.*;
+        if (sc.nearestBracket()) |i| if (sc.openers.items[i].link) |open| if (!open.reference) {
+            const raw_dest = sc.src[open.src_pos + 2 .. p];
+            try sc.closeLink(i, .{ .destination = try processUrl(sc.a, raw_dest) }, p);
+            sc.destination = false;
+            pos.* = p + 1;
+            return;
+        };
+        try sc.text(sc.src[p .. p + 1]);
+        pos.* = p + 1;
+    }
+
+    /// An autolink, as djot.js's `<([^<>\s]+)>`: an email when an `@` follows a byte other
+    /// than `:`, else a URL when a letter is followed by `:`; text otherwise. The scan
+    /// stops at the first blank or `<`, so a run of `<` without `>` is linear.
     fn handleAutolink(sc: *Scanner, pos: *usize) !bool {
         const src = sc.src;
         const p = pos.*;
-        const rest = src[p + 1 ..];
-        const close = std.mem.indexOfScalar(u8, rest, '>') orelse return false;
-        const content = rest[0..close];
-        const end = p + 1 + close;
-
-        if (std.mem.startsWith(u8, content, "http://") or
-            std.mem.startsWith(u8, content, "https://") or
-            std.mem.startsWith(u8, content, "ftp://"))
-        {
-            try sc.emit(.{ .data = .{ .url = content } }, p, end);
-            pos.* = end + 1;
-            return true;
+        var end = p + 1;
+        while (end < src.len and src[end] != '>') : (end += 1) {
+            if (src[end] == '<' or jsSpaceLen(src, end) > 0) return false;
         }
-
-        if (std.mem.indexOfScalar(u8, content, '@') != null and
-            std.mem.indexOfScalar(u8, content, ' ') == null)
-        {
-            try sc.emit(.{ .data = .{ .email = content } }, p, end);
-            pos.* = end + 1;
-            return true;
-        }
-
-        return false;
+        if (end >= src.len or end == p + 1) return false;
+        const content = src[p + 1 .. end];
+        const is_email = for (content[1..], 1..) |c, i| {
+            if (c == '@' and content[i - 1] != ':') break true;
+        } else false;
+        const is_url = !is_email and for (content[1..], 1..) |c, i| {
+            if (c == ':' and std.ascii.isAlphabetic(content[i - 1])) break true;
+        } else false;
+        if (!is_email and !is_url) return false;
+        try sc.emit(.{ .data = if (is_email) .{ .email = content } else .{ .url = content } }, p, end);
+        pos.* = end + 1;
+        return true;
     }
 
     fn handleSymbol(sc: *Scanner, pos: *usize) !bool {
@@ -714,7 +810,12 @@ const Scanner = struct {
 
         if (can_close) if (sc.topOpener(char, false)) |i| {
             const op = sc.openers.items[i];
-            if (op.item_idx + 1 < sc.items.items.len) {
+            if (!op.touches(p)) {
+                if (sc.outsideLink(i)) {
+                    try sc.emit(.{ .data = .{ .str = if (char == '\'') right_single else left_double } }, p, p);
+                    pos.* = p + 1;
+                    return;
+                }
                 const tag: Tag = if (char == '"') .double_quoted else .single_quoted;
                 const children = try sc.collectChildren(op.item_idx);
                 try sc.emit(inlineContainer(tag, children), op.src_pos, p);
@@ -747,7 +848,7 @@ const Scanner = struct {
         for (sc.items.items[opener_idx + 1 ..]) |item| {
             switch (item) {
                 .node => |n| try sc.appendNode(&children, n),
-                .opener => |op| try sc.appendNode(&children, sc.openerNode(op)),
+                .opener => |op| try sc.appendOpener(&children, op),
                 .pending_attrs => |pa| try sc.applyAttrsToResolved(&children, pa),
             }
         }
@@ -768,6 +869,14 @@ const Scanner = struct {
         return sc.strNode(sc.src[op.src_pos .. op.src_pos + len]);
     }
 
+    /// Appends the text of an opener that never closed. A marked one starts a text node of
+    /// its own, as djot.js's open marker breaks the run of text before it; the text after
+    /// it joins it (in a cell djot.js joins no text at all, AST difference 12).
+    fn appendOpener(sc: *const Scanner, nodes: *std.ArrayList(Node), op: OpenerInfo) !void {
+        const node = sc.openerNode(op);
+        if (op.marked) nodes.appendAssumeCapacity(node) else try sc.appendNode(nodes, node);
+    }
+
     /// Appends a node, joining text to the previous node when it can: an opener that did
     /// not close leaves text djot.js reports as one `str`.
     fn appendNode(sc: *const Scanner, nodes: *std.ArrayList(Node), node: Node) !void {
@@ -781,7 +890,7 @@ const Scanner = struct {
         for (items) |item| {
             switch (item) {
                 .node => |n| try sc.appendNode(&nodes, n),
-                .opener => |op| try sc.appendNode(&nodes, sc.openerNode(op)),
+                .opener => |op| try sc.appendOpener(&nodes, op),
                 .pending_attrs => |pa| try sc.applyAttrsToResolved(&nodes, pa),
             }
         }
@@ -797,64 +906,30 @@ const Scanner = struct {
         if (nodes.items.len == 0) return sc.dropId(ba);
         const last = &nodes.items[nodes.items.len - 1];
         switch (last.data) {
-            .str => |last_text| {
-                if (last_text.len == 0) return sc.dropId(ba);
-                var word_start = last_text.len;
-                while (word_start > 0 and last_text[word_start - 1] != ' ' and
-                    last_text[word_start - 1] != '\t' and last_text[word_start - 1] != '\n')
-                {
-                    word_start -= 1;
+            // The last word of the text node, as djot.js splits it off: no text across
+            // another node is gathered. A smart quote is not text there, and takes the
+            // attribute itself.
+            .str => |last_text| if (isSmartQuote(last_text)) {
+                try sc.attachToLast(nodes, ba);
+            } else {
+                // After the last blank of any kind JavaScript's `\s` counts (djot.js's
+                // `[^\s]+$`), found forward since a blank may be several bytes.
+                var word_start: usize = 0;
+                var i: usize = 0;
+                while (i < last_text.len) {
+                    const n = jsSpaceLen(last_text, i);
+                    i += @max(n, 1);
+                    if (n > 0) word_start = i;
                 }
                 if (word_start == last_text.len) return sc.dropId(ba);
-
-                var gather_start = nodes.items.len - 1;
-                if (word_start == 0) {
-                    while (gather_start > 0) {
-                        const prev = nodes.items[gather_start - 1];
-                        if (prev.data != .str) break;
-                        const pt = prev.data.str;
-                        if (pt.len == 0) break;
-                        const last_ch = pt[pt.len - 1];
-                        if (last_ch == ' ' or last_ch == '\t' or last_ch == '\n') break;
-                        gather_start -= 1;
-                        var ws = pt.len;
-                        while (ws > 0 and pt[ws - 1] != ' ' and pt[ws - 1] != '\t' and pt[ws - 1] != '\n') ws -= 1;
-                        if (ws > 0) {
-                            word_start = ws;
-                            break;
-                        }
-                    }
-                }
-
-                // The span's children: the gathered nodes, the first's word part in place
-                // of it, or the one word; sized so, on `a`, as the lists above.
-                var span_children: std.ArrayList(Node) = .initBuffer(try sc.a.alloc(Node, nodes.items.len - gather_start));
-                if (gather_start < nodes.items.len - 1 or word_start > 0) {
-                    if (word_start > 0) {
-                        const first_text = nodes.items[gather_start].data.str;
-                        span_children.appendAssumeCapacity(sc.strNode(first_text[word_start..]));
-                        for (nodes.items[gather_start + 1 ..]) |n| span_children.appendAssumeCapacity(n);
-                    } else {
-                        for (nodes.items[gather_start..]) |n| span_children.appendAssumeCapacity(n);
-                    }
-                } else {
-                    span_children.appendAssumeCapacity(sc.strNode(last_text[word_start..]));
-                }
-
-                const kids = span_children.items;
-                var span_node = Node{ .data = .{ .span = kids }, .start_pos = kids[0].start_pos, .end_pos = kids[kids.len - 1].end_pos };
-                span_node = try applyBlockAttrsToNode(sc.a, span_node, ba);
-
-                if (word_start > 0 and gather_start < nodes.items.len - 1) {
-                    sc.setText(&nodes.items[gather_start], nodes.items[gather_start].data.str[0..word_start]);
-                    nodes.items.len = gather_start + 1;
-                    nodes.appendAssumeCapacity(span_node);
-                } else if (word_start > 0) {
+                const kids = try sc.a.alloc(Node, 1);
+                kids[0] = sc.strNode(last_text[word_start..]);
+                const span_node = try applyBlockAttrsToNode(sc.a, .{ .data = .{ .span = kids }, .start_pos = kids[0].start_pos, .end_pos = kids[0].end_pos }, ba);
+                if (word_start > 0) {
                     sc.setText(last, last_text[0..word_start]);
                     nodes.appendAssumeCapacity(span_node);
                 } else {
-                    nodes.items.len = gather_start;
-                    nodes.appendAssumeCapacity(span_node);
+                    last.* = span_node;
                 }
             },
             .span,
@@ -876,14 +951,17 @@ const Scanner = struct {
             .display_math,
             .footnote_reference,
             .symb,
-            => {
-                if (last.id) |old| {
-                    if (ba.writesId()) try sc.dropped.append(sc.scratch, old);
-                }
-                nodes.items[nodes.items.len - 1] = try applyLaterAttrsToNode(sc.a, last.*, ba);
-            },
+            => try sc.attachToLast(nodes, ba),
             else => try sc.dropId(ba),
         }
+    }
+
+    fn attachToLast(sc: *Scanner, nodes: *std.ArrayList(Node), ba: BlockAttrs) !void {
+        const last = &nodes.items[nodes.items.len - 1];
+        if (last.id) |old| {
+            if (ba.writesId()) try sc.dropped.append(sc.scratch, old);
+        }
+        last.* = try applyLaterAttrsToNode(sc.a, last.*, ba);
     }
 };
 
@@ -913,13 +991,20 @@ fn applyLaterAttrsToNode(a: Allocator, node: Node, ba: BlockAttrs) !Node {
     return result;
 }
 
-/// Where a footnote reference opening at `pos` (`[^`) ends: its first `]`, with a label of
-/// at least one byte on the line between, as djot.js's `[^\]]+`; `[^]` is text.
-fn footnoteRefEnd(src: []const u8, pos: usize) ?usize {
-    if (pos + 1 >= src.len or src[pos + 1] != '^') return null;
-    const close = std.mem.indexOfScalarPos(u8, src, pos + 2, ']') orelse return null;
-    if (close == pos + 2 or std.mem.indexOfScalar(u8, src[pos + 2 .. close], '\n') != null) return null;
-    return close;
+/// Where a raw format opening at `pos` (`{=`) ends: its `}`, with one or more bytes
+/// between other than blanks (JavaScript's `\s`), braces and backticks, as djot.js's
+/// `\{=[^\s{}`]+\}`.
+fn rawFormatEnd(src: []const u8, pos: usize) ?usize {
+    if (pos + 1 >= src.len or src[pos] != '{' or src[pos + 1] != '=') return null;
+    var i = pos + 2;
+    while (i < src.len) : (i += 1) {
+        switch (src[i]) {
+            '}' => return if (i > pos + 2) i else null,
+            '{', '`' => return null,
+            else => if (jsSpaceLen(src, i) > 0) return null,
+        }
+    }
+    return null;
 }
 
 fn canOpenDelim(src: []const u8, pos: usize) bool {
@@ -992,45 +1077,6 @@ fn trimVerbatimContent(raw: []const u8) []const u8 {
     if (raw.len >= 2 and raw[0] == ' ' and raw[1] == '`') start = 1;
     if (end > start + 1 and raw[end - 1] == ' ' and raw[end - 2] == '`') end -= 1;
     return raw[start..end];
-}
-
-/// The `)` closing the destination opened at `pos`, by depth; an escaped byte does not
-/// count (`processUrl` unescapes it).
-fn findMatchingParen(src: []const u8, pos: usize) ?usize {
-    if (pos >= src.len or src[pos] != '(') return null;
-    var depth: usize = 1;
-    var i = pos + 1;
-    while (i < src.len) : (i += 1) {
-        if (src[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (src[i] == '(') depth += 1;
-        if (src[i] == ')') {
-            depth -= 1;
-            if (depth == 0) return i;
-        }
-    }
-    return null;
-}
-
-/// The `]` closing the bracket at `pos`, by depth; an escaped byte does not count.
-fn findMatchingBracket(src: []const u8, pos: usize) ?usize {
-    if (pos >= src.len or src[pos] != '[') return null;
-    var depth: usize = 1;
-    var i = pos + 1;
-    while (i < src.len) : (i += 1) {
-        if (src[i] == '\\') {
-            i += 1;
-            continue;
-        }
-        if (src[i] == '[') depth += 1;
-        if (src[i] == ']') {
-            depth -= 1;
-            if (depth == 0) return i;
-        }
-    }
-    return null;
 }
 
 /// A reference label as djot.js keys it: a backslash before an escapable byte goes.
@@ -1155,15 +1201,20 @@ pub fn getLabelText(a: Allocator, node: Node) ![]const u8 {
     return buf.toOwnedSlice(a);
 }
 
-/// Gives a link or image written `[text][]` its label: its own text as `getLabelText`
-/// reads it, normalized. The parser emits such a link with neither destination nor
-/// reference and calls this from its first walk over the leaf, after the walk has
-/// bounded what stands below the node, so the text is never read deeper than
+/// Keys a link or image written by reference: the scanner leaves its label as written,
+/// and here it is keyed as djot.js keys it (escapes dropped, then `normalizeLabel`). An
+/// empty `[]` stands for the link's text (djot.js's `getStringContent`), as
+/// `getLabelText` reads it; any other label, blanks only included, is keyed as written.
+/// The parser calls this once per node from its first walk over the leaf, after the walk
+/// has bounded what stands below the node, so the text is never read deeper than
 /// `max_nesting`; nothing reads the link before that walk.
-pub fn labelOwnText(a: Allocator, node: *Node) Allocator.Error!void {
+pub fn keyLabel(a: Allocator, node: *Node) Allocator.Error!void {
     switch (node.data) {
-        .link, .image => |*l| if (l.destination == null and l.reference == null) {
-            l.reference = try normalizeLabel(a, try getLabelText(a, .{ .data = .{ .span = l.children } }));
+        .link, .image => |*l| if (l.destination == null) if (l.reference) |raw| {
+            l.reference = try normalizeLabel(a, if (raw.len == 0)
+                try getLabelText(a, .{ .data = .{ .span = l.children } })
+            else
+                try unescapeLabel(a, raw));
         },
         else => {},
     }
@@ -1176,6 +1227,11 @@ const right_single = "\u{2019}";
 const left_double = "\u{201c}";
 const right_double = "\u{201d}";
 
+fn isSmartQuote(text: []const u8) bool {
+    return text.ptr == left_single.ptr or text.ptr == right_single.ptr or
+        text.ptr == left_double.ptr or text.ptr == right_double.ptr;
+}
+
 fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node, footnote_labels: bool) !void {
     switch (node.data) {
         .symb => {},
@@ -1187,7 +1243,7 @@ fn addPlainText(a: Allocator, buf: *std.ArrayList(u8), node: Node, footnote_labe
         .en_dash => try buf.appendSlice(a, "--"),
         .str => |text| if (text.ptr == left_single.ptr or text.ptr == right_single.ptr) {
             try buf.append(a, '\'');
-        } else if (text.ptr == left_double.ptr or text.ptr == right_double.ptr) {
+        } else if (isSmartQuote(text)) {
             try buf.append(a, '"');
         } else {
             try buf.appendSlice(a, text);
@@ -1215,6 +1271,10 @@ fn inlineContainer(tag: Tag, children: []const Node) Node {
         .single_quoted => .{ .single_quoted = children },
         else => unreachable,
     } };
+}
+
+fn mathNode(dollars: usize, content: []const u8) Node {
+    return .{ .data = if (dollars == 2) .{ .display_math = content } else .{ .inline_math = content } };
 }
 
 fn linkNode(is_image: bool, link: node_mod.Link) Node {
