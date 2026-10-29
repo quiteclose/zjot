@@ -99,21 +99,25 @@ pub fn main(init: std.process.Init) !u8 {
     var r = file.reader(init.io, &in_buf);
     var out_buf: [4096]u8 = undefined;
     var w = std.Io.File.stdout().writer(init.io, &out_buf);
-    zjot.renderReader(a, &r.interface, &w.interface, .{ .mode = opts.mode, .sourcepos = opts.sourcepos }) catch |err| switch (err) {
-        error.WriteFailed => return writeFailed(init.io),
-        error.ReadFailed => {
-            try printErr(init.io, "zjot: {s}: {t}\n", .{ name, r.err orelse error.ReadFailed });
-            return 1;
-        },
-        error.InputTooLarge => {
-            try printErr(init.io, "zjot: {s}: input exceeds 2^64 - 1 bytes or lines\n", .{name});
-            return 1;
-        },
-        error.TooDeep => {
-            try printErr(init.io, "zjot: {s}: nesting deeper than {d} levels\n", .{ name, zjot.max_nesting });
-            return 1;
-        },
-        else => |e| return e,
+    zjot.renderReader(a, &r.interface, &w.interface, .{ .mode = opts.mode, .sourcepos = opts.sourcepos }) catch |err| {
+        // What was rendered before the failure is written before it is reported.
+        if (err != error.WriteFailed) w.interface.flush() catch return writeFailed(init.io);
+        return switch (err) {
+            error.WriteFailed => writeFailed(init.io),
+            error.ReadFailed => blk: {
+                try printErr(init.io, "zjot: {s}: {t}\n", .{ name, r.err orelse error.ReadFailed });
+                break :blk 1;
+            },
+            error.InputTooLarge => blk: {
+                try printErr(init.io, "zjot: {s}: input exceeds 2^64 - 1 bytes or lines\n", .{name});
+                break :blk 1;
+            },
+            error.TooDeep => blk: {
+                try printErr(init.io, "zjot: {s}: nesting deeper than {d} levels\n", .{ name, zjot.max_nesting });
+                break :blk 1;
+            },
+            else => |e| e,
+        };
     };
     w.interface.flush() catch return writeFailed(init.io);
     return 0;

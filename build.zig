@@ -128,6 +128,14 @@ pub fn build(b: *std.Build) void {
     run_extra.expectStdErrEqual("zjot: unexpected argument: b.dj\n");
     cli_test_step.dependOn(&run_extra.step);
 
+    // A document that fails part-way keeps on stdout what was rendered before the failure.
+    const run_deep = goldenRun(b, golden_exe);
+    run_deep.setStdIn(.{ .bytes = "para\n\n" ++ ("> " ** 1000) ++ "x\n" });
+    run_deep.expectExitCode(1);
+    run_deep.expectStdOutEqual("<p>para</p>\n");
+    run_deep.expectStdErrEqual("zjot: stdin: nesting deeper than 1000 levels\n");
+    cli_test_step.dependOn(&run_deep.step);
+
     const run_sourcepos = goldenRun(b, golden_exe);
     run_sourcepos.addArg("--sourcepos");
     run_sourcepos.expectExitCode(1);
